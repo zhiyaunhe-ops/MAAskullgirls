@@ -1,9 +1,11 @@
 # MAAskullgirls
 
+<img width="1024" height="576" alt="image" src="https://github.com/user-attachments/assets/60ed957d-4bea-40a4-b417-fb80cda5cbcd" />
+
 > 为 **Skullgirls Mobile** —— 这款小众宝藏格斗游戏 —— 打造的 **Prize Fight 全自动循环刷本脚本**（高手专用）
 
 Skullgirls Mobile 是一款被严重低估的 2D 格斗 + RPG 手游：手绘动画帧帧到肉、无限连段系统深不见底，
-而 **Prize Fight（流浪防区）** 是它的核心常驻玩法——用你毕生练出的芯片阵容去冲击排行榜。
+而 **Prize Fight** 是它的核心常驻玩法——用你毕生练出的芯片阵容去冲击排行榜。
 问题是：每天几十场重复的"选人 → 编队 → 战斗 → 领奖"会把任何高手的手指磨平。
 
 **MAAskullgirls 就是为此而生的**：基于 [MAAFramework](https://github.com/MaaXYZ/MaaFramework)
