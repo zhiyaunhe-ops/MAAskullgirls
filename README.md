@@ -1,6 +1,7 @@
 # MAAskullgirls
 
 <img width="1024" height="576" alt="image" src="https://github.com/user-attachments/assets/60ed957d-4bea-40a4-b417-fb80cda5cbcd" />
+
 > 为 **Skullgirls Mobile** —— 这款小众宝藏格斗游戏 —— 打造的 **Prize Fight 全自动循环刷本脚本**（高手专用）
 
 Skullgirls Mobile 是一款被严重低估的 2D 格斗 + RPG 手游：手绘动画帧帧到肉、无限连段系统深不见底，
