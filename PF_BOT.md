@@ -166,9 +166,10 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
 5. 全翻完仍无 → 停止报错（能量随时间恢复，重启/等待后继续）
 
 ### 6.4 PF 规则筛选系统（仅配置了规则才运行，未配置零开销）
-- 设置：WebUI **PF规则 按钮组**（nav 行右侧）：关(默认) / 六元素按钮（sgm 元素图标）/
-  12 角色金圈徽记按钮（= 类别 c1-c12，sgm MasteryIcon），点选即生效、再点当前规则取消；
-  另有 **喜爱筛选**开关（顶栏）。素材由 `/sgm/...` 路由直接托管 `sgm/image/official/`
+- **规则与 PF 场次绑定**（见 §6.5a）：WebUI **PF规则 按钮组**（nav 行右侧）编辑的是
+  当前选中场次绑定的规则，未选场次/运行中时整组禁用；点选即生效、再点当前规则取消。
+  按钮组：关 / 六元素按钮（sgm 元素图标）/ 12 角色金圈徽记按钮（= 类别 c1-c12，
+  sgm MasteryIcon）。素材由 `/sgm/...` 路由直接托管 `sgm/image/official/`
 - 元素定义来自 `sgm/fighter.js`：`["neutral","fire","water","wind","dark","light"]`
   （索引 0-5，卡框颜色：火红/水蓝/风绿/光金/暗紫/中性银灰）
 - 流程（用户定义）：
@@ -188,7 +189,22 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
 - 每次回到对手页：读总分 + 连胜；**采样锚定场次号**（fight_no 变了必采样，
   **失败场收益 0 也照记**——连胜终结表现为 0 收益柱 + 连胜阶梯跌落）
 - 达到 **目标总分**（WebUI 设置）→ 自动暂停（状态 PAUSED，可再点开始恢复）
-- 每场追加 `debug/pf/score_log.csv`（time, fight_no, score, delta, streak）；启动时预载做图表
+- 每场追加 `debug/pf/score_log.csv`（time, fight_no, score, delta, streak, session）；
+  启动时按列位置预载（旧文件表头缺 streak 列/旧行缺 session 列也能正确解析）
+
+### 6.5a PF 场次系统（tools/pf_store.py，数据层与操作逻辑解耦）
+- 点 WebUI **开始** → 弹场次弹窗：选既有场次 / 新建（名称 + 绑定规则）/ 重命名 /
+  两段式删除（Default 不可删）；确认后才启动
+- 场次持久化于 `debug/pf/sessions.json`（id/名称/绑定规则）；**历史数据全部归
+  id=default 的场次（无规则）**，该场次可改名不可删
+- **运行中锁定**：不允许切换/修改/删除当前场次，规则按钮组禁用；暂停（同一场次）
+  再续跑不重置基线，换场次开局则 fight_no/采样基线/规则替换标记全部重置
+- 计分按场次分流：`ScoreTracker` 管采样基线（换场次自动重置），`ScoreStore.record`
+  按场次入内存历史（每场次上限 3000 点），CSV 追加 session 列
+- 图表页：顶部场次 chips，点名称=只看该场次（默认当前场次），点＋/－=加入/移出对比；
+  **对比模式**下总分图变各场次收益累计曲线（以各自首个采样为 0 起点）+ 指标对比表，
+  单场收益柱状图隐藏
+- 已知取舍：删除场次后其内存曲线移除，CSV 原始行保留（重建同名 id 不可恢复，属预期）
 
 ### 6.6 拖拽与滚动
 - 拖拽用触点原语：按下 → 分段移动 → **落点停顿 350ms** → 抬起
@@ -252,7 +268,8 @@ setup_env.py 可选参数：`--with-vendor`（下载 MAAFramework 官方包到 v
 `--mirror <前缀>`（GitHub 下载加速，如 https://ghproxy.net/ ）。项目迁移到新机器时
 拷贝 `assets/ tools/ sgm/ requirements.txt` 后执行一次即可。
 
-- WebUI 设置：目标总分（自动暂停）/ 能量门槛 / PF规则按钮组（关|元素|角色徽记）/ 喜爱筛选
+- WebUI 设置：场次（开始时弹窗选择，运行中锁定）/ 目标总分（自动暂停）/ 能量门槛 /
+  PF规则按钮组（关|元素|角色徽记，绑定场次）/ 喜爱筛选
 - 出战能量门槛默认 4；类别芯片对照 `docs/screenshots/filter_panel.png`
 - 调试：`debug/maa/debug/maafw.log`（框架）、`debug/pf/bot_stdout.log`（脚本）、
   `debug/pf/run/<ts>/`（全程截图）

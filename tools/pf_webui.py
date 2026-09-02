@@ -445,7 +445,8 @@ function ensureCharts() {
         tooltip: { ...ttStyle,
           callbacks: {
             title: items => (ptsMeta[items[0].dataIndex] ? fmtTs(ptsMeta[items[0].dataIndex].ts) : ''),
-            label: ctx => '连胜 ' + ctx.parsed.y } } },
+            label: ctx => (compareMode ? chStreak.data.datasets[ctx.datasetIndex].label + '　' : '')
+              + '连胜 ' + ctx.parsed.y } } },
       scales: { x: axisX, y: { ...axisYn, ticks: { precision: 0 } } },
     }
   });
@@ -917,7 +918,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length) or b"{}")
+        raw = self.rfile.read(length)
+        try:
+            text = raw.decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            text = "{}"
+        return json.loads(text or "{}")
 
     def _json_err(self, code: int, msg: str) -> None:
         self._send(code, "application/json",
