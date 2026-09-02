@@ -1,0 +1,21 @@
+{
+    "interface_version": 2,
+    "name": "MAA_again",
+    "version": "0.1.0",
+    "controller": [
+        {
+            "name": "Android",
+            "type": "Adb",
+            "display_short_side": 720
+        }
+    ],
+    "resource": [
+        "base"
+    ],
+    "task": [
+        {
+            "name": "HelloWorld",
+            "entry": "HelloWorld"
+        }
+    ]
+}

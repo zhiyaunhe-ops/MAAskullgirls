@@ -1,0 +1,8 @@
+{
+    "HelloWorld": {
+        "recognition": "OCR",
+        "expected": "开始行动",
+        "action": "DoNothing",
+        "next": []
+    }
+}

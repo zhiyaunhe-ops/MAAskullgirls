@@ -1,0 +1,17 @@
+# MAA 运行产物
+debug/
+vendor/
+
+# 本机参数 (adb 路径/端口), 不随仓库分发
+config.json
+
+# 一次性迁移脚本
+tools/_patch_git.py
+
+# 内嵌第三方仓库 (Skullgirls 图鉴, 可选本地克隆: https://github.com/Krazete/sgm)
+sgm/
+
+# Python
+__pycache__/
+*.pyc
+requirements.txt.bak
