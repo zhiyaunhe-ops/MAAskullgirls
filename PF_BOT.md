@@ -1,4 +1,4 @@
-# SGM Prize Fight 自动化脚本（基于 MAAFramework）
+# MAAskullgirls — SGM Prize Fight 自动化脚本（基于 MAAFramework）
 
 Skullgirls Mobile 的 Prize Fight（流浪防区）自动刷本脚本。基于 MAAFramework v5.12.3
 的 Python 绑定（MaaFw）驱动 MuMu 模拟器，实现 **选对手 → 编队 → 自动战斗 → 结算领奖** 的无人循环，
@@ -36,7 +36,7 @@ anaconda 根目录带 2020 年的 `msvcp140/vcruntime140`（14.27），Windows �
 ## 2. 目录结构
 
 ```
-MAA_again/
+MAAskullgirls/
 ├── PF_BOT.md                      # 本文档
 ├── docs/screenshots/              # 关键界面截图存档（筛选面板/hub/错误弹窗等）
 ├── tools/
