@@ -1,4 +1,5 @@
 # MAAskullgirls
+![Uploading image.png…]()
 
 > 为 **Skullgirls Mobile** —— 这款小众宝藏格斗游戏 —— 打造的 **Prize Fight 全自动循环刷本脚本**（高手专用）
 
