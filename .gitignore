@@ -14,6 +14,9 @@ sgm/
 # 安卓小组件工程 (独立打包 APK, 不随脚本仓库分发)
 pfwidget/
 
+# 本机启动脚本 (内含个人 anaconda 路径; 仓库用户直接 python tools/pf_bot.py 即可)
+*.bat
+
 # Python
 __pycache__/
 *.pyc

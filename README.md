@@ -35,6 +35,7 @@ Skullgirls Mobile 是一款被严重低估的 2D 格斗 + RPG 手游：手绘动
 |---|---|
 | 模拟器 | MuMu 12（ADB 默认端口 `127.0.0.1:16384`） |
 | 分辨率 | **1280x720 横屏**（所有视觉判据基于此） |
+| 游戏语言 | ⚠️ **必须英文界面（English）**——所有 OCR 文字识别与模板判据均基于英文 UI，其他语言会直接识别失败 |
 | Python | 3.8+，依赖见 `requirements.txt`（MaaFw / numpy / opencv-python） |
 | 系统 | Windows（CRT 预载逻辑针对 Windows DLL 解析特性） |
 
@@ -48,6 +49,9 @@ python tools/pf_bot.py             # 启动后打开 WebUI 点「开始」
 ```
 
 启动 MuMu 12 并进入游戏主界面，浏览器打开 <http://127.0.0.1:8787> 即可接管。
+
+> ⚠️ **再次强调：游戏语言必须是英文（English）**。脚本依赖 OCR 识别英文界面文字
+> （SERVER ERROR / PLAY! / 战力数字等），中文或其他语言界面无法工作。
 
 > 本机参数（adb 路径/端口）只放在 `config.json`，**该文件不入仓库**（已在 `.gitignore`），见 `config.example.json`。
 

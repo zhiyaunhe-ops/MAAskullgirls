@@ -18,6 +18,7 @@ Skullgirls Mobile 的 Prize Fight（竞技场）自动刷本脚本。基于 MAAF
 | 模拟器 | MuMu 12，ADB `127.0.0.1:16384`（实例1默认端口） |
 | MuMu 自带 adb | 安装目录下 `nx_main\adb.exe`（本机实际路径写在 `config.json`，该文件不入仓库，见 `config.example.json`） |
 | 设备信息 | NTH-AN00（MuMu 默认伪装型号），Android 12，1280x720 横屏运行 |
+| 游戏语言 | ⚠️ **必须英文界面（English）**：OCR 判据（SERVER ERROR/PLAY!/战力数字等）全部基于英文 UI，其他语言识别不到 |
 | 框架 | MAAFramework v5.12.3 官方包解压在 `vendor/`（参考文档与 sample；运行用 pip 包二进制） |
 | Python 绑定 | `pip install MaaFw==5.12.3`，另需 numpy / opencv-python |
 | 图表库 | Chart.js 4.4.3 本地托管 `tools/static/chart.umd.min.js`（不走 CDN） |
@@ -162,6 +163,7 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
 
 ### 6.2 选对手
 有火框 → 火框组内倍率最大（倍率读不出排后按战力）；无火框 → 战力最低。全程 OCR 结果进日志。
+战力 OCR 值 < 100 时视为 k 后缀被丢，自动 ×1000（如 87 → 87,000）。
 
 ### 6.3 编队修正（fix_team）
 1. （规则未启用时）本次运行清一次残留筛选
@@ -217,9 +219,16 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
   启动时按列位置预载（旧文件表头缺 streak 列/旧行缺 session 列也能正确解析）
 
 ### 6.5a PF 场次系统（tools/pf_store.py，数据层与操作逻辑解耦）
-- 点 WebUI **开始** → 弹场次弹窗：选既有场次 / 新建（名称 + 绑定规则）/ 重命名 /
-  两段式删除（Default 不可删）；确认后才启动
-- 场次持久化于 `debug/pf/sessions.json`（id/名称/绑定规则/休息配置 rest_every·rest_minutes）；
+- 点 WebUI **开始**：已选场次则**直接以当前场次开始**；未选过才弹场次弹窗
+  （选既有场次 / 新建：名称+规则+分数上界+每N场休M分 / 重命名 / 两段式删除，
+  Default 不可删）。弹窗另有**仅选择**：只绑定不开始，回主页改规则/上界/休息后再开
+- 顶栏 **目标总分 / 每N场休息** 随场次（编辑即写入当前选中场次并同步运行状态）；
+  未选场次或运行中禁改；能量门槛/喜爱为全局设置
+- **子场次**：周期性分类的每一期建一个子场次——弹窗选中父场次 → **建子场次** →
+  自动命名"父名 MM-DD"（重名加 -N 后缀），继承父场次规则/上界/休息；
+  采样/CSV 归子场次；弹窗列表中子场次以 └ 缩进；删父不删子（子变顶级场次）
+- 场次持久化于 `debug/pf/sessions.json`（id/名称/绑定规则/休息配置 rest_every·rest_minutes/
+  **总分 score**）；总分随每次采样滚动更新，老场次启动时从各自最后一个采样**倒推**回填；
   **历史数据全部归
   id=default 的场次（无规则）**，该场次可改名不可删
 - **运行中锁定**：不允许切换/修改/删除当前场次，规则按钮组禁用；暂停（同一场次）
@@ -307,6 +316,9 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
 
 ## 9. 常用操作
 
+双击 `启动PF.bat` 一键启动（自动用 anaconda python，端口就绪后自动打开 WebUI 页面）。
+或手动：
+
 ```bash
 python tools/setup_env.py         # 一键配置环境（依赖/OCR模型/Chart.js/自检，已存在自动跳过）
 python tools/pf_bot.py            # 启动（WebUI 点"开始"开跑；停止=暂停，可恢复）
@@ -317,8 +329,9 @@ setup_env.py 可选参数：`--with-vendor`（下载 MAAFramework 官方包到 v
 `--mirror <前缀>`（GitHub 下载加速，如 https://ghproxy.net/ ）。项目迁移到新机器时
 拷贝 `assets/ tools/ sgm/ requirements.txt` 后执行一次即可。
 
-- WebUI 设置：场次（开始时弹窗选择，运行中锁定）/ 目标总分（自动暂停）/ 能量门槛 /
-  PF规则按钮组（关|元素|角色徽记，绑定场次）/ 喜爱筛选
+- WebUI 设置：场次（开始=当前场次直开，未选才弹窗；运行中锁定）/ 分数上界·休息（随场次，
+  顶栏编辑当前场次）/ 能量门槛（全局）/ PF规则按钮组（关|元素|角色徽记，绑定场次；
+  **运行中折叠为已生效徽章**）/ 喜爱筛选
 - 出战能量门槛默认 4；类别芯片对照 `docs/screenshots/filter_panel.png`
 - 调试：`debug/maa/debug/maafw.log`（框架）、`debug/pf/bot_stdout.log`（脚本）、
   `debug/pf/run/<ts>/`（全程截图）

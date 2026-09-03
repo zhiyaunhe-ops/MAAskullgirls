@@ -30,6 +30,16 @@ def clean_rest(v) -> int:
         return 0
 
 
+def clean_target(v):
+    """分数上界清洗: 空值 -> None (=不限), 否则非负整数。"""
+    if v is None or v == "":
+        return None
+    try:
+        return max(0, int(v)) or None
+    except (TypeError, ValueError):
+        return None
+
+
 def clean_rule(rule):
     """校验规则结构, 合法返回 {"type","value"}, 否则 None。"""
     if not isinstance(rule, dict):
@@ -66,6 +76,15 @@ class ScoreStore:
                                   "rule": None, "created": time.time()})
         self._save_sessions()
         self._load_history()
+        # 老数据倒推: 场次记录缺总分时, 从该场次最后一个采样回填
+        changed = False
+        for s in self.sessions:
+            pts = self.history_by.get(s["id"], [])
+            if pts and s.get("score") != pts[-1].get("score"):
+                s["score"] = pts[-1].get("score")
+                changed = True
+        if changed:
+            self._save_sessions()
 
     def _save_sessions(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -86,24 +105,50 @@ class ScoreStore:
         for s in self.sessions:
             pts = self.history_by.get(s["id"], [])
             out.append({"id": s["id"], "name": s["name"], "rule": s.get("rule"),
+                        "parent": s.get("parent"),
+                        "score": s.get("score"),
+                        "score_target": s.get("score_target"),
                         "rest_every": s.get("rest_every") or 0,
                         "rest_minutes": s.get("rest_minutes") or 0,
                         "created": s.get("created"), "count": len(pts),
                         "last_ts": pts[-1]["ts"] if pts else None})
         return out
 
-    def create(self, name: str, rule, rest_every=0, rest_minutes=0) -> dict:
+    def create(self, name: str, rule, rest_every=0, rest_minutes=0,
+               score_target=None) -> dict:
         sess = {"id": "s%d" % int(time.time() * 1000), "name": name,
                 "rule": clean_rule(rule), "created": time.time(),
                 "rest_every": clean_rest(rest_every),
-                "rest_minutes": clean_rest(rest_minutes)}
+                "rest_minutes": clean_rest(rest_minutes),
+                "score_target": clean_target(score_target)}
+        with self._lock:
+            self.sessions.append(sess)
+            self._save_sessions()
+        return sess
+
+    def create_child(self, parent_sid: str, name=None) -> dict:
+        """建子场次 (周期性分类的每一期): 继承父场次规则/上界/休息, 默认名=父名+日期。"""
+        p = self.get(parent_sid)
+        if not p:
+            raise KeyError(parent_sid)
+        base = (name or "").strip() or f"{p['name']} {time.strftime('%m-%d')}"
+        name, n = base, 2
+        existing = {s.get("name") for s in self.sessions}
+        while name in existing:
+            name = f"{base}-{n}"
+            n += 1
+        sess = {"id": "s%d" % int(time.time() * 1000), "name": name,
+                "parent": p["id"], "rule": p.get("rule"), "created": time.time(),
+                "rest_every": p.get("rest_every") or 0,
+                "rest_minutes": p.get("rest_minutes") or 0,
+                "score_target": p.get("score_target")}
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
         return sess
 
     def update(self, sid: str, name=None, rule=UNSET,
-               rest_every=UNSET, rest_minutes=UNSET):
+               rest_every=UNSET, rest_minutes=UNSET, score_target=UNSET):
         sess = self.get(sid)
         if not sess:
             raise KeyError(sid)
@@ -115,6 +160,8 @@ class ScoreStore:
             sess["rest_every"] = clean_rest(rest_every)
         if rest_minutes is not UNSET:
             sess["rest_minutes"] = clean_rest(rest_minutes)
+        if score_target is not UNSET:
+            sess["score_target"] = clean_target(score_target)
         with self._lock:
             self._save_sessions()
         return sess
@@ -143,6 +190,10 @@ class ScoreStore:
                         "streak": streak, "fight": fight})
             if len(pts) > HISTORY_CAP:
                 del pts[: len(pts) - HISTORY_CAP]
+            sess = self.get(sid)          # 场次随采样滚动记录最新总分
+            if sess is not None and sess.get("score") != score:
+                sess["score"] = score
+                self._save_sessions()
 
     def append_csv(self, sid: str, score: int, delta: int, streak, fight: int) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)

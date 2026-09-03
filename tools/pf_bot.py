@@ -315,6 +315,8 @@ class PfBot:
                 txt = self.ocr_expected(crop)
                 mult = vis.parse_mult(txt)
             power = vis.parse_power(self.ocr_text(img, card["power_roi"]))
+            if power is not None and power < 100:
+                power *= 1000        # 选人界面 k 后缀被 OCR 丢掉: 87 -> 87k
             cards.append({"name": card["name"], "click": card["click"],
                           "fire": fire, "mult": mult, "power": power})
             STATE.log(f"{card['name']}: 战力={power} 倍率={mult} 火框={fire}")
