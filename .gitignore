@@ -11,6 +11,9 @@ tools/_patch_git.py
 # 内嵌第三方仓库 (Skullgirls 图鉴, 可选本地克隆: https://github.com/Krazete/sgm)
 sgm/
 
+# 安卓小组件工程 (独立打包 APK, 不随脚本仓库分发)
+pfwidget/
+
 # Python
 __pycache__/
 *.pyc

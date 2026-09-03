@@ -20,6 +20,7 @@ from pf_env import (
     PROJECT_ROOT,
     STATE,
     preload_msvcrt,
+    start_debug_cleaner,
 )
 
 preload_msvcrt()
@@ -93,6 +94,7 @@ class PfBot:
 
     def setup(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        start_debug_cleaner(self.run_dir, log=STATE.log)  # 图片≤150MB / 日志≤50MB
         Toolkit.init_option(str(PROJECT_ROOT / "debug"))
         adb_path, address = resolve_adb()
         if not adb_path:

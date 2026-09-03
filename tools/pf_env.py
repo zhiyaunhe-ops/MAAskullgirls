@@ -107,3 +107,106 @@ class BotState:
 
 
 STATE = BotState()
+
+
+# ---------- debug 目录体积控制 (2026-09-03) ----------
+
+IMG_CAP_MB = 150   # debug/pf/run 全部截图总量上限
+LOG_CAP_MB = 50    # 全部 .log 总量上限 (maafw + bot_stdout)
+CLEAN_INTERVAL_S = 600
+
+
+def cleanup_debug(protected_dir: Path = None) -> str:
+    """超限则删旧: 图片按运行目录从旧到新整删(保护当前目录, 仍超则删目录内最旧帧);
+    日志只删最旧的 maafw.bak.* (活动中的 maafw.log/stdout 由 MAA 自轮转接手)。
+    一次遍历建索引、删除时递减, 不做全量重扫。返回摘要文本。"""
+    summary = ""
+    img_root = PROJECT_ROOT / "debug" / "pf" / "run"
+    if img_root.is_dir():
+        dirs = sorted(d for d in img_root.iterdir() if d.is_dir())
+        protected = protected_dir.resolve() if protected_dir else (
+            dirs[-1] if dirs else None)
+        sizes = {}   # dir -> {file: size} (一次遍历)
+        for d in dirs:
+            files = {}
+            try:
+                for f in d.iterdir():
+                    try:
+                        if f.is_file():
+                            files[f] = f.stat().st_size
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            sizes[d] = files
+        total = sum(sum(v.values()) for v in sizes.values())
+        limit = IMG_CAP_MB * 1024 * 1024
+        removed_dirs = removed_frames = 0
+        while total > limit and len(sizes) > 1:
+            victim = dirs.pop(0)
+            if victim == protected:
+                dirs.append(victim)   # 环形保护: 只剩自己时停
+                break
+            total -= sum(sizes.pop(victim).values())
+            _rmtree(victim)
+            removed_dirs += 1
+        # 仍超限: 当前目录内从最旧帧删起 (长跑单目录可超 150MB)
+        if protected in sizes and total > limit:
+            for frame in sorted(sizes[protected]):
+                if total <= limit:
+                    break
+                try:
+                    frame.unlink()
+                    total -= sizes[protected].pop(frame)
+                    removed_frames += 1
+                except OSError:
+                    break
+        summary = f"图片→{total // 1048576}MB"
+        if removed_dirs:
+            summary += f", 删旧目录×{removed_dirs}"
+        if removed_frames:
+            summary += f", 删旧帧×{removed_frames}"
+
+    logs = sorted((PROJECT_ROOT / "debug").rglob("*.log"))
+    removed_logs = 0
+    limit = LOG_CAP_MB * 1024 * 1024
+    total = 0
+    for f in logs:
+        try:
+            total += f.stat().st_size
+        except OSError:
+            pass
+    for f in logs:   # 名称序 = maafw.bak 时间序, 最旧在前; 跳过活动日志(maafw.log/stdout)
+        if total <= limit:
+            break
+        if f.name == "maafw.log" or f.name == "bot_stdout.log":
+            continue
+        try:
+            size = f.stat().st_size
+            f.unlink()
+            total -= size
+            removed_logs += 1
+        except OSError:
+            continue
+    if removed_logs:
+        summary += f", 删旧日志×{removed_logs}"
+    return f"debug清理: {summary}, 日志→{total // 1048576}MB"
+
+
+def _rmtree(path: Path) -> None:
+    import shutil
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def start_debug_cleaner(protected_dir: Path = None, log=None):
+    """启动即清一次, 之后每 10 分钟一次 (守护线程)。"""
+    def _loop():
+        while True:
+            try:
+                msg = cleanup_debug(protected_dir)
+                if log and ("删" in msg):
+                    log(msg)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(CLEAN_INTERVAL_S)
+    threading.Thread(target=_loop, daemon=True).start()

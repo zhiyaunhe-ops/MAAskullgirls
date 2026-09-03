@@ -55,9 +55,14 @@ MAAskullgirls/
 ├── sgm/                           # SGM 图鉴数据（元素定义、变体→元素/角色映射）
 ├── vendor/                        # MAAFramework 官方包
 └── debug/
-    ├── maa/debug/maafw.log        # MAA 框架日志（排障第一入口）
+    ├── maa/debug/maafw.log        # MAA 框架日志（排障第一入口；自按 16MB 轮转 .bak）
+    ├── debug/maafw.bak.*.log      # 轮转备份（清理线程只删这些最旧的）
     ├── pf/run/<时间戳>/           # 每次运行全程截图 NNNN_标签.jpg
     └── pf/score_log.csv           # 每场计分记录
+
+**体积控制**（pf_env.cleanup_debug，2026-09-03）：bot 启动即清一次 + 每 10 分钟守护
+线程。图片 `debug/pf/run` 总量 ≤150MB（按目录从旧到新整删、保护当前目录；仍超则删
+当前目录内最旧帧）；全部 .log ≤50MB（只删最旧的 maafw.bak.*，活动日志不碰）。
 ```
 
 ---

@@ -4,6 +4,7 @@ GET  /                  页面（运行 / 图表 两个页签）
 GET  /api/state         {status, step, fight_no, score, streak, logs, shot_ver, shot_time,
                          session_id, session_name, log_total}
 GET  /api/sessions      {sessions: [{id,name,rule,count,last_ts}], active, running}
+GET  /api/summary       {per_min, last_delta}  当前场次轻量统计 (小组件用)
 GET  /api/history       ?sessions=a,b,c -> {series: [{id,name,rule,points}]}
 GET  /static/...        静态文件（chart.umd.min.js）
 GET  /sgm/...           sgm 素材（元素/角色图标等）
@@ -914,6 +915,22 @@ class _Handler(BaseHTTPRequestHandler):
                 },
                 ensure_ascii=False,
             ).encode("utf-8")
+            self._send(200, "application/json", body)
+        elif path == "/api/summary":
+            # 轻量统计 (小组件用): 当前场次的每分钟收益与上一场收益
+            sid = STORE.session_id or "default"
+            pts = [p for p in STORE.history_by.get(sid, []) if p.get("score") is not None]
+            last_delta = (pts[-1]["score"] - pts[-2]["score"]) if len(pts) >= 2 else None
+            active_sec, gain = 0, 0
+            for i in range(1, len(pts)):
+                dt = pts[i]["ts"] - pts[i - 1]["ts"]
+                if dt < 0 or dt > 180:      # 与 WebUI 图表口径一致: 只算活跃时段
+                    continue
+                active_sec += dt
+                gain += pts[i]["score"] - pts[i - 1]["score"]
+            per_min = (gain / (active_sec / 60)) if active_sec > 30 else None
+            body = json.dumps({"per_min": per_min, "last_delta": last_delta},
+                              ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
         elif path == "/api/sessions":
             body = json.dumps(
