@@ -46,6 +46,7 @@ SHOT_DIR = PROJECT_ROOT / "debug" / "pf" / "run"
 IMG = "pf/"
 TPL_CONTINUE = IMG + "pf_continue_btn.png"
 TPL_FIGHT = IMG + "vs_fight_btn.png"
+TPL_FILTER_X = IMG + "pf_filter_x.png"
 TPL_DRAGHINT = IMG + "drag_hint.png"
 TPL_ENERGY_X = IMG + "energy_x.png"
 TPL_REFRESH = IMG + "pf_refresh_btn.png"
@@ -70,6 +71,10 @@ ELEMENT_CHIPS = {"fire": (197, 370), "water": (302, 370), "wind": (407, 370),
 CLASS_CHIPS = {f"c{i+1}": (FILTER_COLS[i % 6], 505 if i < 6 else 594) for i in range(12)}
 
 ROI_RESULT = (400, 570, 980, 700)     # 结算页底部 CONTINUE 行
+ROI_FILTER_X = (1150, 30, 1280, 140)  # 筛选面板关闭 X 搜索区
+# 候选卡左缘框条的元素色相区间 (light/neutral 不可颜色分辨 -> 不做筛选复验)
+ELEMENT_HUE = {"fire": [(0, 9), (170, 180)], "water": [(96, 130)],
+               "wind": [(50, 97)], "dark": [(131, 146)]}
 
 
 class PfBot:
@@ -79,6 +84,7 @@ class PfBot:
         self.shot_seq = 0
         self.tracker = ScoreTracker()  # 总分采样基线（随场次自动重置）
         self._rule_done_fight = -1    # 本场已做过规则替换的场次号
+        self._rule_redo = 0           # 本场规则重做次数 (能量替换破坏规则时++)
         self._filter_cleared = False  # 本次运行是否已清过残留筛选
         self.fights_since_rest = 0    # 距上次休息的已结算场数
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
@@ -337,54 +343,102 @@ class PfBot:
                 if not self.match_tpl(self.snap("等切屏"), TPL_REFRESH, (700, 15, 960, 115), th=0.7):
                     break
 
+    def _tap(self, x: int, y: int) -> None:
+        """驻留式点击: 按下-停-抬起。筛选面板会吃掉零时长的 post_click
+        (爱心/关闭按钮实测无效), 必须给 Unity 一两帧指针停留。"""
+        self.controller.post_touch_down(x, y).wait()
+        time.sleep(0.18)
+        self.controller.post_touch_up().wait()
+
+    def _panel_open(self, img) -> bool:
+        """筛选面板是否还开着 (右上角 X 模板)。"""
+        return self.match_tpl(img, TPL_FILTER_X, ROI_FILTER_X, th=0.7) is not None
+
     def set_filter(self, chips) -> None:
-        """打开筛选面板: 清空 -> 依次点亮 chips -> 关闭。chips 为坐标列表。"""
-        self.controller.post_click(*FILTER_BTN).wait()
+        """打开筛选面板: 清空 -> 依次点亮 chips -> 关闭(验证失败自动重试)。"""
+        self._tap(*FILTER_BTN)
         time.sleep(1.2)
-        self.controller.post_click(*FILTER_CLEAR).wait()
-        time.sleep(0.5)
+        self._tap(*FILTER_CLEAR)
+        time.sleep(0.4)
         for c in chips:
-            self.controller.post_click(*c).wait()
+            self._tap(*c)
             time.sleep(0.4)
-        self.controller.post_click(*FILTER_CLOSE).wait()
-        time.sleep(1.2)
+        for attempt in range(3):
+            self._tap(*FILTER_CLOSE)
+            time.sleep(1.0)
+            if not self._panel_open(self.snap("筛选面板关闭验证")):
+                return
+            STATE.log(f"筛选面板未关闭, 重试 {attempt + 1}/2", "warn")
+        STATE.log("筛选面板关闭失败, 带面板继续 (后续读数会异常)", "err")
 
-    _VARIANTS = None
-    ELEMENT_IDX = {"neutral": 0, "fire": 1, "water": 2, "wind": 3, "dark": 4, "light": 5}
+    def _candidate_is_element(self, img, element: str) -> bool:
+        """候选列第一张卡是否目标元素 (要求已归零滚动)。
 
-    @classmethod
-    def _variants(cls) -> dict:
-        """变体名(规范化) -> variants.json 条目, 惰性加载 sgm 数据。"""
-        if cls._VARIANTS is None:
-            path = PROJECT_ROOT / "sgm" / "data" / "variants.json"
-            try:
-                raw = json.load(open(path, encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                raw = {}
-            cls._VARIANTS = {re.sub(r"[^A-Z0-9]", "", k.upper()): d for k, d in raw.items()}
-        return cls._VARIANTS
+        取首卡左缘框条 (x 37-49, y 470-620) 数元素色占比; light/neutral 返回 True
+        (不验证)。用于确认筛选面板的清空/点亮确实生效。
+        """
+        ranges = ELEMENT_HUE.get(element)
+        if not ranges:
+            return True
+        hsv = cv2.cvtColor(img[470:620, 37:49], cv2.COLOR_BGR2HSV)
+        ok = 0
+        for lo, hi in ranges:
+            ok += cv2.countNonZero(cv2.inRange(hsv, (lo, 80, 90), (hi, 255, 255)))
+        # 实测风首卡绿色 ~43%, 错元素卡为 0: 阈值 15% 两侧余量都足够
+        return ok >= 0.15 * 12 * 150
+
+    def refill_rule_slot(self, slot_i: int, chips, fav_chips) -> bool:
+        """按 规则芯片+喜爱 筛选, 拖一个能量达标的合规角色进指定槽, 再还原筛选。
+
+        返回 False = 筛选后无达标角色。规则槽能量耗尽 (FIGHT 弹能量窗) 时也走这里。
+        """
+        rule = STATE.pf_rule or {}
+        want_el = rule.get("value") if rule.get("type") == "element" else None
+        ok = False
+        for attempt in range(2):
+            self.set_filter(chips)
+            for _ in range(4):
+                self.controller.post_swipe(420, 570, 1150, 570, 400).wait()
+                time.sleep(0.5)
+            img_chk = self.snap("筛选复验")
+            if self._candidate_is_element(img_chk, want_el or ""):
+                ok = True
+                break
+            STATE.log("筛选后首卡元素不符 (清空/点亮可能被吃), 重开面板再筛", "warn")
+        if not ok:
+            STATE.log("筛选复验连续失败, 放弃本次补人", "err")
+            return False
+        ok = self.drag_best_to_slot(slot_i)
+        self.set_filter(fav_chips)  # 取消规则筛选, 保留喜爱
+        for _ in range(4):
+            self.controller.post_swipe(420, 570, 1150, 570, 400).wait()
+            time.sleep(0.5)
+        return ok
 
     def judge_rule(self, img) -> bool:
-        """判定当前三槽是否满足规则。
+        """判定当前队伍是否满足规则。
 
-        元素: OCR 槽位变体名 -> sgm variants.json 查 element;
-        类别: sgm 无类别数据, 视为不满足(走筛选替换流程)。
+        游戏自身以 FIGHT 按钮颜色提示合规性: 满足=橙色(高饱和), 不满足=灰色。
+        实测橙按钮高饱和亮色占比 ~55% (S中位251), 灰按钮接近 0%, 阈值取 15%。
+        类别规则 sgm 无数据, 维持不满足 -> 走筛选替换流程。
+        找不到 FIGHT 按钮 (不在编队页) 时返回 True, 不触发筛选。
         """
         rule = STATE.pf_rule
         if not rule:
             return True
         if rule["type"] == "class":
             return False
-        want = self.ELEMENT_IDX.get(rule["value"])
-        if want is None:
+        fight = self.match_tpl(img, TPL_FIGHT, ROI_TOPRIGHT)
+        if not fight:
             return True
-        for cx in vis.SLOT_DROP_X:
-            name = self.ocr_text(img, (cx - 85, 288, cx + 85, 328))
-            key = re.sub(r"[^A-Z0-9]", "", name.upper())
-            v = self._variants().get(key)
-            if v and v.get("element") == want:
-                return True
-        return False
+        cx, cy = fight
+        roi = img[max(cy - 18, 0):cy + 18, max(cx - 65, 0):cx + 65]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, (0, 100, 120), (180, 255, 255))
+        lit = cv2.countNonZero(mask) / mask.size
+        STATE.log(f"规则判定: FIGHT 按钮高饱和占比 {lit * 100:.0f}% "
+                  f"-> {'满足' if lit >= 0.15 else '不满足'}")
+        return lit >= 0.15
 
     def drag_best_to_slot(self, slot_i: int) -> bool:
         """从当前(可能已筛选)候选区拖左一个能量达标的角色到指定槽位, 带校验重试。"""
@@ -426,42 +480,40 @@ class PfBot:
         for _ in range(4):
             self.controller.post_swipe(420, 570, 1150, 570, 400).wait()
             time.sleep(0.6)
-        # 规则: 判定当前队伍 -> 不满足则筛选替换 1 号槽 -> 取消筛选(保留喜爱)
+        # 规则: FIGHT 灰则筛选拖入合规角色 (槽1->2->3), 直到 FIGHT 变橙
         rule_slot = None
+        fav_chips = [FILTER_HEART] if STATE.filter_favorite else []
+        rule_chips = list(fav_chips)
         if STATE.pf_rule:
+            rule = STATE.pf_rule
+            chip_tbl = ELEMENT_CHIPS if rule["type"] == "element" else CLASS_CHIPS
+            chip = chip_tbl.get(rule["value"])
+            if chip:
+                rule_chips.insert(0, chip)
             if self._rule_done_fight == STATE.fight_no:
                 rule_slot = 0  # 本场已保障
             else:
                 img0 = self.snap("规则判定")
-                if not self.judge_rule(img0):
-                    rule = STATE.pf_rule
-                    STATE.log(f"队伍不满足规则 {rule['type']}={rule['value']}, "
-                              f"筛选替换 1 号槽", "warn")
-                    chips = []
-                    if rule["type"] == "element":
-                        chip = ELEMENT_CHIPS.get(rule["value"])
-                        if chip:
-                            chips.append(chip)
-                    elif rule["type"] == "class":
-                        chip = CLASS_CHIPS.get(rule["value"])
-                        if chip:
-                            chips.append(chip)
-                    fav_chips = [FILTER_HEART] if STATE.filter_favorite else []
-                    self.set_filter(chips + fav_chips)
-                    for _ in range(4):
-                        self.controller.post_swipe(420, 570, 1150, 570, 400).wait()
-                        time.sleep(0.5)
-                    if not self.drag_best_to_slot(0):
-                        STATE.log("筛选后无能量达标的合规角色, 停止", "err")
-                        return False
-                    self.set_filter(fav_chips)  # 取消规则筛选, 保留喜爱
-                    for _ in range(4):
-                        self.controller.post_swipe(420, 570, 1150, 570, 400).wait()
-                        time.sleep(0.5)
-                    STATE.log("规则替换完成, 剩余槽位做能量替换", "warn")
-                else:
+                if self.judge_rule(img0):
                     STATE.log("队伍已满足规则")
+                else:
+                    STATE.log(f"队伍不满足规则 {rule['type']}={rule['value']}, 筛选替换", "warn")
+                    placed = 0
+                    while placed < 3 and STATE.running:
+                        if not self.refill_rule_slot(placed, chips, fav_chips):
+                            STATE.log(f"规则补人失败 (复验不过或筛选池无达标能量, "
+                                      f"已放入{placed}), 停止", "err")
+                            return False
+                        placed += 1
+                        img0 = self.snap(f"规则复验{placed}")
+                        if self.judge_rule(img0):
+                            break
+                    if not self.judge_rule(img0):
+                        STATE.log("放入3人后 FIGHT 仍灰, 规则无法满足, 停止", "err")
+                        return False
+                    STATE.log("规则替换完成, 剩余槽位做能量替换", "warn")
                 self._rule_done_fight = STATE.fight_no
+                self._rule_redo = 0
                 rule_slot = 0
         pages = 0
         slot_fails = {}  # 槽位 -> 连续失败次数 (用于落点微调)
@@ -474,6 +526,14 @@ class PfBot:
                 continue
             slots = vis.read_slot_energy(img)
             cost = STATE.energy_cost
+            # 规则槽能量不足: 优先直接补合规角色 (不等能量弹窗, 也先于普通槽)
+            if rule_slot == 0 and slots[0] < cost:
+                STATE.log(f"槽位能量 {slots}, 规则槽1能量不足, "
+                          f"优先筛选替换合规角色", "warn")
+                if not self.refill_rule_slot(0, rule_chips, fav_chips):
+                    STATE.log("规则补人失败 (复验不过或筛选池无达标能量), 停止", "err")
+                    return False
+                continue
             bad = [i for i, e in enumerate(slots) if e < cost and i != rule_slot]
             if not bad:
                 STATE.log(f"槽位能量 {slots}, 全部达标(门槛{cost})")
@@ -543,6 +603,16 @@ class PfBot:
                 STATE.log("编队失败: 无可用能量角色, 停止", "err")
                 return
             img = self.snap("fight前")
+            if (STATE.pf_rule and self._rule_done_fight == STATE.fight_no
+                    and not self.judge_rule(img)):
+                self._rule_redo += 1
+                if self._rule_redo > 2:
+                    STATE.status = "ERROR"
+                    STATE.log("能量替换反复破坏规则 (FIGHT 仍灰), 停止", "err")
+                    return
+                STATE.log("能量替换后 FIGHT 变灰, 重做规则替换", "warn")
+                self._rule_done_fight = -1
+                continue
             fight = self.match_tpl(img, TPL_FIGHT, ROI_TOPRIGHT)
             if not fight:
                 STATE.log("找不到 FIGHT 按钮, 回主循环", "warn")
@@ -560,6 +630,33 @@ class PfBot:
                 STATE.log("FIGHT 后能量弹窗, 关闭并继续换人", "warn")
                 self.controller.post_click(*ex).wait()
                 time.sleep(1.6)
+                if STATE.pf_rule:
+                    img2 = self.snap("弹窗后检视")
+                    slots2 = vis.read_slot_energy(img2)
+                    cost = STATE.energy_cost
+                    if any(e < cost for e in slots2):
+                        bad_i = min(i for i, e in enumerate(slots2) if e < cost)
+                        if bad_i > 0:
+                            # 2/3号槽: 交回 fix_team 能量替换 (喜爱筛选, 元素不限)
+                            STATE.log(f"槽位能量 {slots2}, 槽{bad_i + 1}不足, "
+                                      f"由能量替换处理", "warn")
+                        else:
+                            # 仅规则槽(1号)缺能量时才补合规角色
+                            STATE.log(f"槽位能量 {slots2}, 规则槽1不足, "
+                                      f"筛选替换合规角色", "warn")
+                            rule = STATE.pf_rule
+                            fav_chips = [FILTER_HEART] if STATE.filter_favorite else []
+                            chips = list(fav_chips)
+                            chip_tbl = (ELEMENT_CHIPS if rule["type"] == "element"
+                                        else CLASS_CHIPS)
+                            chip = chip_tbl.get(rule["value"])
+                            if chip:
+                                chips.insert(0, chip)
+                            if not self.refill_rule_slot(0, chips, fav_chips):
+                                STATE.status = "ERROR"
+                                STATE.log("规则补人失败 (复验不过或筛选池无达标能量), 停止",
+                                          "err")
+                                return
                 continue
             STATE.log("战斗已开始, 等待结束...")
             self.wait_battle_end()
@@ -641,10 +738,17 @@ class PfBot:
                 # 换了场次开局: 重置采样基线/场次号 (暂停后续跑同场次不重置)
                 STATE.fight_no = 0
                 self._rule_done_fight = -1
+                self._rule_redo = 0
                 sess = STORE.get(STORE.session_id or "")
                 rule = (sess or {}).get("rule")
                 rule_desc = f"{rule['type']}={rule['value']}" if rule else "无"
-                STATE.log(f"==== 场次「{(sess or {}).get('name', '?')}」开始（规则: {rule_desc}）====")
+                re_n, re_m = (sess or {}).get("rest_every") or 0, (sess or {}).get("rest_minutes") or 0
+                rest_desc = f", 每{re_n}场休{re_m}分" if re_n > 0 and re_m > 0 else ""
+                STATE.log(f"==== 场次「{(sess or {}).get('name', '?')}」开始"
+                          f"（规则: {rule_desc}{rest_desc}）====")
+                # 换场次: 休息计数/休息截止一并重置 (休息配置随场次)
+                self.fights_since_rest = 0
+                STATE.rest_until = 0
             if STATE.status != "RUNNING":
                 STATE.status = "RUNNING"
                 STATE.log("==== PF Bot 运行中 ====")
@@ -654,7 +758,10 @@ class PfBot:
                 STATE.status = "ERROR"
                 STATE.log(f"运行异常: {e}", "err")
                 STATE.running = False
-                return
+                continue  # 不 return: 保持监督循环存活, WebUI 可重新开始
+            if STATE.status == "ERROR":
+                STATE.running = False
+                STATE.log("==== 运行出错已停止 (查看日志后可在 WebUI 重新开始) ====", "err")
 
     def step(self) -> None:
         """状态机单步: 截图一次并按优先级处理当前界面。"""

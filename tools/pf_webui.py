@@ -30,6 +30,7 @@ _HTML = """<!doctype html>
 <html lang="zh"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>SGM PF Bot</title>
 <script src="/static/chart.umd.min.js"></script>
 <style>
@@ -230,6 +231,36 @@ _HTML = """<!doctype html>
   ::-webkit-scrollbar { width:8px; height:8px; }
   ::-webkit-scrollbar-thumb { background:#2a3348; border-radius:4px; }
   ::-webkit-scrollbar-track { background:transparent; }
+
+  /* ---- 移动端适配 (桌面 .hdr-ctl 不产生盒子, 布局不变) ---- */
+  .hdr-ctl { display: contents; }
+  @media (max-width: 900px) {
+    header { flex-wrap: wrap; row-gap: 6px; padding: 10px 14px; }
+    .hdr-ctl { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 6px 16px; }
+    nav { flex-wrap: wrap; row-gap: 0; padding: 10px 14px 0; }
+    #sess-chip { padding: 7px 16px; }
+    #rule-bar { flex-basis: 100%; margin-top: 8px; }
+    .rbtn { padding: 7px 11px; font-size: 13.5px; }
+    .rbtn img { width: 20px; height: 20px; }
+    .cls-btn img { width: 24px; height: 24px; }
+    nav button { padding: 9px 20px; font-size: 13.5px; }
+    #startbtn, #stopbtn { padding: 8px 22px; font-size: 14px; }
+    .inp { font-size: 16px; }   /* >=16px 防 iOS 聚焦自动放大 */
+    #runwrap { flex-direction: column; padding: 0 12px 12px; gap: 10px; overflow-y: auto; }
+    #logpane { flex: 0 0 auto; max-height: 32vh; }
+    #shotpane { flex: 1 1 auto; flex-wrap: wrap; }
+    #shot { max-height: 56vh; }
+    #charts { padding: 12px 12px 20px; }
+    .cmp-table { display: block; overflow-x: auto; }
+  }
+  @media (max-width: 480px) {
+    header { gap: 8px; }
+    .rule-label { display: none; }
+    .hdr-ctl .inp { width: 84px; }
+    .modal { padding: 12px; }
+    .sess-row { flex-wrap: wrap; }
+    .sess-row .s-meta { flex-basis: 100%; margin-left: 0; order: 9; }
+  }
 </style></head>
 <body>
 <header>
@@ -239,11 +270,13 @@ _HTML = """<!doctype html>
   <span id="h-score" class="stat">总分 <b>-</b></span>
   <span id="h-streak" class="stat">连胜 <b>-</b></span>
   <span id="step"></span>
-  <span class="stat">目标总分 <input id="in-target" class="inp" type="number" min="0" step="100000" placeholder="不限"></span>
-  <span class="stat">能量门槛 <input id="in-energy" class="inp" type="number" min="1" max="10" step="1"></span>
-  <span class="stat"><label><input type="checkbox" id="in-fav" checked> 喜爱</label></span>
-  <span class="stat">每 <input id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
-  休 <input id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
+  <span class="hdr-ctl">
+    <span class="stat">目标总分 <input id="in-target" class="inp" type="number" min="0" step="100000" placeholder="不限"></span>
+    <span class="stat">能量门槛 <input id="in-energy" class="inp" type="number" min="1" max="10" step="1"></span>
+    <span class="stat"><label><input type="checkbox" id="in-fav" checked> 喜爱</label></span>
+    <span class="stat">每 <input id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
+    休 <input id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
+  </span>
   <button id="startbtn" onclick="openSessionModal()" style="display:none;">开始</button>
   <button id="stopbtn" onclick="fetch('/api/stop',{method:'POST'})">停止</button>
 </header>
@@ -304,7 +337,7 @@ _HTML = """<!doctype html>
 </div>
 <script>
 let lastLog = 0, lastShot = -1, stick = true;
-let sessions = [], activeSess = null, running = false, viewIds = [];
+let sessions = [], activeSess = null, running = false, viewIds = [], restShownFor;
 const pane = document.getElementById('logpane');
 pane.addEventListener('scroll', () => {
   stick = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 30;
@@ -341,8 +374,12 @@ async function pollState() {
     const fav = document.getElementById('in-fav');
     if (!fav.dataset.touched) fav.checked = !!d.filter_favorite;
     const rn = document.getElementById('in-restn'), rm = document.getElementById('in-restm');
-    if (document.activeElement !== rn && rn.value === '' && d.rest_every != null) rn.value = d.rest_every;
-    if (document.activeElement !== rm && rm.value === '' && d.rest_minutes != null) rm.value = d.rest_minutes;
+    if (restShownFor !== d.session_id && d.sess_rest_every != null) {
+      restShownFor = d.session_id;                    // 选中场次变了 -> 刷新显示
+      if (document.activeElement !== rn) rn.value = d.sess_rest_every;
+      if (document.activeElement !== rm) rm.value = d.sess_rest_minutes;
+    }
+    rn.disabled = rm.disabled = running;
     if (d.rest_until * 1000 > Date.now()) {
       const m = Math.ceil((d.rest_until * 1000 - Date.now()) / 60000);
       document.getElementById('step').textContent = '休息中 (剩 ~' + m + ' 分钟, 回能)';
@@ -732,7 +769,8 @@ async function renderModal() {
   if (!sessions.some(s => s.id === modalSel)) modalSel = sessions.length ? sessions[0].id : null;
   const list = document.getElementById('sess-list');
   list.innerHTML = sessions.map(s => {
-    const meta = (s.count ? s.count + ' 条 · ' : '无数据') + (s.last_ts ? fmtDayTs(s.last_ts) : '');
+    const rest = (s.rest_every > 0 && s.rest_minutes > 0) ? ` · 休${s.rest_every}场×${s.rest_minutes}分` : '';
+    const meta = (s.count ? s.count + ' 条 · ' : '无数据') + (s.last_ts ? fmtDayTs(s.last_ts) : '') + rest;
     const del = s.id === 'default' ? '' :
       `<button class="s-act${delArmId === s.id ? ' arm' : ''}" data-del="${s.id}">${delArmId === s.id ? '确认?' : '✕'}</button>`;
     const nameHtml = renamingId === s.id
@@ -806,17 +844,22 @@ document.getElementById('in-fav').addEventListener('change', e => {
 async function saveSettings() {
   const t = document.getElementById('in-target').value.trim();
   const e = document.getElementById('in-energy').value.trim();
-  const rn = document.getElementById('in-restn').value.trim();
-  const rm2 = document.getElementById('in-restm').value.trim();
   await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ score_target: t === '' ? null : Number(t),
                            energy_cost: e === '' ? 4 : Number(e),
-                           filter_favorite: document.getElementById('in-fav').checked,
-                           rest_every: rn === '' ? 0 : Number(rn),
-                           rest_minutes: rm2 === '' ? 0 : Number(rm2) }) });
+                           filter_favorite: document.getElementById('in-fav').checked }) });
+}
+async function saveRest() {                   // 休息配置随场次: 编辑当前选中场次
+  if (!activeSess || running) return;
+  const rn = document.getElementById('in-restn').value.trim();
+  const rm2 = document.getElementById('in-restm').value.trim();
+  await api('/api/sessions/update', { id: activeSess,
+    rest_every: rn === '' ? 0 : Number(rn), rest_minutes: rm2 === '' ? 0 : Number(rm2) });
 }
 document.getElementById('in-target').addEventListener('change', saveSettings);
 document.getElementById('in-energy').addEventListener('change', saveSettings);
+document.getElementById('in-restn').addEventListener('change', saveRest);
+document.getElementById('in-restm').addEventListener('change', saveRest);
 setInterval(pollState, 1500);
 setInterval(() => { if (document.getElementById('page-chart').classList.contains('on')) pollHistory(); }, 2500);
 pollState();
@@ -856,6 +899,8 @@ class _Handler(BaseHTTPRequestHandler):
                     "score_target": STATE.score_target,
                     "energy_cost": STATE.energy_cost,
                     "pf_rule": STATE.pf_rule,
+                    "sess_rest_every": (STORE.get(STORE.session_id or "") or {}).get("rest_every") or 0,
+                    "sess_rest_minutes": (STORE.get(STORE.session_id or "") or {}).get("rest_minutes") or 0,
                     "filter_favorite": STATE.filter_favorite,
                     "rest_every": STATE.rest_every,
                     "rest_minutes": STATE.rest_minutes,
@@ -942,6 +987,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json_err(400, "需要有效的 session_id")
                 return
             STATE.pf_rule = dict(sess["rule"]) if sess.get("rule") else None
+            STATE.rest_every = int(sess.get("rest_every") or 0)
+            STATE.rest_minutes = int(sess.get("rest_minutes") or 0)
             STATE.running = True
             STATE.log(f"收到 WebUI 开始请求: 场次「{sess['name']}」", "warn")
             self._send(200, "application/json", b'{"ok":true}')
@@ -955,7 +1002,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not name:
                 self._json_err(400, "场次名称不能为空")
                 return
-            sess = STORE.create(name, data.get("rule"))
+            sess = STORE.create(name, data.get("rule"),
+                                data.get("rest_every") or 0,
+                                data.get("rest_minutes") or 0)
             STATE.log(f"新建场次「{name}」")
             self._send(200, "application/json",
                        json.dumps({"ok": True, "id": sess["id"]}).encode())
@@ -975,13 +1024,21 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             name = str(data.get("name") or "").strip() or None
             rule = data["rule"] if "rule" in data else UNSET
+            rest_e = data["rest_every"] if "rest_every" in data else UNSET
+            rest_m = data["rest_minutes"] if "rest_minutes" in data else UNSET
             try:
-                STORE.update(sid, name=name, rule=rule)
+                STORE.update(sid, name=name, rule=rule,
+                             rest_every=rest_e, rest_minutes=rest_m)
             except KeyError:
                 self._json_err(404, "场次不存在")
                 return
             if sid == STORE.session_id:
                 STATE.pf_rule = dict(sess["rule"]) if sess.get("rule") else None
+                from pf_store import clean_rest
+                if rest_e is not UNSET:
+                    STATE.rest_every = clean_rest(rest_e)
+                if rest_m is not UNSET:
+                    STATE.rest_minutes = clean_rest(rest_m)
             STATE.log(f"场次「{sess['name']}」已更新")
             self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/sessions/delete":
@@ -1016,10 +1073,6 @@ class _Handler(BaseHTTPRequestHandler):
                     STATE.energy_cost = max(1, min(10, int(data["energy_cost"])))
                 if "filter_favorite" in data:
                     STATE.filter_favorite = bool(data["filter_favorite"])
-                if "rest_every" in data:
-                    STATE.rest_every = max(0, int(data["rest_every"]))
-                if "rest_minutes" in data:
-                    STATE.rest_minutes = max(0, int(data["rest_minutes"]))
                 tgt = f"{STATE.score_target:,}" if STATE.score_target else "不限"
                 rule_desc = f"{STATE.pf_rule['type']}={STATE.pf_rule['value']}" if STATE.pf_rule else "无"
                 rest_desc = (f"每 {STATE.rest_every} 场休 {STATE.rest_minutes} 分钟"

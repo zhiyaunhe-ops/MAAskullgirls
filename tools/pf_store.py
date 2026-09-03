@@ -22,6 +22,14 @@ HISTORY_CAP = 3000
 UNSET = object()   # update() 中区分「未传 rule」与「rule=None」
 
 
+def clean_rest(v) -> int:
+    """rest 字段清洗: 非负整数, 非法/缺失回 0 (=不启用)。"""
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return 0
+
+
 def clean_rule(rule):
     """校验规则结构, 合法返回 {"type","value"}, 否则 None。"""
     if not isinstance(rule, dict):
@@ -78,19 +86,24 @@ class ScoreStore:
         for s in self.sessions:
             pts = self.history_by.get(s["id"], [])
             out.append({"id": s["id"], "name": s["name"], "rule": s.get("rule"),
+                        "rest_every": s.get("rest_every") or 0,
+                        "rest_minutes": s.get("rest_minutes") or 0,
                         "created": s.get("created"), "count": len(pts),
                         "last_ts": pts[-1]["ts"] if pts else None})
         return out
 
-    def create(self, name: str, rule) -> dict:
+    def create(self, name: str, rule, rest_every=0, rest_minutes=0) -> dict:
         sess = {"id": "s%d" % int(time.time() * 1000), "name": name,
-                "rule": clean_rule(rule), "created": time.time()}
+                "rule": clean_rule(rule), "created": time.time(),
+                "rest_every": clean_rest(rest_every),
+                "rest_minutes": clean_rest(rest_minutes)}
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
         return sess
 
-    def update(self, sid: str, name=None, rule=UNSET):
+    def update(self, sid: str, name=None, rule=UNSET,
+               rest_every=UNSET, rest_minutes=UNSET):
         sess = self.get(sid)
         if not sess:
             raise KeyError(sid)
@@ -98,6 +111,10 @@ class ScoreStore:
             sess["name"] = name
         if rule is not UNSET:
             sess["rule"] = clean_rule(rule)
+        if rest_every is not UNSET:
+            sess["rest_every"] = clean_rest(rest_every)
+        if rest_minutes is not UNSET:
+            sess["rest_minutes"] = clean_rest(rest_minutes)
         with self._lock:
             self._save_sessions()
         return sess
