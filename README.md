@@ -10,7 +10,8 @@ Skullgirls Mobile 是一款被严重低估的 2D 格斗 + RPG 手游：手绘动
 
 **MAAskullgirls 就是为此而生的**：基于 [MAAFramework](https://github.com/MaaXYZ/MaaFramework)
 的 Python 绑定驱动 MuMu 12 模拟器，把整个 PF 循环变成真正的无人值守流水线。
-
+<img width="1910" height="931" alt="image" src="https://github.com/user-attachments/assets/1e04e6b0-d2bb-4939-933e-62d72b35922b" />
+挂机月场展示
 ## 它会做什么
 
 ```
