@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from pf_env import STATE
-from pf_store import STORE, UNSET, clean_rest, clean_target
+from pf_store import STORE, UNSET, clean_rest, clean_target, clean_energy
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SGM_DIR = Path(__file__).resolve().parent.parent / "sgm"
@@ -150,6 +150,10 @@ _HTML = """<!doctype html>
                   box-shadow:0 0 8px rgba(127,178,255,.15); }
   .sess-row .s-name { color:var(--txt); font-size:13px; font-weight:600; }
   .sess-row .s-name input { width:170px; }
+  .sess-row.child { margin-left:20px; border-left:2px solid var(--blue);
+                    border-top-left-radius:2px; border-bottom-left-radius:2px; background:rgba(127,178,255,.04); }
+  .sess-row.child.sel { margin-left:20px; }
+  .parent-badge { color:var(--blue); border-color:rgba(127,178,255,.4); }
   .sess-row .s-meta { color:var(--faint); font-size:11.5px; margin-left:auto; white-space:nowrap; }
   .sess-row .s-act {
     color:var(--faint); background:none; border:none; cursor:pointer;
@@ -335,6 +339,7 @@ _HTML = """<!doctype html>
     <div class="sess-new">
       <input id="new-sess-name" class="inp" placeholder="新场次名称" style="width:130px;">
       <input id="new-sess-target" class="inp" type="number" min="0" step="1000000" placeholder="分数上界" style="width:92px;">
+      <input id="new-sess-energy" class="inp" type="number" min="1" max="10" step="1" placeholder="能量" style="width:60px;">
       <input id="new-sess-restn" class="inp" type="number" min="0" step="1" placeholder="每N场" style="width:60px;">
       <input id="new-sess-restm" class="inp" type="number" min="0" step="5" placeholder="休M分" style="width:60px;">
       <div id="new-sess-rule" class="rule-mini"></div>
@@ -377,7 +382,6 @@ async function pollState() {
     startBtn.style.display = d.status === 'RUNNING' ? 'none' : 'inline-block';
     document.getElementById('stopbtn').style.display = d.status === 'RUNNING' ? 'inline-block' : 'none';
     const inT = document.getElementById('in-target'), inE = document.getElementById('in-energy');
-    if (document.activeElement !== inE && inE.value === '' && d.energy_cost != null) inE.value = d.energy_cost;
     running = d.status === 'RUNNING';
     activeSess = d.session_id;
     updateSessChip(d);
@@ -385,10 +389,11 @@ async function pollState() {
     navPicker.set(d.pf_rule);
     setRuleCollapsed(running, d.pf_rule);
     const rn = document.getElementById('in-restn'), rm = document.getElementById('in-restm');
-    const sessLocked = !activeSess || running;   // 上界/休息/规则随场次
-    inT.disabled = rn.disabled = rm.disabled = sessLocked;
-    if (sessInputsFor !== activeSess) {          // 选中场次变了 -> 回填该场次的上界/休息
+    const sessLocked = !activeSess || running;   // 能量/上界/休息/规则随场次
+    inT.disabled = inE.disabled = rn.disabled = rm.disabled = sessLocked;
+    if (sessInputsFor !== activeSess) {          // 选中场次变了 -> 回填该场次的能量/上界/休息
       sessInputsFor = activeSess;
+      if (document.activeElement !== inE) inE.value = (d.energy_cost != null ? d.energy_cost : 4);
       if (document.activeElement !== inT) inT.value = (d.score_target != null ? d.score_target : '');
       if (document.activeElement !== rn) rn.value = (d.rest_every || 0);
       if (document.activeElement !== rm) rm.value = (d.rest_minutes || 0);
@@ -821,20 +826,34 @@ async function renderModal() {
     sessions = d.sessions; activeSess = d.active;
   } catch (e) {}
   if (!sessions.some(s => s.id === modalSel)) modalSel = sessions.length ? sessions[0].id : null;
+  // 母子分组: 子场次紧跟父场次 (缩进展示), 顶级场次按创建顺序
+  const kids = {}, isChild = new Set();
+  sessions.forEach(s => {
+    if (s.parent && sessions.some(x => x.id === s.parent)) {
+      (kids[s.parent] = kids[s.parent] || []).push(s);
+      isChild.add(s.id);
+    }
+  });
+  const ordered = [];
+  const walk = list => list.forEach(s => { ordered.push(s); if (kids[s.id]) walk(kids[s.id]); });
+  walk(sessions.filter(s => !isChild.has(s.id)));
   const list = document.getElementById('sess-list');
-  list.innerHTML = sessions.map(s => {
+  list.innerHTML = ordered.map(s => {
     const rest = (s.rest_every > 0 && s.rest_minutes > 0) ? ` · 休${s.rest_every}场×${s.rest_minutes}分` : '';
     const scoreTxt = (s.score != null && s.count) ? fmtN(s.score) + ' · ' : '';
     const meta = scoreTxt + (s.count ? s.count + ' 条 · ' : '无数据') + (s.last_ts ? fmtDayTs(s.last_ts) : '') + rest;
     const del = s.id === 'default' ? '' :
       `<button class="s-act${delArmId === s.id ? ' arm' : ''}" data-del="${s.id}">${delArmId === s.id ? '确认?' : '✕'}</button>`;
     const badges = `<span class="rule-badge">${ruleLabel(s.rule)}</span>` +
-      (s.score_target != null ? `<span class="rule-badge">≤${fmtN(s.score_target)}</span>` : '');
-    const indent = s.parent && sessions.some(x => x.id === s.parent) ? '└ ' : '';
+      `<span class="rule-badge">能量${s.energy_cost != null ? s.energy_cost : 4}</span>` +
+      (s.score_target != null ? `<span class="rule-badge">≤${fmtN(s.score_target)}</span>` : '') +
+      (kids[s.id] ? `<span class="rule-badge parent-badge">${kids[s.id].length}期</span>` : '');
+    const isChildRow = isChild.has(s.id);
+    const indent = isChildRow ? '└ ' : '';
     const nameHtml = renamingId === s.id
       ? `<input id="rn-input" class="inp" value="${esc(s.name)}">`
       : `<span class="s-name">${esc(indent + s.name)}</span>`;
-    return `<div class="sess-row${s.id === modalSel ? ' sel' : ''}" data-id="${s.id}">
+    return `<div class="sess-row${isChildRow ? ' child' : ''}${s.id === modalSel ? ' sel' : ''}" data-id="${s.id}">
       ${nameHtml}${badges}
       <span class="s-meta">${meta}</span>
       <button class="s-act" data-rename="${s.id}" title="重命名">✎</button>${del}</div>`;
@@ -885,13 +904,16 @@ document.getElementById('new-sess-btn').addEventListener('click', async () => {
   if (!name) return;
   const rule = modalPicker.get();
   const t = document.getElementById('new-sess-target').value.trim();
+  const en = document.getElementById('new-sess-energy').value.trim();
   const rn = document.getElementById('new-sess-restn').value.trim();
   const rm = document.getElementById('new-sess-restm').value.trim();
   const d = await api('/api/sessions/create', { name, rule: rule.type ? rule : null,
     score_target: t === '' ? null : Number(t),
+    energy_cost: en === '' ? 4 : Number(en),
     rest_every: rn === '' ? 0 : Number(rn), rest_minutes: rm === '' ? 0 : Number(rm) });
   document.getElementById('new-sess-name').value = '';
   document.getElementById('new-sess-target').value = '';
+  document.getElementById('new-sess-energy').value = '';
   document.getElementById('new-sess-restn').value = '';
   document.getElementById('new-sess-restm').value = '';
   modalPicker.set(null);
@@ -921,23 +943,23 @@ modalMask.addEventListener('click', e => { if (e.target === modalMask) closeModa
 document.getElementById('in-fav').addEventListener('change', e => {
   e.target.dataset.touched = '1'; saveSettings();
 });
-async function saveSettings() {               // 全局: 能量门槛/喜爱
-  const e = document.getElementById('in-energy').value.trim();
+async function saveSettings() {               // 全局: 喜爱
   await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ energy_cost: e === '' ? 4 : Number(e),
-                           filter_favorite: document.getElementById('in-fav').checked }) });
+    body: JSON.stringify({ filter_favorite: document.getElementById('in-fav').checked }) });
 }
-async function saveSessionSettings() {        // 随场次: 分数上界/休息 (编辑当前选中场次)
+async function saveSessionSettings() {        // 随场次: 能量/分数上界/休息 (编辑当前选中场次)
   if (!activeSess || running) return;
+  const e = document.getElementById('in-energy').value.trim();
   const t = document.getElementById('in-target').value.trim();
   const rn = document.getElementById('in-restn').value.trim();
   const rm2 = document.getElementById('in-restm').value.trim();
   await api('/api/sessions/update', { id: activeSess,
+    energy_cost: e === '' ? 4 : Number(e),
     score_target: t === '' ? null : Number(t),
     rest_every: rn === '' ? 0 : Number(rn), rest_minutes: rm2 === '' ? 0 : Number(rm2) });
 }
 document.getElementById('in-target').addEventListener('change', saveSessionSettings);
-document.getElementById('in-energy').addEventListener('change', saveSettings);
+document.getElementById('in-energy').addEventListener('change', saveSessionSettings);
 document.getElementById('in-restn').addEventListener('change', saveSessionSettings);
 document.getElementById('in-restm').addEventListener('change', saveSessionSettings);
 setInterval(pollState, 1500);
@@ -952,6 +974,7 @@ def _apply_session(sess: dict) -> None:
     STATE.score_target = clean_target(sess.get("score_target"))
     STATE.rest_every = clean_rest(sess.get("rest_every"))
     STATE.rest_minutes = clean_rest(sess.get("rest_minutes"))
+    STATE.energy_cost = clean_energy(sess.get("energy_cost"))
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -1132,7 +1155,8 @@ class _Handler(BaseHTTPRequestHandler):
             sess = STORE.create(name, data.get("rule"),
                                 data.get("rest_every") or 0,
                                 data.get("rest_minutes") or 0,
-                                data.get("score_target"))
+                                data.get("score_target"),
+                                data.get("energy_cost"))
             STATE.log(f"新建场次「{name}」")
             self._send(200, "application/json",
                        json.dumps({"ok": True, "id": sess["id"]}).encode())
@@ -1155,10 +1179,11 @@ class _Handler(BaseHTTPRequestHandler):
             rest_e = data["rest_every"] if "rest_every" in data else UNSET
             rest_m = data["rest_minutes"] if "rest_minutes" in data else UNSET
             tgt = data["score_target"] if "score_target" in data else UNSET
+            ec = data["energy_cost"] if "energy_cost" in data else UNSET
             try:
                 STORE.update(sid, name=name, rule=rule,
                              rest_every=rest_e, rest_minutes=rest_m,
-                             score_target=tgt)
+                             score_target=tgt, energy_cost=ec)
             except KeyError:
                 self._json_err(404, "场次不存在")
                 return
@@ -1207,11 +1232,9 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/settings":
             try:
                 data = self._read_json()
-                if "energy_cost" in data:
-                    STATE.energy_cost = max(1, min(10, int(data["energy_cost"])))
                 if "filter_favorite" in data:
                     STATE.filter_favorite = bool(data["filter_favorite"])
-                # 目标总分/休息已随场次, 由 /api/sessions/update 维护
+                # 能量门槛/目标总分/休息已随场次, 由 /api/sessions/update 维护
                 rule_desc = f"{STATE.pf_rule['type']}={STATE.pf_rule['value']}" if STATE.pf_rule else "无"
                 rest_desc = (f"每 {STATE.rest_every} 场休 {STATE.rest_minutes} 分钟"
                              if STATE.rest_every > 0 and STATE.rest_minutes > 0 else "不启用")

@@ -50,6 +50,14 @@ def clean_rule(rule):
     return None
 
 
+def clean_energy(v) -> int:
+    """能量门槛清洗: 1-10, 非法/缺失回默认 4。"""
+    try:
+        return max(1, min(10, int(v)))
+    except (TypeError, ValueError):
+        return 4
+
+
 class ScoreStore:
     """场次 + 计分历史 (pf_bot 主线程与 WebUI 线程共享)。"""
 
@@ -108,6 +116,7 @@ class ScoreStore:
                         "parent": s.get("parent"),
                         "score": s.get("score"),
                         "score_target": s.get("score_target"),
+                        "energy_cost": clean_energy(s.get("energy_cost")),
                         "rest_every": s.get("rest_every") or 0,
                         "rest_minutes": s.get("rest_minutes") or 0,
                         "created": s.get("created"), "count": len(pts),
@@ -115,19 +124,20 @@ class ScoreStore:
         return out
 
     def create(self, name: str, rule, rest_every=0, rest_minutes=0,
-               score_target=None) -> dict:
+               score_target=None, energy_cost=4) -> dict:
         sess = {"id": "s%d" % int(time.time() * 1000), "name": name,
                 "rule": clean_rule(rule), "created": time.time(),
                 "rest_every": clean_rest(rest_every),
                 "rest_minutes": clean_rest(rest_minutes),
-                "score_target": clean_target(score_target)}
+                "score_target": clean_target(score_target),
+                "energy_cost": clean_energy(energy_cost)}
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
         return sess
 
     def create_child(self, parent_sid: str, name=None) -> dict:
-        """建子场次 (周期性分类的每一期): 继承父场次规则/上界/休息, 默认名=父名+日期。"""
+        """建子场次 (周期性分类的每一期): 继承父场次规则/上界/能量/休息, 默认名=父名+日期。"""
         p = self.get(parent_sid)
         if not p:
             raise KeyError(parent_sid)
@@ -141,14 +151,16 @@ class ScoreStore:
                 "parent": p["id"], "rule": p.get("rule"), "created": time.time(),
                 "rest_every": p.get("rest_every") or 0,
                 "rest_minutes": p.get("rest_minutes") or 0,
-                "score_target": p.get("score_target")}
+                "score_target": p.get("score_target"),
+                "energy_cost": clean_energy(p.get("energy_cost"))}
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
         return sess
 
     def update(self, sid: str, name=None, rule=UNSET,
-               rest_every=UNSET, rest_minutes=UNSET, score_target=UNSET):
+               rest_every=UNSET, rest_minutes=UNSET, score_target=UNSET,
+               energy_cost=UNSET):
         sess = self.get(sid)
         if not sess:
             raise KeyError(sid)
@@ -162,6 +174,8 @@ class ScoreStore:
             sess["rest_minutes"] = clean_rest(rest_minutes)
         if score_target is not UNSET:
             sess["score_target"] = clean_target(score_target)
+        if energy_cost is not UNSET:
+            sess["energy_cost"] = clean_energy(energy_cost)
         with self._lock:
             self._save_sessions()
         return sess

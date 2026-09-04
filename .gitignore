@@ -17,6 +17,9 @@ pfwidget/
 # 本机启动脚本 (内含个人 anaconda 路径; 仓库用户直接 python tools/pf_bot.py 即可)
 *.bat
 
+# 安全扫描工具历史 (mimosa)
+.mimosa/
+
 # Python
 __pycache__/
 *.pyc

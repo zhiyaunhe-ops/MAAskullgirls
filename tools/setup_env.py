@@ -73,12 +73,18 @@ def fail(msg: str) -> None:
 
 
 def download(url: str, dest: Path, min_size: int, mirror: str) -> None:
+    if not str(dest.resolve()).startswith(str(PROJECT_ROOT.resolve())):
+        raise ValueError(f"下载目标越界 (必须在项目内): {dest}")
     if dest.exists() and dest.stat().st_size >= min_size:
         ok(f"已存在，跳过: {dest.name} ({dest.stat().st_size:,} B)")
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if mirror and (url.startswith(GITHUB) or url.startswith(RAW)):
-        url = mirror + url
+    if mirror:
+        if not mirror.startswith("https://"):
+            fail(f"mirror 必须以 https:// 开头: {mirror}")
+            return
+        if url.startswith(GITHUB) or url.startswith(RAW):
+            url = mirror + url
     last_err = None
     for attempt in (1, 2, 3):
         try:

@@ -570,7 +570,7 @@ class PfBot:
             # 校验: 槽位没变好 => 记失败并归零候选列 (失败拖拽会滚动列表)
             img2 = self.snap("拖拽后")
             slots2 = vis.read_slot_energy(img2)
-            if slots2[slot_i] < vis.ENERGY_COST:
+            if slots2[slot_i] < cost:
                 slot_fails[slot_i] = fails + 1
                 STATE.log(f"槽位{slot_i+1} 拖拽未生效, 归零候选列重试", "warn")
                 for _ in range(4):
