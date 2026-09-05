@@ -45,13 +45,16 @@ MAAskullgirls/
 │   ├── pf_vision.py               # 纯 cv2 视觉分析（可离线测试）
 │   ├── pf_bot.py                  # 主程序：监督循环 + 状态机 + 规则/计分/拖拽
 │   ├── pf_webui.py                # WebUI（运行/图表页签、设置、起停）
+│   ├── pf_store.py                # 场次/计分数据层（sessions.json + score_log.csv）
+│   ├── pf_scene.py                # 场景导航：MuMu→游戏→大厅→PF hub / explore 扫分 / center 居中
+│   ├── pf_schedule.py             # 定时调度：按时间触发 run_pf/stop_pf/explore（实验版）
 │   ├── static/chart.umd.min.js    # Chart.js 本地副本
 │   ├── connect_mumu.py / screencap.py   # 连通性/截图小工具
 ├── assets/
 │   ├── interface.json             # PI V2 骨架（后续接 MaaPiCli 用，当前未走此链路）
 │   └── resource/base/
 │       ├── pipeline/sample.json
-│       ├── image/pf/*.png         # 模板 14 张（见 §5.4）
+│       ├── image/pf/*.png         # 模板 19 张（见 §5.4）
 │       └── model/ocr/             # det.onnx(v4 zh) + rec.onnx(v4 en_us) + keys.txt
 ├── sgm/                           # SGM 图鉴数据（元素定义、变体→元素/角色映射）
 ├── vendor/                        # MAAFramework 官方包
@@ -59,7 +62,10 @@ MAAskullgirls/
     ├── maa/debug/maafw.log        # MAA 框架日志（排障第一入口；自按 16MB 轮转 .bak）
     ├── debug/maafw.bak.*.log      # 轮转备份（清理线程只删这些最旧的）
     ├── pf/run/<时间戳>/           # 每次运行全程截图 NNNN_标签.jpg
-    └── pf/score_log.csv           # 每场计分记录
+    ├── pf/score_log.csv           # 每场计分记录
+    ├── pf/sessions.json           # 场次配置（含分数上界/休息/总分）
+    ├── pf/schedule.json           # 定时任务配置（jobs 空=未启用）
+    └── pf/schedule.log / schedule_state.json   # 调度日志 / 触发去重记录
 
 **体积控制**（pf_env.cleanup_debug，2026-09-03）：bot 启动即清一次 + 每 10 分钟守护
 线程。图片 `debug/pf/run` 总量 ≤150MB（按目录从旧到新整删、保护当前目录；仍超则删
@@ -140,6 +146,9 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
 | detail_stats | 角色详情页 STATS 标签 |
 | srv_ok / srv_retry | 服务器错误两种按钮 |
 | pip_red / pip_yellow / pip_roster / pip_slot | 钉模板（调研产物，备查） |
+| hall_prize_fights | 大厅 PRIZE FIGHTS 菱形（pf_scene 全屏搜，吸附位不固定） |
+| scene_popup_x | 大厅限时促销弹窗 X @`(950,30,1240,180)`（options_x 不匹配促销款） |
+| battle_spd_1x / 2x / 3x | 战斗速度泡 @`(600,565,690,645)`，th=0.85（同位≥0.95、1x↔3x 串扰≤0.76、无泡≤0.14） |
 
 ---
 
@@ -260,6 +269,51 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
   一直数不满 N 场
 - 接口：`/api/state`、`/api/history`、`/api/start`、`/api/stop`、`/api/settings`、`/static/*`
 
+### 6.8 首场战斗 AUTO/3x 自检（ensure_battle_auto，2026-09-06）
+
+用户指路：战斗界面底部中间有**脑子图标**，点一下=自动战斗；开启后上方出现**速度泡**，
+点一下升一档（1x→2x→3x）。两项设置游戏内**跨场持久**，故每进程只在首场检查一次
+（`_battle_auto_checked`，fight_flow 点 FIGHT 后、wait_battle_end 前触发）。
+
+- 时机：点 FIGHT 后 `sleep 1.8s`——开场介绍画面 ~2.5s 人物不动，是唯一安全点击窗口
+- 脑子亮灭：`(620,670)-(660,710)` HSV V 均值，亮 ~101 / 灭 ~49，阈值 75；灭则先点脑子
+- 速度泡：三模板匹配 @`(600,565,690,645)` th=0.85，非 3x 则点 `(640,605)` 升档并复验
+- 失败只告警不停跑；识别不到泡但脑子亮 → 记"跳过提速"
+
+### 6.9 场景导航（tools/pf_scene.py，2026-09-06）
+
+把"MuMu→游戏→大厅→PF hub"冷启动链脚本化，复用 PfBot 的 controller/tasker/match_tpl/ocr：
+
+- `goto`：ensure_mumu（MuMuManager 轮询 `player_state=start_finished`，**必须先于
+  PfScene 构建**，否则 adb 连接先炸）→ monkey 起 `com.autumn.skullgirls` → wait_hall → hub
+- `explore`：左滑逐卡读居中场地的（名称，SCORE），报告 **score=0 = 新开的场**，
+  结束恢复初始居中卡
+- `center <关键词>`：按名把场地转到居中——**bot 只点居中卡的 PLAY!，居中错=跑错场**
+- wait_hall 逃逸链：促销弹窗 X（scene_popup_x）→ 结算残局（result_continue /
+  pf_continue_btn）→ 房子 `(115,37)` 回大厅 → 全屏搜 hall_prize_fights（吸附位不固定）
+- 场地名 OCR 噪声大（EYE→"E OF IH"）：difflib 对 `KNOWN_TITLES` 模糊匹配（cutoff 0.55）
+- 每日例行：`python tools/pf_scene.py explore --skip-mumu` → center 目标场 → 开跑
+
+### 6.10 定时调度（tools/pf_schedule.py，实验版）
+
+场次绑定"怎么跑"（sessions.json），schedule 绑定"什么时候跑"（`debug/pf/schedule.json`）：
+
+```json
+{"jobs": [{"name": "凌晨跑元素场", "time": "01:00", "days": "daily",
+   "action": "run_pf",
+   "params": {"arena": "EYE", "parent_session": "s1788366023203", "restart": true}}]}
+```
+
+- action：`run_pf`（全链：restart=true 时先停旧 bot → MuMu → 导航 → center →
+  parent_session 经 pf_store 建子场（bot 停着时独占写安全；session_id 直用亦可）→
+  Popen 起 pf_bot → /api/start → 验证 RUNNING）/ `stop_pf` / `explore`
+- 20s 扫描；错过窗口（宿主睡眠）`grace_minutes`（默认 90）内补跑；触发记录
+  `schedule_state.json` 按天去重，**先记账再执行**防长任务重触发；日志 `schedule.log`
+- bot 子进程带 `CREATE_BREAKAWAY_FROM_JOB`：调度器被整树强杀时 bot 不陪葬
+  （job 不允许 breakaway 则降级普通启动并告警）
+- 用法：`python tools/pf_schedule.py` 常驻 / `--fire 任务名` 立即触发测试 / `--list`
+- 现状：**jobs 留空未启用**（2026-09-06 实验，用户明确"不真正配"），文件里有 `_example`
+
 ---
 
 ## 7. 实测记录（2026-09-02）
@@ -288,6 +342,23 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
   5. 当前直驱 `post_recognition/post_action` API；`interface.json + pipeline` 骨架已备，
      后续可迁移为标准 pipeline 任务库接入 MaaPiCli/MFW-Pi
 
+### 7.2 冷启动链 / scene / 定时（2026-09-06，EYE OF THE STORM 两日风特场）
+
+- **全链手工→脚本化**：MuMu 启动→游戏→大厅点 PRIZE FIGHTS（单点直进，无需先居中）→
+  hub 轮播左滑 2 次到目标场居中（PLAY! 交由 bot 自点）→ 子场次「202609元素月场 09-06」
+  （父场已 150M 达默认上界，直接复用会秒触发达标暂停）→ /api/start。首场验证：
+  选火框倍率最大对手、槽位能量[10,10,10]、FIGHT 36% 满足风规则、AUTO/3x 自检通过
+- **pf_scene explore 全通**：5 张场地卡逐一扫分（CLASS 150.3M / WIND 150.6M /
+  STARS 25.7M / GHOUL 7.97M / EYE 7.77M），标题 difflib 全部命中，恢复初始居中卡 OK；
+  scene 读数与 bot 采样分一致（同源 OCR 交叉验证）
+- **pf_schedule 实验**：02:20 测试任务准点触发，restart 停旧 bot→导航→center→
+  起 bot→RUNNING 全链 ~35s（游戏已在前台热链路）；场次总分跨重启连续（CSV 预载）；
+  实验后 schedule.json 已清空（jobs 留空 + _example）
+- **AUTO/3x 验证手法**：盯「战斗已开始」日志 → sleep 2s → 动作 → 截图，单条 bash
+  闭环；3x+高战力下战斗 10s 内结束，观察战斗画面要在日志后 0.3-2s 截图
+- **能量经济实测**：~13 场+实验把全池打空（候选区 0 能量）；回填靠挂机自然回能，
+  池空时新 bot 会卡在编队等能量（或报"无可用能量角色"停机），等几分钟重启即可
+
 ---
 
 ## 8. 踩坑实录（重要度排序）
@@ -311,6 +382,19 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
     曾借此死循环（选人30页→未知界面→重进→再筛选），run() 现遇 ERROR 真停止
 14. **variants.json 键是内部代号**：`fTrap`/`pThread`，显示名在条目 `fandom` 字段；
     拿 OCR 文本直接查键永远 miss。卡框颜色≠元素真源（钻石稀有度粉色覆盖）
+15. **bot 运行中严禁向模拟器注入任何点击/滑动**（2026-09-06 事故）：战斗中途"想一下
+    点一下"点歪到对手身上→弹角色详情→返回键打乱 bot 节奏→筛选面板被吃→能量耗尽停机。
+    要动先 /api/pause|stop；确需战斗中注入用确定性延时脚本（盯日志→sleep→动作→截图，
+    单条 bash 闭环），模型往返延迟 3-10s 必错过 3s 开场窗口
+16. **MAA post_swipe 会被吸附轮播弹回原卡**（2026-09-06）：PF 场地轮播要用 adb
+    `input swipe 900 400 560 400 600`（340px+600ms）一次进 1 张；520px+450ms 惯性
+    跳 2 张，中间场地被漏扫
+17. **大厅限时促销弹窗吃点击**（2026-09-06）：回大厅自动弹（BACK TO SCHOOL 等），
+    其 X 不在 bot 弹窗 ROI 且 options_x 不匹配（相关度 0.295）——scene_popup_x.png
+    专模板 @(950,30,1240,180)，pf_scene 已内置处理
+18. **后台任务 Stop 是整树杀**（2026-09-06）：强杀调度器时其 Popen 的 bot 连带死亡
+    （8787 无响应）——pf_schedule 起 bot 加 CREATE_BREAKAWAY_FROM_JOB 脱离作业对象；
+    反过来也说明 bot 必须在 scene 导航**之后**启动（IDLE bot 的弹窗清理会抢点击）
 
 ---
 
@@ -322,6 +406,8 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
 ```bash
 python tools/setup_env.py         # 一键配置环境（依赖/OCR模型/Chart.js/自检，已存在自动跳过）
 python tools/pf_bot.py            # 启动（WebUI 点"开始"开跑；停止=暂停，可恢复）
+python tools/pf_scene.py goto|explore|center X   # 场景导航 / 扫分找 score=0 / 场地居中（见 §6.9）
+python tools/pf_schedule.py       # 定时任务常驻（--fire 任务名 / --list，见 §6.10）
 python tools/screencap.py [out]   # 手动截图
 ```
 

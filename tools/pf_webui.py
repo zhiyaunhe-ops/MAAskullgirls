@@ -1,19 +1,29 @@
 """PF bot WebUI：stdlib http.server，运行日志/截图 + 图表页签（Chart.js 本地托管）。
 
-GET  /                  页面（运行 / 图表 两个页签）
+GET  /                  页面（Prize Fighter Bot [运行/图表子页签] / 每日任务）
 GET  /api/state         {status, step, fight_no, score, streak, logs, shot_ver, shot_time,
                          session_id, session_name, log_total}
 GET  /api/sessions      {sessions: [{id,name,rule,count,last_ts}], active, running}
 GET  /api/summary       {per_min, last_delta}  当前场次轻量统计 (小组件用)
+GET  /api/daily         {data:{queue,pool,names}, saved}  每日任务状态 (debug/pf/daily.json)
+POST /api/daily         保存 {queue:[...], pool:{daily,guild}, names:{id:自定义名}}
 GET  /api/history       ?sessions=a,b,c -> {series: [{id,name,rule,points}]}
 GET  /static/...        静态文件（chart.umd.min.js）
 GET  /sgm/...           sgm 素材（元素/角色图标等）
 GET  /shot.jpg          最新截图
 POST /api/start         {session_id} 开始指定场次（运行中不可换）
-POST /api/stop          请求停止
+POST /api/pause         请求暂停（可恢复）
+POST /api/stop          请求停止（主循环退出, 进程结束, WebUI 一并关闭）
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
 POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删）
+
+访问安全（所有请求先过 _gate 门卫，不合法一律 40x 并写入运行日志）:
+  - 来源 IP 限 本机回环 / 内网 (10/172.16/192.168) / Tailscale (100.64/10)，公网来源 403
+  - Host/Origin 头仅认 localhost、IP 字面量、局域网主机名（防 DNS rebinding / 跨站调用）
+  - POST 仅接受 application/json；PUT/DELETE/HEAD/OPTIONS 等方法一律 405
+  - 未知路径 404（favicon.ico 静默）
 """
+import ipaddress
 import json
 import mimetypes
 import threading
@@ -27,13 +37,56 @@ from pf_store import STORE, UNSET, clean_rest, clean_target, clean_energy
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SGM_DIR = Path(__file__).resolve().parent.parent / "sgm"
+DAILY_PATH = Path(__file__).resolve().parent.parent / "debug" / "pf" / "daily.json"
+
+
+def _load_daily() -> dict:
+    try:
+        with open(DAILY_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_daily(data: dict) -> None:
+    DAILY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DAILY_PATH.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    tmp.replace(DAILY_PATH)
+
+
+# 允许的来源网段: 本机回环 / 内网三段 / Tailscale (CGNAT, 注意是 /10) / 链路本地
+ALLOWED_NETS = [ipaddress.ip_network(n) for n in (
+    "127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12",
+    "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+)]
+
+
+def _host_ok(host: str) -> bool:
+    """Host/Origin 校验: 放行 localhost / IP 字面量 / 无点局域网主机名 / .local·.lan;
+    公网域名拒绝 —— 把攻击者域名解析到 127.0.0.1 的 DNS rebinding 在这里被拦下。"""
+    h = (host or "").strip().lower()
+    if h.startswith("["):                 # [::1]:8787
+        end = h.find("]")
+        h = h[1:end] if end != -1 else h[1:]
+    elif ":" in h:                        # host:port
+        h = h.rsplit(":", 1)[0]
+    if not h or h == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        return "." not in h or h.endswith((".local", ".lan"))
 
 _HTML = """<!doctype html>
 <html lang="zh"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>SGM PF Bot</title>
+<title>SGM Bot</title>
 <script src="/static/chart.umd.min.js"></script>
 <style>
   :root {
@@ -75,8 +128,14 @@ _HTML = """<!doctype html>
   .stat b { color:var(--txt); font-weight:600; }
   #h-score b { color:var(--gold); } #h-streak b { color:var(--green); }
   #step { font-size:12.5px; color:var(--dim); }
+  #pausebtn {
+    margin-left:auto; background:rgba(127,178,255,.08); color:var(--blue);
+    border:1px solid rgba(127,178,255,.35); border-radius:8px; padding:6px 18px;
+    cursor:pointer; font-size:13px; transition:background .15s;
+  }
+  #pausebtn:hover { background:rgba(127,178,255,.18); }
   #stopbtn {
-    margin-left:auto; background:rgba(255,123,139,.08); color:var(--red);
+    margin-left:8px; background:rgba(255,123,139,.08); color:var(--red);
     border:1px solid rgba(255,123,139,.35); border-radius:8px; padding:6px 18px;
     cursor:pointer; font-size:13px; transition:background .15s;
   }
@@ -186,6 +245,17 @@ _HTML = """<!doctype html>
     border-radius:9px 9px 0 0; border-bottom:none; letter-spacing:2px; transition:color .15s;
   }
   nav button.on { color:var(--txt); background:var(--panel2); box-shadow:inset 0 2px 0 var(--blue); }
+  .pf-subnav { display:flex; align-items:center; gap:8px; padding:10px 20px 0; }
+  .pf-subnav button {
+    background:var(--panel); color:var(--dim); border:1px solid var(--line);
+    border-radius:999px; padding:5px 18px; font-size:12.5px; cursor:pointer; font-family:inherit;
+    letter-spacing:1px; transition:color .15s, border-color .15s;
+  }
+  .pf-subnav button:hover { color:var(--txt); }
+  .pf-subnav button.on { color:var(--txt); border-color:var(--blue); background:rgba(127,178,255,.08); }
+  .pf-sub { display:none; flex-direction:column; flex:1; min-height:0; }
+  .pf-sub.on { display:flex; }
+  body[data-tab="daily"] .pf-only { display:none; }   /* PF 专属 UI (场次/规则/头部统计与设置) 仅 PF 页签显示 */
   .page { display:none; }
   .page.on { display:flex; flex-direction:column; flex:1; min-height:0; }
   #runwrap { display:flex; flex:1; min-height:0; padding:0 20px 16px; gap:14px; }
@@ -193,9 +263,11 @@ _HTML = """<!doctype html>
     flex:1 1 44%; overflow-y:auto; padding:12px 16px; font-size:12.5px; line-height:1.6;
     background:var(--panel); border:1px solid var(--line); border-radius:12px;
   }
-  #logpane .info { color:#c4cde0; } #logpane .warn { color:var(--gold); } #logpane .err { color:var(--red); }
-  #logpane .step { color:var(--blue); font-weight:600; margin-top:5px; }
-  #logpane .t { color:var(--faint); margin-right:6px; }
+  #logpane .info, #daily-log .info { color:#c4cde0; }
+  #logpane .warn, #daily-log .warn { color:var(--gold); }
+  #logpane .err, #daily-log .err { color:var(--red); }
+  #logpane .step, #daily-log .step { color:var(--blue); font-weight:600; margin-top:5px; }
+  #logpane .t, #daily-log .t { color:var(--faint); margin-right:6px; }
   #shotpane {
     flex:1 1 56%; display:flex; gap:14px; align-items:center; justify-content:center;
     background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px;
@@ -203,6 +275,63 @@ _HTML = """<!doctype html>
   #shot { max-width:100%; max-height:calc(100vh - 150px); border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,.4); }
   #sideinfo { font-size:13px; color:#aeb9cf; line-height:2.1; }
   #sideinfo b { color:var(--txt); }
+
+  /* ---- 每日任务页签 ---- */
+  #dailywrap { display:flex; flex:1; min-height:0; padding:0 20px 16px; gap:14px; }
+  .dpanel { display:flex; flex-direction:column; min-height:0;
+            background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+  #task-pool { flex:1 1 30%; }
+  #task-mid { flex:1.15 1 37%; display:flex; flex-direction:column; gap:14px; min-height:0; }
+  #task-queue { flex:1.1 1 56%; min-height:0; }
+  #task-detail { flex:1 1 44%; min-height:0; }
+  #daily-logwrap { flex:1 1 33%; }
+  #daily-log { flex:1; overflow-y:auto; padding:12px 16px; font-size:12.5px; line-height:1.6; }
+  .dpanel-title { display:flex; align-items:baseline; padding:12px 16px 9px;
+                  font-size:13px; letter-spacing:2px; color:#aeb9cf; font-weight:600;
+                  border-bottom:1px solid var(--line); }
+  .q-count { margin-left:auto; font-size:11.5px; color:var(--faint); letter-spacing:0; }
+  #pool-list { flex:1; overflow-y:auto; padding:6px 8px 10px; }
+  .pool-group { font-size:11.5px; color:var(--faint); letter-spacing:2px; padding:9px 8px 3px; }
+  .task-row { display:flex; align-items:center; gap:8px; padding:8px 10px;
+              border-radius:8px; cursor:pointer; font-size:13px; color:#c4cde0;
+              transition:background .12s, box-shadow .12s; }
+  .task-row:hover { background:var(--panel2); }
+  .task-row.sel { background:rgba(127,178,255,.08); box-shadow:inset 0 0 0 1px rgba(127,178,255,.3); }
+  .task-row input { accent-color:var(--blue); flex:none; pointer-events:none; }  /* 状态由行点击驱动 */
+  .task-row .inp { width:120px; padding:2px 6px; font-size:12.5px; }
+  .t-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .t-rename { flex:none; background:none; border:none; color:var(--faint); cursor:pointer;
+              font-size:12px; padding:2px 4px; font-family:inherit; }
+  .t-rename:hover { color:var(--blue); }
+  .t-gear { flex:none; background:none; border:none; color:var(--faint); cursor:pointer;
+            font-size:14px; padding:2px 4px; font-family:inherit; }
+  .t-gear:hover { color:var(--gold); }
+  .pool-foot { display:flex; align-items:center; gap:8px; padding:10px 12px;
+               border-top:1px dashed var(--line); }
+  .pool-hint { font-size:11.5px; color:var(--faint); margin-left:auto; }
+  #detail-body { flex:1; overflow-y:auto; padding:14px 16px; }
+  .d-head { font-size:15px; font-weight:600; color:var(--txt); margin-bottom:9px; }
+  .d-badges { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .d-hint { font-size:12.5px; color:#aeb9cf; line-height:1.8; margin-bottom:14px; }
+  .d-ph { border:1px dashed var(--line); border-radius:10px; padding:14px 16px; }
+  .d-ph-title { font-size:12.5px; color:var(--dim); letter-spacing:1px; margin-bottom:12px; }
+  .d-ph-line { height:10px; border-radius:5px; background:var(--panel2); margin-bottom:8px; }
+  .d-ph-note { font-size:11.5px; color:var(--faint); margin-top:8px; }
+  #queue-list { flex:1; overflow-y:auto; padding:8px; }
+  .q-item { display:flex; align-items:center; gap:8px; padding:8px 10px; margin-bottom:6px;
+            background:var(--panel2); border:1px solid var(--line); border-radius:9px;
+            font-size:13px; }
+  .q-item.dragging { opacity:.45; border-style:dashed; }
+  .q-idx { color:var(--faint); font-size:11.5px; width:18px; text-align:right;
+           font-family:Consolas,monospace; flex:none; }
+  .q-handle { flex:none; cursor:grab; color:var(--faint); padding:2px 3px;
+              user-select:none; -webkit-user-select:none; touch-action:none; }
+  .q-handle:active { cursor:grabbing; color:var(--dim); }
+  .q-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .q-del { flex:none; background:none; border:none; color:var(--faint); cursor:pointer;
+           font-size:12px; padding:2px 5px; font-family:inherit; }
+  .q-del:hover { color:var(--red); }
+  .q-empty { color:var(--faint); text-align:center; padding:36px 12px; font-size:12.5px; }
 
   #charts { padding:16px 20px 24px; flex:1; min-height:0; overflow-y:auto; }
   #view-chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
@@ -255,13 +384,16 @@ _HTML = """<!doctype html>
     .rbtn img { width: 20px; height: 20px; }
     .cls-btn img { width: 24px; height: 24px; }
     nav button { padding: 9px 20px; font-size: 13.5px; }
-    #startbtn, #stopbtn { padding: 8px 22px; font-size: 14px; }
+    #startbtn, #pausebtn, #stopbtn { padding: 8px 22px; font-size: 14px; }
     .inp { font-size: 16px; }   /* >=16px 防 iOS 聚焦自动放大 */
     #runwrap { flex-direction: column; padding: 0 12px 12px; gap: 10px; overflow-y: auto; }
     #logpane { flex: 0 0 auto; max-height: 32vh; }
     #shotpane { flex: 1 1 auto; flex-wrap: wrap; }
     #shot { max-height: 56vh; }
     #charts { padding: 12px 12px 20px; }
+    #dailywrap { flex-direction:column; overflow-y:auto; padding:0 12px 12px; gap:10px; }
+    #task-pool, #task-mid, #task-queue, #task-detail, #daily-logwrap { flex:0 0 auto; }
+    #pool-list, #queue-list, #detail-body, #daily-log { max-height:38vh; }
     .cmp-table { display: block; overflow-x: auto; }
   }
   @media (max-width: 480px) {
@@ -273,15 +405,15 @@ _HTML = """<!doctype html>
     .sess-row .s-meta { flex-basis: 100%; margin-left: 0; order: 9; }
   }
 </style></head>
-<body>
+<body data-tab="pf">
 <header>
-  <h1>SGM PF Bot</h1>
+  <h1>SGM Bot</h1>
   <span id="status" class="pill IDLE">IDLE</span>
-  <span id="fight" class="stat"></span>
-  <span id="h-score" class="stat">总分 <b>-</b></span>
-  <span id="h-streak" class="stat">连胜 <b>-</b></span>
-  <span id="step"></span>
-  <span class="hdr-ctl">
+  <span id="fight" class="stat pf-only"></span>
+  <span id="h-score" class="stat pf-only">总分 <b>-</b></span>
+  <span id="h-streak" class="stat pf-only">连胜 <b>-</b></span>
+  <span id="step" class="pf-only"></span>
+  <span class="hdr-ctl pf-only">
     <span class="stat">目标总分 <input id="in-target" class="inp" type="number" min="0" step="100000" placeholder="不限"></span>
     <span class="stat">能量门槛 <input id="in-energy" class="inp" type="number" min="1" max="10" step="1"></span>
     <span class="stat"><label><input type="checkbox" id="in-fav" checked> 喜爱</label></span>
@@ -289,27 +421,33 @@ _HTML = """<!doctype html>
     休 <input id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
   </span>
   <button id="startbtn" onclick="onStartClick()" style="display:none;">开始</button>
-  <button id="stopbtn" onclick="fetch('/api/stop',{method:'POST'})">停止</button>
+  <button id="pausebtn" style="display:none;" onclick="api('/api/pause',{}).then(()=>pollState())">暂停</button>
+  <button id="stopbtn" style="display:none;" onclick="onStopClick()">停止</button>
 </header>
 <nav>
-  <button id="tab-run" class="on" onclick="switchTab('run')">运行</button>
-  <button id="tab-chart" onclick="switchTab('chart')">图表</button>
-  <button id="sess-chip" class="sess-chip none" onclick="openSessionModal()">场次 未选</button>
-  <div id="rule-bar">
+  <button id="tab-pf" class="on" onclick="switchTab('pf')">Prize Fighter Bot</button>
+  <button id="tab-daily" onclick="switchTab('daily')">每日任务</button>
+  <button id="sess-chip" class="sess-chip none pf-only" onclick="openSessionModal()">场次 未选</button>
+  <div id="rule-bar" class="pf-only">
     <span class="rule-label">PF规则</span>
     <div class="seg" id="ruleSeg"></div>
     <span id="rule-applied" class="rule-applied"></span>
   </div>
 </nav>
-<div id="page-run" class="page on">
+<div id="page-pf" class="page on">
+  <div class="pf-subnav">
+    <button id="subtab-run" class="on" onclick="switchPfSub('run')">运行</button>
+    <button id="subtab-chart" onclick="switchPfSub('chart')">图表</button>
+  </div>
+  <div id="pf-run" class="pf-sub on">
   <div id="runwrap">
     <div id="logpane" class="mono"></div>
     <div id="shotpane">
       <img id="shot"><div id="sideinfo"></div>
     </div>
   </div>
-</div>
-<div id="page-chart" class="page">
+  </div>
+  <div id="pf-chart" class="pf-sub">
   <div id="charts">
     <div id="view-chips"></div>
     <div id="stats-row"></div>
@@ -330,6 +468,35 @@ _HTML = """<!doctype html>
         <span class="chart-title">连 胜</span><span id="v-streak" class="chart-val v-green"></span>
         <span class="chart-sub" id="sub-streak">推进曲线</span></div>
       <div class="chart-body"><canvas id="ch-streak"></canvas></div></div>
+  </div>
+  </div>
+</div>
+<div id="page-daily" class="page">
+  <div id="dailywrap">
+    <div id="task-pool" class="dpanel">
+      <div class="dpanel-title">任务库</div>
+      <div id="pool-list"></div>
+      <div class="pool-foot">
+        <button id="pool-all" class="mini-btn" title="勾选全部每日任务">全选</button>
+        <button id="pool-clear" class="mini-btn">清空</button>
+        <span class="pool-hint">☰ 组内拖动排序 · ✎ 改名 · 勾选进请求列表</span>
+      </div>
+    </div>
+    <div id="task-mid">
+      <div id="task-queue" class="dpanel">
+        <div class="dpanel-title">每日请求列表<span id="queue-count" class="q-count"></span></div>
+        <div id="queue-list"></div>
+        <div class="pool-foot"><span class="pool-hint">拖 ☰ 调整执行顺序 · ✕ 移除</span></div>
+      </div>
+      <div id="task-detail" class="dpanel">
+        <div class="dpanel-title">任务详情</div>
+        <div id="detail-body"></div>
+      </div>
+    </div>
+    <div id="daily-logwrap" class="dpanel">
+      <div class="dpanel-title">运行日志</div>
+      <div id="daily-log" class="mono"></div>
+    </div>
   </div>
 </div>
 <div id="sess-modal" class="modal-mask" style="display:none;">
@@ -354,19 +521,33 @@ _HTML = """<!doctype html>
   </div>
 </div>
 <script>
-let lastLog = 0, lastShot = -1, stick = true;
+let lastLog = 0, lastShot = -1;
 let sessions = [], activeSess = null, running = false, viewIds = [], sessInputsFor;
-const pane = document.getElementById('logpane');
-pane.addEventListener('scroll', () => {
-  stick = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 30;
+const logPanes = ['logpane', 'daily-log'].map(id => {   // 运行页与每日任务页共用一股日志流
+  const el = document.getElementById(id);
+  el._stick = true;
+  el.addEventListener('scroll', () => {
+    el._stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  });
+  return el;
 });
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+let pfSub = 'run';
 function switchTab(t) {
-  for (const n of ['run','chart']) {
+  document.body.dataset.tab = t;
+  for (const n of ['pf','daily']) {
     document.getElementById('tab-'+n).classList.toggle('on', n===t);
     document.getElementById('page-'+n).classList.toggle('on', n===t);
   }
-  if (t === 'chart') pollHistory();
+  if (t === 'daily') loadDaily();
+}
+function switchPfSub(s) {
+  pfSub = s;
+  for (const n of ['run','chart']) {
+    document.getElementById('subtab-'+n).classList.toggle('on', n===s);
+    document.getElementById('pf-'+n).classList.toggle('on', n===s);
+  }
+  if (s === 'chart') pollHistory();
 }
 async function pollState() {
   try {
@@ -380,6 +561,7 @@ async function pollState() {
     document.getElementById('step').textContent = d.step;
     const startBtn = document.getElementById('startbtn');
     startBtn.style.display = d.status === 'RUNNING' ? 'none' : 'inline-block';
+    document.getElementById('pausebtn').style.display = d.status === 'RUNNING' ? 'inline-block' : 'none';
     document.getElementById('stopbtn').style.display = d.status === 'RUNNING' ? 'inline-block' : 'none';
     const inT = document.getElementById('in-target'), inE = document.getElementById('in-energy');
     running = d.status === 'RUNNING';
@@ -406,9 +588,12 @@ async function pollState() {
     }
     if (d.log_total !== lastLog) {
       lastLog = d.log_total;
-      pane.innerHTML = d.logs.map(l =>
+      const html = d.logs.map(l =>
         `<div class="${l[1]}"><span class="t">${l[0]}</span>${esc(l[2])}</div>`).join('');
-      if (stick) pane.scrollTop = pane.scrollHeight;
+      for (const el of logPanes) {
+        el.innerHTML = html;
+        if (el._stick) el.scrollTop = el.scrollHeight;
+      }
     }
     if (d.shot_ver !== lastShot) {
       lastShot = d.shot_ver;
@@ -767,10 +952,10 @@ const navPicker = buildRulePicker(document.getElementById('ruleSeg'), {
 function updateSessChip(d) {
   const chip = document.getElementById('sess-chip');
   if (d.session_name) {
-    chip.className = 'sess-chip' + (running ? ' locked' : '');
+    chip.className = 'sess-chip pf-only' + (running ? ' locked' : '');
     chip.innerHTML = '场次 <b>' + esc(d.session_name) + '</b>' + (running ? ' 🔒' : '');
   } else {
-    chip.className = 'sess-chip none';
+    chip.className = 'sess-chip none pf-only';
     chip.textContent = '场次 未选';
   }
 }
@@ -819,6 +1004,16 @@ async function onStartClick() {
     return;
   }
   openSessionModal();
+}
+// 停止: 主循环退出、进程结束 (WebUI 一并关闭), 重新运行 pf_bot 才能再启动
+async function onStopClick() {
+  if (!confirm('停止将退出机器人进程（WebUI 一并关闭）, 确定?')) return;
+  try { await api('/api/stop', {}); } catch (e) {}
+  const st = document.getElementById('status');
+  st.textContent = 'STOPPED'; st.className = 'pill STOPPED';
+  document.getElementById('step').textContent = '进程已退出, 重新运行 pf_bot 可再次启动';
+  document.getElementById('pausebtn').style.display = 'none';
+  document.getElementById('stopbtn').style.display = 'none';
 }
 async function renderModal() {
   try {
@@ -962,8 +1157,229 @@ document.getElementById('in-target').addEventListener('change', saveSessionSetti
 document.getElementById('in-energy').addEventListener('change', saveSessionSettings);
 document.getElementById('in-restn').addEventListener('change', saveSessionSettings);
 document.getElementById('in-restm').addEventListener('change', saveSessionSettings);
+
+/* ================= 每日任务 (任务库 / 详情 / 每日请求列表) =================
+   任务池整理自 docs/explore/2026-09-05/REPORT.md; 可合并的日常动作已组合成单条。 */
+const DAILY_TASKS = [
+  { id:'missions', group:'daily', name:'任务与积分领取', ref:'REPORT §2.1',
+    hint:'MISSIONS·DAILY OPS: CLAIM ALL + 积分轨里程碑箱 (20/40/60/80/100)。Win a Prize Fight Match / Log In / Open a Relic 等任务随日常自动完成, 无需单独跑。' },
+  { id:'backstage', group:'daily', name:'通行证目标', ref:'REPORT §3.12',
+    hint:'BACKSTAGE PASS·GOALS 页签: DAILY / WEEKLY GOALS 达成后领取 BP XP (如 Participate in 2 PF Matches、Open a Relic)。' },
+  { id:'guild_ops', group:'daily', name:'公会任务领取', ref:'REPORT §2.2',
+    hint:'GUILD OPS: CLAIMABLE OPS 立即领; DAILY OPS (35/60 GuildOps 积分随打竞技场推进) 完成后领。注意滚动会弹 NEW REWARD TIER 段位框, OK 关闭。' },
+  { id:'social', group:'daily', name:'礼物收发', ref:'REPORT §3.11',
+    hint:'组合任务 — SOCIAL HUB 三连: SEND ALL + CLAIM ALL + OPEN GIFTS, 同时覆盖 Send a Gift 日常任务。' },
+  { id:'inbox', group:'daily', name:'邮箱领取', ref:'REPORT §3.11',
+    hint:'INBOX / GUILDS 两子栏: 赛季结算、活动补偿等附件领取 (附件 29 天过期)。' },
+  { id:'rewards', group:'daily', name:'登录奖励与广告', ref:'REPORT §3.11',
+    hint:'组合任务 — REWARDS 页: LOGIN REWARDS 月历领取 + VIEWING PARLOR 看广告 (6 格, 30 分钟冷却刷新)。WEB REWARDS 需网页端, 仅提醒不执行。' },
+  { id:'tickets', group:'daily', name:'活动票领取', ref:'REPORT §3.3',
+    hint:'EVENTS 轮播顶部活动票 CLAIM (绿骷髅票 / 橙票两态)。' },
+  { id:'store', group:'daily', name:'商店日常', ref:'REPORT §3.9',
+    hint:'STORE: DAILY PASSES CLAIM + DAILY DEALS 浏览。注意 DAILY PASSES 的 CLAIM 曾实测点击无响应, 执行前需先验证可交互。' },
+  { id:'cabinet', group:'daily', name:'奇物阁', ref:'REPORT §3.11',
+    hint:'CABINET OF CURIOSITIES: 进入即完成 Open the Cabinet 日常; 4h 刷新, 顺路逛 TRINKETS / TREASURES / TRIBUTES。' },
+  { id:'daily_event', group:'daily', name:'日常活动对战', ref:'REPORT §3.3',
+    hint:'EVENTS 日常活动卡 (SWEATING BULLETS / DOUBLE FEATURE 等) 每天 3 次 PLAYS REMAINING, 完成 Win a Daily Event Match。' },
+  { id:'story', group:'daily', name:'剧情对战', ref:'REPORT §3.2',
+    hint:'STORY MODE 打一场, 完成 Win a Story Mode Match; 可顺路推 MAIN STORY / ORIGIN STORIES 章节星级。' },
+  { id:'rift', group:'daily', name:'裂隙战', ref:'REPORT §3.4',
+    hint:'组合任务 — RIFT BATTLES 打一场, 同时推进日任务 Complete a Rift Battle 与公会周任务 Win 1/3/5 Rift Battle Matches。注意 CONNECTING 加载页。' },
+  { id:'nurture', group:'daily', name:'每日养成', ref:'REPORT §2.1',
+    hint:'组合任务 — 三条日常一并完成: Level Up a Guest Star (或 Reroll) + Level Up a Move (或 Reroll) + Unlock a Skill Tree Node, 各做一次即可。' },
+  { id:'relics', group:'daily', name:'开箱', ref:'REPORT §3.8',
+    hint:'RELICS 开库存箱完成 Open a Relic (消耗箱体库存, 执行前确认数量); 结果页可 SELL ALL 清理。' },
+  { id:'deployments', group:'daily', name:'派驻', ref:'REPORT §2.4',
+    hint:'DEPLOYMENTS: 每天 5 次派驻机会, 15 分钟短任务性价比最高, 记得回收。' },
+  { id:'guild_weekly', group:'guild', name:'公会周玩法', ref:'REPORT §2.2 / §3.3',
+    hint:'WEEKLY OPS 指向的三大玩法入口 (都在 EVENTS 内): Undying Battle / Parallel Realms (Boss Node) / Accursed Experiments。' },
+  { id:'rift_season', group:'guild', name:'裂隙赛季结算', ref:'REPORT §3.4',
+    hint:'SEASON REWARDS 每周一 10am PT 结束发邮箱; 需打满 5 场且单场 ≥3000 分才有奖励。' },
+];
+const DAILY_GROUPS = [['daily','每日'], ['guild','公会 · 每周']];
+let queueOrder = [], detailSel = null, dailyLoaded = false;
+let poolOrder = { daily: [], guild: [] }, poolNames = {}, poolRenameId = null;
+const taskById = id => DAILY_TASKS.find(t => t.id === id);
+const dName = t => poolNames[t.id] || t.name;          // 自定义名优先
+const defaultOrder = () => DAILY_TASKS.filter(t => t.group === 'daily').map(t => t.id);
+
+async function loadDaily() {
+  if (dailyLoaded) { renderPool(); renderQueue(); renderDetail(); return; }
+  dailyLoaded = true;
+  let data = {};
+  try {
+    const d = await api('/api/daily');
+    if (d.saved && d.data) data = d.data;
+  } catch (e) {}
+  queueOrder = (data.queue || defaultOrder()).filter(id => taskById(id));
+  const names = data.names || {};
+  for (const k in names)
+    if (taskById(k) && String(names[k]).trim()) poolNames[k] = String(names[k]).trim();
+  for (const g of ['daily', 'guild']) {
+    const saved = (data.pool && data.pool[g]) || [];
+    poolOrder[g] = saved.filter(id => { const t = taskById(id); return t && t.group === g; });
+    for (const t of DAILY_TASKS)
+      if (t.group === g && !poolOrder[g].includes(t.id)) poolOrder[g].push(t.id);
+  }
+  renderPool(); renderQueue(); renderDetail();
+}
+function saveDaily() {
+  api('/api/daily', { queue: queueOrder, pool: poolOrder, names: poolNames }).catch(() => {});
+}
+function toggleTask(id) {
+  queueOrder = queueOrder.includes(id) ? queueOrder.filter(x => x !== id) : queueOrder.concat(id);
+  renderPool(); renderQueue(); saveDaily();
+}
+function renderPool() {
+  document.getElementById('pool-list').innerHTML = DAILY_GROUPS.map(([g, label]) => {
+    const rows = poolOrder[g].map(id => {
+      const t = taskById(id);
+      if (!t) return '';
+      const nameHtml = poolRenameId === id
+        ? `<input id="pool-rn" class="inp" value="${esc(dName(t))}">`
+        : `<span class="t-name" title="${esc(t.hint)}">${esc(dName(t))}</span>`;
+      return `<div class="task-row${detailSel === id ? ' sel' : ''}" data-id="${id}">
+        <span class="q-handle" title="拖动排序">☰</span>
+        <input type="checkbox" ${queueOrder.includes(id) ? 'checked' : ''}>
+        ${nameHtml}
+        <button class="t-rename" title="重命名">✎</button>
+        <button class="t-gear" title="查看详情">⚙</button></div>`;
+    }).join('');
+    return `<div class="pool-group">${label}</div><div class="pool-sec" data-group="${g}">${rows}</div>`;
+  }).join('');
+  const rn = document.getElementById('pool-rn');
+  if (rn) { rn.focus(); rn.select(); }
+}
+function renderQueue() {
+  document.getElementById('queue-count').textContent = queueOrder.length ? queueOrder.length + ' 项' : '';
+  document.getElementById('queue-list').innerHTML = queueOrder.map((id, i) => {
+    const t = taskById(id);
+    return `<div class="q-item" data-id="${id}">
+      <span class="q-idx">${i + 1}</span><span class="q-handle" title="拖动排序">☰</span>
+      <span class="q-name">${esc(t ? dName(t) : id)}</span>
+      <button class="q-del" title="移除">✕</button></div>`;
+  }).join('') || '<div class="q-empty">空 —— 在左侧勾选任务加入列表</div>';
+}
+function renderDetail() {
+  const body = document.getElementById('detail-body');
+  const t = taskById(detailSel);
+  if (!t) { body.innerHTML = '<div class="q-empty">点左侧任务行的 ⚙ 查看详情</div>'; return; }
+  const g = DAILY_GROUPS.find(x => x[0] === t.group);
+  body.innerHTML = `<div class="d-head">${esc(dName(t))}</div>
+    <div class="d-badges"><span class="rule-badge">${g ? g[1] : ''}</span>
+    <span class="rule-badge">出处 ${esc(t.ref)}</span></div>
+    <div class="d-hint">${esc(t.hint)}</div>
+    <div class="d-ph"><div class="d-ph-title">⚙ 详细设置</div>
+      <div class="d-ph-line" style="width:72%"></div>
+      <div class="d-ph-line" style="width:54%"></div>
+      <div class="d-ph-line" style="width:63%"></div>
+      <div class="d-ph-note">占位 —— 执行模块接入后在此提供该任务的参数配置</div></div>`;
+}
+document.getElementById('pool-list').addEventListener('click', e => {
+  if (e.target.closest('.q-handle')) return;      // 拖动手柄不触发点击
+  const row = e.target.closest('.task-row');
+  if (!row) return;
+  if (e.target.closest('.t-gear')) {              // ⚙ = 选中详情, 不切换勾选
+    detailSel = detailSel === row.dataset.id ? null : row.dataset.id;
+    renderPool(); renderDetail(); return;
+  }
+  if (e.target.closest('.t-rename')) {            // ✎ = 行内改名
+    poolRenameId = row.dataset.id; renderPool(); return;
+  }
+  toggleTask(row.dataset.id);
+});
+function savePoolRename() {
+  const inp = document.getElementById('pool-rn');
+  if (!inp) return;
+  const v = inp.value.trim(), id = poolRenameId;
+  poolRenameId = null;
+  if (v && id) {
+    poolNames[id] = v;
+    renderPool(); renderQueue(); renderDetail(); saveDaily();
+  } else renderPool();
+}
+document.getElementById('pool-list').addEventListener('keydown', e => {
+  if (e.target.id !== 'pool-rn') return;
+  if (e.key === 'Enter') savePoolRename();
+  if (e.key === 'Escape') { poolRenameId = null; renderPool(); }
+});
+document.getElementById('pool-list').addEventListener('focusout', e => {
+  if (e.target.id === 'pool-rn') savePoolRename();
+});
+document.getElementById('pool-all').addEventListener('click', () => {
+  queueOrder = queueOrder.concat(defaultOrder().filter(id => !queueOrder.includes(id)));
+  renderPool(); renderQueue(); saveDaily();
+});
+document.getElementById('pool-clear').addEventListener('click', () => {
+  queueOrder = []; renderPool(); renderQueue(); saveDaily();
+});
+document.getElementById('queue-list').addEventListener('click', e => {
+  const del = e.target.closest('.q-del');
+  if (!del) return;
+  queueOrder = queueOrder.filter(x => x !== del.closest('.q-item').dataset.id);
+  renderPool(); renderQueue(); saveDaily();
+});
+// 请求列表拖拽排序 (pointer 事件, 鼠标/触屏通用)
+const queueBox = document.getElementById('queue-list');
+queueBox.addEventListener('pointerdown', e => {
+  const handle = e.target.closest('.q-handle');
+  if (!handle) return;
+  const item = handle.closest('.q-item');
+  if (!item) return;
+  e.preventDefault();
+  item.classList.add('dragging');
+  let moved = false;
+  const onMove = ev => {
+    const y = ev.clientY;
+    const next = [...queueBox.querySelectorAll('.q-item:not(.dragging)')]
+      .find(el => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
+    if (next) queueBox.insertBefore(item, next); else queueBox.appendChild(item);
+    moved = true;
+  };
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onUp);
+    item.classList.remove('dragging');
+    if (moved) {
+      queueOrder = [...queueBox.querySelectorAll('.q-item')].map(el => el.dataset.id);
+      renderQueue(); saveDaily();
+    }
+  };
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+});
+// 任务库拖动排序: ☰ 手柄, 限在所属组内移动
+document.getElementById('pool-list').addEventListener('pointerdown', e => {
+  const handle = e.target.closest('.q-handle');
+  if (!handle) return;
+  const item = handle.closest('.task-row');
+  const sec = handle.closest('.pool-sec');
+  if (!item || !sec) return;
+  e.preventDefault();
+  item.classList.add('dragging');
+  const onMove = ev => {
+    const y = ev.clientY;
+    const next = [...sec.querySelectorAll('.task-row:not(.dragging)')]
+      .find(el => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
+    if (next) sec.insertBefore(item, next); else sec.appendChild(item);
+  };
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onUp);
+    item.classList.remove('dragging');
+    poolOrder[sec.dataset.group] = [...sec.querySelectorAll('.task-row')].map(el => el.dataset.id);
+    renderPool(); saveDaily();
+  };
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+});
+
 setInterval(pollState, 1500);
-setInterval(() => { if (document.getElementById('page-chart').classList.contains('on')) pollHistory(); }, 2500);
+setInterval(() => { if (pfSub === 'chart' && document.getElementById('page-pf').classList.contains('on')) pollHistory(); }, 2500);
 pollState();
 </script></body></html>"""
 
@@ -981,6 +1397,45 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # 静默访问日志
         pass
 
+    # ---- 访问门卫: 不合法请求一律 40x 并记入运行日志 ----
+    def _reject(self, code: int, msg: str) -> None:
+        self.close_connection = True
+        STATE.log(f"已拒绝 {self.command} {self.path} <- {self.client_address[0]} ({msg})", "warn")
+        self._send(code, "text/plain; charset=utf-8", msg.encode("utf-8"))
+
+    def _gate(self, is_post: bool) -> bool:
+        try:
+            ip = ipaddress.ip_address(self.client_address[0])
+        except ValueError:
+            ip = None
+        if ip is None or not any(ip in net for net in ALLOWED_NETS):
+            self._reject(403, "来源网段不允许")
+            return False
+        if not _host_ok(self.headers.get("Host", "")):
+            self._reject(403, "Host 头不允许")
+            return False
+        if is_post:
+            origin = self.headers.get("Origin")
+            if origin is not None:
+                ohost = ""
+                try:
+                    ohost = urlsplit(origin).hostname or ""
+                except ValueError:
+                    pass
+                if not ohost or not _host_ok(ohost):
+                    self._reject(403, "跨站 Origin 不允许")
+                    return False
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self._reject(415, "POST 仅接受 application/json")
+                return False
+        return True
+
+    # 未定义的写方法一律拒绝; OPTIONS 非 2xx 也让浏览器自行拦下跨站预检
+    def _method_na(self):
+        self._reject(405, "方法不允许")
+    do_PUT = do_PATCH = do_DELETE = do_HEAD = do_OPTIONS = _method_na
+
     def _send(self, code, ctype, body):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -991,6 +1446,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not self._gate(is_post=False):
+            return
         parts = urlsplit(self.path)
         path, qs = parts.path, parse_qs(parts.query)
         if path == "/":
@@ -1061,6 +1518,10 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.dumps({"series": STORE.series(ids), "active": STORE.session_id},
                               ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
+        elif path == "/api/daily":
+            body = json.dumps({"data": _load_daily(), "saved": DAILY_PATH.is_file()},
+                              ensure_ascii=False).encode("utf-8")
+            self._send(200, "application/json", body)
         elif path.startswith("/static/"):
             name = Path(path).name
             fp = STATIC_DIR / name
@@ -1092,6 +1553,8 @@ class _Handler(BaseHTTPRequestHandler):
                     pass
             self._send(200, "image/jpeg", data)
         else:
+            if path != "/favicon.ico":    # 浏览器自动请求, 不刷日志
+                STATE.log(f"未知请求 {self.command} {path} <- {self.client_address[0]}", "warn")
             self._send(404, "text/plain", b"not found")
 
     def _read_json(self) -> dict:
@@ -1108,9 +1571,16 @@ class _Handler(BaseHTTPRequestHandler):
                    json.dumps({"error": msg}, ensure_ascii=False).encode("utf-8"))
 
     def do_POST(self):
-        if self.path == "/api/stop":
+        if not self._gate(is_post=True):
+            return
+        if self.path == "/api/pause":
             STATE.running = False
-            STATE.log("收到 WebUI 停止(暂停)请求", "warn")
+            STATE.log("收到 WebUI 暂停请求", "warn")
+            self._send(200, "application/json", b'{"ok":true}')
+        elif self.path == "/api/stop":
+            STATE.running = False
+            STATE.quit = True
+            STATE.log("收到 WebUI 停止请求, 主循环即将退出", "warn")
             self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/start":
             try:
@@ -1243,7 +1713,34 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json", b'{"ok":true}')
             except (ValueError, json.JSONDecodeError) as e:
                 self._json_err(400, str(e))
+        elif self.path == "/api/daily":
+            try:
+                data = self._read_json()
+            except json.JSONDecodeError as e:
+                self._json_err(400, str(e))
+                return
+            if not isinstance(data, dict):
+                self._json_err(400, "需要 JSON 对象")
+                return
+            cur = _load_daily()
+            clean = {}
+            queue = data.get("queue", cur.get("queue"))
+            if isinstance(queue, list) and all(isinstance(x, str) for x in queue):
+                clean["queue"] = queue[:64]
+            pool = data.get("pool", cur.get("pool"))
+            if isinstance(pool, dict):
+                clean["pool"] = {k: [x for x in v if isinstance(x, str)][:64]
+                                 for k, v in pool.items()
+                                 if isinstance(k, str) and isinstance(v, list)}
+            names = data.get("names", cur.get("names"))
+            if isinstance(names, dict):
+                clean["names"] = {k: v for k, v in names.items()
+                                  if isinstance(k, str) and isinstance(v, str)}
+            _save_daily(clean)
+            self._send(200, "application/json", b'{"ok":true}')
         else:
+            self.close_connection = True   # 请求体未读, 断开连接保持协议干净
+            STATE.log(f"未知接口 {self.command} {self.path} <- {self.client_address[0]}", "warn")
             self._send(404, "text/plain", b"not found")
 
 

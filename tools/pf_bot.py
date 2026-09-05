@@ -58,6 +58,9 @@ TPL_OPTIONS_X = IMG + "options_x.png"
 TPL_HUB_PLAY = IMG + "hub_play.png"
 TPL_SRV_OK = IMG + "srv_ok.png"
 TPL_SRV_RETRY = IMG + "srv_retry.png"
+TPL_SPD_1X = IMG + "battle_spd_1x.png"
+TPL_SPD_2X = IMG + "battle_spd_2x.png"
+TPL_SPD_3X = IMG + "battle_spd_3x.png"
 ROI_POPUP = (860, 160, 1060, 340)   # 弹窗右上 X 区域
 
 ROI_TOPRIGHT = (1040, 15, 1260, 115)  # x0,y0,x1,y1
@@ -87,6 +90,7 @@ class PfBot:
         self._rule_done_fight = -1    # 本场已做过规则替换的场次号
         self._rule_redo = 0           # 本场规则重做次数 (能量替换破坏规则时++)
         self._filter_cleared = False  # 本次运行是否已清过残留筛选
+        self._battle_auto_checked = False  # 首场战斗已做过自动战斗/速度检查
         self.fights_since_rest = 0    # 距上次休息的已结算场数
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
 
@@ -663,6 +667,9 @@ class PfBot:
                                 return
                 continue
             STATE.log("战斗已开始, 等待结束...")
+            if not self._battle_auto_checked:
+                self._battle_auto_checked = True
+                self.ensure_battle_auto()
             self.wait_battle_end()
             return
 
@@ -684,6 +691,55 @@ class PfBot:
             STATE.log(f"点击结算 CONTINUE (第{i+1}页)")
             self.controller.post_click(*box).wait()
             time.sleep(2.2)
+
+    def battle_speed_level(self, img) -> int:
+        """战斗速度泡 (640,605): 0=无泡(auto未开或未渲染), 1/2/3=当前倍率。
+        th=0.85: 同位实测 ≥0.95, 1x/3x 串扰实测 ≤0.76, 无泡画面 ≤0.14。"""
+        roi = (600, 565, 690, 645)
+        for lvl, tpl in ((3, TPL_SPD_3X), (2, TPL_SPD_2X), (1, TPL_SPD_1X)):
+            if self.match_tpl(img, tpl, roi, th=0.85):
+                return lvl
+        return 0
+
+    def brain_auto_on(self, img) -> bool:
+        """脑子图标 (640,690) 亮=自动战斗开。实测亮 V均值~101, 灯灭 ~49, 阈值 75。"""
+        crop = img[670:710, 620:660]
+        return float(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[:, :, 2].mean()) >= 75
+
+    def ensure_battle_auto(self) -> None:
+        """首场战斗开场检查自动战斗+3x 速度。
+        开场介绍画面 ~2.5s 人物不动: 脑子(640,690)=auto 开关, 速度泡(640,605) 点一下升一档,
+        两项设置游戏内跨场持久, 故每次进程只查首场。失败只告警, 不影响运行。"""
+        time.sleep(1.8)
+        try:
+            img = self.snap("battle_auto")
+            spd = self.battle_speed_level(img)
+            if spd == 0 and not self.brain_auto_on(img):
+                STATE.log("自动战斗未开启, 点脑子 (640,690)", "warn")
+                self.controller.post_click(640, 690).wait()
+                time.sleep(0.6)
+                img = self.snap("battle_auto_brain")
+                spd = self.battle_speed_level(img)
+            if spd == 0:
+                if self.brain_auto_on(img):
+                    STATE.log("自动战斗已开但速度泡未识别, 跳过提速", "warn")
+                else:
+                    STATE.log("速度泡与脑子均未识别 (界面未就绪?), 跳过", "warn")
+                return
+            if spd < 3:
+                STATE.log(f"战斗速度 {spd}x, 升档到 3x", "warn")
+                for _ in range(3 - spd):
+                    self.controller.post_click(640, 605).wait()
+                    time.sleep(0.45)
+                spd2 = self.battle_speed_level(self.snap("battle_auto_3x"))
+                if spd2 == 3:
+                    STATE.log("速度校验: 3x")
+                else:
+                    STATE.log(f"速度校验: {spd2 or '未识别'}x, 请留意", "warn")
+            else:
+                STATE.log("自动战斗已开, 速度 3x")
+        except Exception as e:  # noqa: BLE001
+            STATE.log(f"自动战斗检查异常 (不影响运行): {e}", "warn")
 
     def wait_battle_end(self) -> None:
         t0 = time.time()
@@ -707,15 +763,21 @@ class PfBot:
             if self.match_tpl(img, TPL_CONTINUE, ROI_TOPRIGHT):
                 STATE.log("出现 CONTINUE (战斗结束)")
                 return
+        if not STATE.running:
+            return
         STATE.log("战斗等待超时 300s", "err")
 
     # ---------- 主循环 ----------
 
     def run(self) -> None:
-        """常驻监督循环: WebUI 可随时 开始/暂停, 进程不退出。"""
+        """常驻监督循环: WebUI 可随时 开始/暂停/停止 (停止则进程退出)。"""
         STATE.status = "IDLE"
         STATE.log("==== PF Bot 就绪, 等待开始 ====")
         while True:
+            if STATE.quit:
+                STATE.status = "STOPPED"
+                STATE.log("==== PF Bot 已停止, 进程退出 ====")
+                return
             if not STATE.running:
                 if STATE.status == "RUNNING":
                     STATE.status = "STOPPED"

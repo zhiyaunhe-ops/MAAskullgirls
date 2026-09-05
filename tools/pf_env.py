@@ -78,7 +78,8 @@ class BotState:
         self.rest_until = 0           # 休息截止时间戳
         self.shot_ver = 0             # 截图版本号（前端据此刷新图片）
         self.shot_path = None
-        self.running = False          # 停止开关（WebUI 可置 False）
+        self.running = False          # 暂停开关（WebUI 可置 False, 可恢复）
+        self.quit = False             # 硬停止开关: 置 True 后主循环退出、进程结束
 
     def log(self, msg: str, level: str = "info") -> None:
         stamp = time.strftime("%H:%M:%S")
