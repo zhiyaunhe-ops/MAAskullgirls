@@ -89,7 +89,7 @@ class PfBot:
         self.tracker = ScoreTracker()  # 总分采样基线（随场次自动重置）
         self._rule_done_fight = -1    # 本场已做过规则替换的场次号
         self._rule_redo = 0           # 本场规则重做次数 (能量替换破坏规则时++)
-        self._filter_cleared = False  # 本次运行是否已清过残留筛选
+        self._filter_cleared = False  # 本次开始运行以来是否已归位过筛选 (首次编队)
         self._battle_auto_checked = False  # 首场战斗已做过自动战斗/速度检查
         self.fights_since_rest = 0    # 距上次休息的已结算场数
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
@@ -480,10 +480,12 @@ class PfBot:
         返回 False 表示候选耗尽。
         """
         STATE.set_step(f"编队({replace_note})")
-        # 规则未启用: 本次运行清一次残留筛选即可 (零开销)
-        if not STATE.pf_rule and not self._filter_cleared:
-            self.set_filter([])
+        # 首次编队: 按 WebUI 设置归位筛选 (清残留 + 喜爱芯片) —— 游戏内筛选跨运行持久
+        if not self._filter_cleared:
             self._filter_cleared = True
+            fav = [FILTER_HEART] if STATE.filter_favorite else []
+            STATE.log(f"首次编队归位筛选: 喜爱筛选{'开' if fav else '关'}")
+            self.set_filter(fav)
         # 归零滚动: 连续右滑, 回到候选列表起点
         for _ in range(4):
             self.controller.post_swipe(420, 570, 1150, 570, 400).wait()
@@ -817,6 +819,7 @@ class PfBot:
                 STATE.rest_until = 0
             if STATE.status != "RUNNING":
                 STATE.status = "RUNNING"
+                self._filter_cleared = False  # 每次(重)开始: 首次编队重新按设置归位筛选
                 STATE.log("==== PF Bot 运行中 ====")
             try:
                 self.step()

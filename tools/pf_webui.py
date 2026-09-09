@@ -416,7 +416,7 @@ _HTML = """<!doctype html>
   <span class="hdr-ctl pf-only">
     <span class="stat">目标总分 <input id="in-target" class="inp" type="number" min="0" step="100000" placeholder="不限"></span>
     <span class="stat">能量门槛 <input id="in-energy" class="inp" type="number" min="1" max="10" step="1"></span>
-    <span class="stat"><label><input type="checkbox" id="in-fav" checked> 喜爱</label></span>
+    <span class="stat"><label title="编队筛选是否只看喜爱角色：每次开始运行后的首次编队，会在游戏内按此勾选/清除喜爱筛选"><input type="checkbox" id="in-fav" checked> 喜爱筛选</label></span>
     <span class="stat">每 <input id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
     休 <input id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
   </span>

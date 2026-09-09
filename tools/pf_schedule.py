@@ -11,6 +11,8 @@
   ]
 }
 
+一次性任务: 加 "date": "YYYY-MM-DD" 则仅该日触发, 过后自然失效 (如今天 5 点关 bot)。
+
 action:
   run_pf   全链: (运行中且 restart=true 则先停) → MuMu 就绪 → 开游戏 → PF hub
            → center 场地 → 场次(parent_session 建子场 / session_id 直用)
@@ -222,6 +224,8 @@ def mark_fired(name: str) -> None:
 
 def job_due(job: dict, now: dt.datetime | None = None) -> bool:
     now = now or dt.datetime.now()
+    if job.get("date") and job["date"] != now.strftime("%Y-%m-%d"):
+        return False  # 一次性任务: 仅指定日期当天生效
     hh, mm = str(job.get("time", "")).split(":")[:2]
     start = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
     grace = int(job.get("grace_minutes", 90))
