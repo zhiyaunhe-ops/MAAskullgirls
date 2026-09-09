@@ -7,7 +7,11 @@
  * 免 Root / 免无障碍 / 免录屏弹窗: 截屏 (screencap) 与点击 (input tap) 全走 Shizuku shell。
  * 模板与阈值与 phone/settle_bot.py 同源 (基准 1280x576, 帧自动缩放匹配)。
  *
+ * 「导航」按钮: 调同目录 pf_nav.js 自动走 启动游戏→大厅→EVENTS→角色场 PLAY!→
+ * 节点/选人/FIGHT→AUTO/3x 自检, 完成后无缝接本结算循环 (缺模板会自动转采集模式)。
+ *
  * 悬浮条: 运行中随时可拖动; 松手时靠近屏幕边缘会自动缩进, 只留一小条, 拖出即恢复。
+ * 场次: 今日场数/胜负持久化到 store.json (pf_store.js), DAILY_CAP 可设每日上限, 到限自动停。
  *
  * 运行前提:
  *   1. Shizuku 服务已启动 (无线调试激活), AutoJs6 侧栏抽屉已开启 Shizuku 权限开关
@@ -24,10 +28,12 @@ var RESULT_MS = 350;         // 结算/奖励阶段轮询间隔 (要快速点按
 var TAP_DELAY_MS = 1200;     // 点击后过场动画等待
 var STALL_SEC = 30;          // 连续无识别告警阈值
 var RESULT_FALLBACK = 3;     // 结算阶段连续 N 帧无按钮命中 → 判定已入战斗, 回大字检测
+var DAILY_CAP = 0;           // 今日场数上限 (0=不限): 判完这局到限自动停; 0 点日历天自动归零
 
 var TPL_DIR = files.cwd() + "/templates/";
 var SHOT_DIR = "/sdcard/sgm_settle/";
 var SHOT_PATH = SHOT_DIR + "frame.png";   // shell(uid 2000) 与 app 都可读写的位置
+var STORE_PATH = SHOT_DIR + "store.json"; // 今日场次持久化文件 (pf_store.js 读写)
 
 /* ROI 为 [x, y, w, h], 1280x576 基准 (标定见 phone/assets/settle/make_templates.py) */
 var ROI_TITLE = [400, 20, 480, 100];     // VICTORY!/DEFEAT! 大字区
@@ -45,6 +51,43 @@ var worker = null;
 var runStart = 0;
 var stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
              lastAct: 0, phase: 0, noHitRun: 0 };
+
+/* ---------- 今日场次 (数据层 pf_store.js, 这里注入手机 files 作存储后端) ---------- */
+
+var _pfStore;    // 惰性 require: 缺文件不挡结算循环, 只是今日计数不持久化/无上限
+function pfStoreLib() {
+    if (_pfStore === undefined) {
+        try { _pfStore = require("./pf_store.js"); }
+        catch (e) { _pfStore = null; log("[!!] 缺 pf_store.js — 今日场次不持久化/无上限"); }
+    }
+    return _pfStore;
+}
+var daily = { day: "", rounds: 0, wins: 0, loses: 0 };
+
+function dailyIO() {
+    return {
+        read: function () { return files.exists(STORE_PATH) ? files.read(STORE_PATH) : null; },
+        write: function (txt) { files.createWithDirs(STORE_PATH); files.write(STORE_PATH, txt); }
+    };
+}
+function dailyLoad() {
+    var lib = pfStoreLib();
+    if (lib) daily = lib.loadStore(dailyIO());
+    return daily;
+}
+function dailyCount(win) {
+    var lib = pfStoreLib();
+    if (!lib) return;
+    lib.addRound(daily, win);
+    lib.saveStore(dailyIO(), daily);      // 每场落盘, 崩溃/重启不丢今日计数
+}
+function dailyCapHit() {
+    var lib = pfStoreLib();
+    return !!(lib && lib.capReached(daily, DAILY_CAP));
+}
+function dailyText() {
+    return "今日" + daily.rounds + (DAILY_CAP > 0 ? "/" + DAILY_CAP : "") + "场";
+}
 
 /* ---------- 基础封装 ---------- */
 
@@ -86,7 +129,7 @@ function fmtDur(ms) {
 function setStat(prefix) {
     ui.run(function () {
         w.tvStat.setText(prefix + " " + fmtDur(Date.now() - runStart)
-            + " " + stat.rematches + "场 " + stat.wins + "胜" + stat.loses + "负");
+            + " " + dailyText() + " " + stat.wins + "胜" + stat.loses + "负");
     });
 }
 
@@ -95,9 +138,10 @@ function setStat(prefix) {
 var w = floaty.window(
     '<frame id="root" bg="#CC1E1E1E" padding="6">'
     + '  <horizontal>'
-    + '    <button id="btnStart" text="开始" w="60" h="42" marginRight="4" textSize="13sp"/>'
-    + '    <button id="btnStop" text="停止" w="60" h="42" marginRight="6" textSize="13sp"/>'
-    + '    <text id="tvStat" text="待机" w="176" h="42" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
+    + '    <button id="btnStart" text="开始" w="56" h="42" marginRight="4" textSize="13sp"/>'
+    + '    <button id="btnNav" text="导航" w="56" h="42" marginRight="4" textSize="13sp"/>'
+    + '    <button id="btnStop" text="停止" w="56" h="42" marginRight="6" textSize="13sp"/>'
+    + '    <text id="tvStat" text="待机" w="224" h="42" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
     + '  </horizontal>'
     + '</frame>'
 );
@@ -159,8 +203,16 @@ function loop() {
                 stat.seen = true;
                 stat.phase = 1;
                 stat.noHitRun = 0;
+                dailyCount(!!vic);
                 if (vic) { stat.wins++; log("[场] VICTORY (共 " + stat.wins + " 胜 " + stat.loses + " 负)"); }
                 else { stat.loses++; log("[场] DEFEAT (共 " + stat.wins + " 胜 " + stat.loses + " 负)"); }
+
+                if (dailyCapHit()) {
+                    log("[停] " + dailyText() + " 已达每日上限 — 停止, 留在结算页 (改 settle_bot.js 顶部 DAILY_CAP 调整)");
+                    toast("今日上限 " + DAILY_CAP + " 场已到, 自动停止");
+                    running = false;                 // 不再点任何按钮 (安全), 线程 finally 收尾
+                    break;
+                }
 
                 /* 先手点右槽固定位置, 免按钮匹配:
                    胜局该格是 CONTINUE (略过结算) / 败局该格是 REMATCH (直接再战) */
@@ -223,6 +275,11 @@ function startBot() {
         toast("Shizuku 未连接: 确认 Shizuku 服务已启动, 且 AutoJs6 侧栏开启 Shizuku 开关");
         return;
     }
+    dailyLoad();
+    if (dailyCapHit()) {
+        toast(dailyText() + " 已达上限 — 不开跑 (明日自动归零, 或改 settle_bot.js 顶部 DAILY_CAP)");
+        return;
+    }
     running = true;
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
              lastAct: 0, phase: 0, noHitRun: 0 };
@@ -242,15 +299,63 @@ function startBot() {
 function stopBot() {
     running = false;
     var dur = runStart ? fmtDur(Date.now() - runStart) : "0:00";
-    toast("统计: " + dur + " | " + stat.rematches + " 场 | "
-        + stat.wins + " 胜 " + stat.loses + " 负 | CONTINUE×" + stat.continues);
+    toast("统计: " + dur + " | " + dailyText() + " | 本次 " + stat.rematches
+        + " 场 " + stat.wins + "胜" + stat.loses + "负 | CONTINUE×" + stat.continues);
+}
+
+/* 导航: pf_nav.js 走完 启动→大厅→EVENTS→角色场→FIGHT 后, 在同一线程直接接结算循环 */
+function startNav() {
+    if (running) { toast("已在运行"); return; }
+    if (!checkShizuku()) {
+        toast("Shizuku 未连接: 确认 Shizuku 服务已启动, 且 AutoJs6 侧栏开启 Shizuku 开关");
+        return;
+    }
+    dailyLoad();
+    if (dailyCapHit()) {
+        toast(dailyText() + " 已达上限 — 不导航 (明日自动归零, 或改 settle_bot.js 顶部 DAILY_CAP)");
+        return;
+    }
+    var nav;
+    try {
+        nav = require("./pf_nav.js");
+    } catch (e) {
+        toast("缺 pf_nav.js: 要与 settle_bot.js 放同一目录");
+        log("[错] require pf_nav 失败: " + e);
+        return;
+    }
+    running = true;
+    runStart = Date.now();
+    stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
+             lastAct: 0, phase: 0, noHitRun: 0 };
+    setStat("导航");
+    worker = threads.start(function () {
+        try {
+            var ok = nav.runNav(function (msg) { log(msg); },
+                function () { return !running; });
+            if (ok) {
+                log("[航] —— 交棒结算循环 ——");
+                loop();
+            } else {
+                log("[航] 导航未接结算循环 (停在安全点/采集完成, 看上方日志)");
+            }
+        } catch (e) {
+            log("[错] 导航: " + e);
+            toast("导航异常: " + e + " (看日志页)");
+        } finally {
+            running = false;
+            ui.run(function () { w.tvStat.setText("已停止"); });
+        }
+    });
 }
 
 w.btnStart.on("click", startBot);
+w.btnNav.on("click", startNav);
 w.btnStop.on("click", stopBot);
 
 /* ---------- 入口 ---------- */
-toast("SGM 结算挂机: 悬浮条已就绪 (拖动空白处移动, 靠边松手自动缩进)");
+toast("SGM 结算挂机: 开始=直接结算循环 / 导航=自动进一场再开跑 (拖动空白处移动, 靠边缩进)");
+dailyLoad();
+ui.run(function () { w.tvStat.setText("待机 " + dailyText()); });
 if (!checkShizuku()) {
     log("[!!] Shizuku 未连接 — 仍可打开悬浮条, 但点「开始」前需先连上");
 }
