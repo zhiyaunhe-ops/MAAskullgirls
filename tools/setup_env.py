@@ -21,6 +21,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
 
+try:
+    from pf_env import CONFIG_PATH, WEBUI_PORT
+except Exception:  # noqa: BLE001  setup_env 可能早于依赖装好, 端口显示不是必需项
+    CONFIG_PATH, WEBUI_PORT = None, 8790
+sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+
 MAAFW_VERSION = "5.12.3"
 STATIC_DIR = PROJECT_ROOT / "tools" / "static"
 OCR_DIR = PROJECT_ROOT / "assets" / "resource" / "base" / "model" / "ocr"
@@ -234,7 +240,8 @@ def main() -> int:
             print(f"  - {f}")
         print("修复后重新运行本脚本即可。")
         return 1
-    print("环境就绪。启动: python tools/pf_bot.py  →  WebUI http://127.0.0.1:8787 点「开始」")
+    print("环境就绪。启动: python tools/pf_bot.py  →  "
+          f"WebUI http://127.0.0.1:{WEBUI_PORT} 点「开始」")
     return 0
 
 

@@ -5,7 +5,7 @@
 能量不足弹窗: 关闭后自动进编队, 只替换能量不足的槽位。
 
 用法: python tools/pf_bot.py
-WebUI: http://127.0.0.1:8787
+WebUI: http://127.0.0.1:<pf_env.WEBUI_PORT>  (本机 config.json 可覆盖)
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from pf_env import (
     resolve_adb,
     PROJECT_ROOT,
     STATE,
+    WEBUI_PORT,
     preload_msvcrt,
     start_debug_cleaner,
 )
@@ -927,7 +928,7 @@ class PfBot:
 
 def main() -> int:
     start_webui()
-    STATE.log("WebUI: http://127.0.0.1:8787")
+    STATE.log(f"WebUI: http://127.0.0.1:{WEBUI_PORT}")
     bot = PfBot()
     try:
         bot.setup()

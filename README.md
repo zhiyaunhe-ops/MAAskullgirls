@@ -22,7 +22,7 @@ Skullgirls Mobile 是一款被严重低估的 2D 格斗 + RPG 手游：手绘动
 - 🎯 **选人策略**：优先挑战火框（加倍率）对手，无火框时选战力最低的软柿子
 - 🔋 **能量判据**：只让能量钉 ≥4 的角色出战，能量不足的槽位自动替换重编
 - 🧩 **规则适配**：按当期 PF 规则（元素/职业限制）自动筛选替换芯片
-- 📊 **WebUI 控制台**（`http://127.0.0.1:8787`）：实时日志 + 模拟器截图、总分/单场收益/连胜曲线
+- 📊 **WebUI 控制台**（`http://127.0.0.1:8790`）：实时日志 + 模拟器截图、总分/单场收益/连胜曲线
   （Chart.js 本地托管）、分数上限/能量门槛/连打休息等设置、一键起停
 - 💤 **自动休息**：连续 N 场后强制休息，防止过热；达到目标总分自动暂停
 
@@ -48,7 +48,7 @@ copy config.example.json config.json   # 按本机 MuMu 安装路径修改 adb_p
 python tools/pf_bot.py             # 启动后打开 WebUI 点「开始」
 ```
 
-启动 MuMu 12 并进入游戏主界面，浏览器打开 <http://127.0.0.1:8787> 即可接管。
+启动 MuMu 12 并进入游戏主界面，浏览器打开 <http://127.0.0.1:8790> 即可接管。
 
 > ⚠️ **再次强调：游戏语言必须是英文（English）**。脚本依赖 OCR 识别英文界面文字
 > （SERVER ERROR / PLAY! / 战力数字等），中文或其他语言界面无法工作。
@@ -60,6 +60,19 @@ python tools/pf_bot.py             # 启动后打开 WebUI 点「开始」
 把 [Krazete/sgm](https://github.com/Krazete/sgm)（Skullgirls Mobile 图鉴）克隆到项目根目录命名为 `sgm/`，
 可解锁 WebUI 的元素/职业图标并优先使用其变体数据。不克隆也能跑——`tools/data/variants.json`
 已内置 306 个变体的数据副本。
+
+## JJC 日程与版本追溯
+
+`tools/jjc_store.py` 每日从 [sgmnow](https://krazete.github.io/sgmnow/) 背后的
+SGM Score Cutoffs 表拉一次「当天台上开的是谁」（各 PF 名字 + 开放状态 / 裂缝元素 /
+daily 名单），按 SGM 游戏日归档快照；同时给「场次 × 规则」建版本账本——每次改配置
+记一笔并带上当天 JJC 快照，所以「哪天把哪场的规则改成了什么、当天台上是谁」可以回查。
+WebUI 有 **JJC 日程** 页签。详见 [PF_BOT.md §6.11](PF_BOT.md)。
+
+```bash
+python tools/jjc_store.py fetch      # 抓一次并落盘
+python tools/jjc_store.py versions   # 看场次的规则版本历史
+```
 
 ## 文档
 

@@ -32,12 +32,15 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
 from pathlib import Path
+
+from pf_env import WEBUI_PORT
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
@@ -47,7 +50,9 @@ STATE_PATH = PROJECT_ROOT / "debug" / "pf" / "schedule_state.json"
 SCHED_LOG = PROJECT_ROOT / "debug" / "pf" / "schedule.log"
 BOT_LOG = PROJECT_ROOT / "debug" / "pf" / "bot_stdout.log"
 PY = sys.executable  # 调度器必须用 anaconda python 启动; bot 子进程沿用同一解释器
-API = "http://127.0.0.1:8787"
+# 端口 PF 服务锁定值 (pf_env.WEBUI_PORT, 可由 config.json 覆盖), 不再写死 8787
+API = f"http://127.0.0.1:{WEBUI_PORT}"
+SVC_ID = "sgm-pf-bot"   # 身份标签, 必须与 pf_webui.SVC_ID 一致
 
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -84,7 +89,14 @@ def api_post(path: str, data: dict, timeout: int = 5):
 
 
 def bot_alive() -> bool:
-    return api_get("/api/state") is not None
+    """端口有响应 ≠ bot 在跑 —— 必须校验身份标签。
+
+    本机 87xx 段挤着别的服务 (8787 上实测是一个银企直连需求服务): 旧实现只问
+    "端口通不通", 于是把别人的服务认成 bot, run_pf 会以为"bot 已在运行"而
+    拒绝启动, 或者反过来向别的服务发 /api/start。所以比对 svc 字段。
+    """
+    st = api_get("/api/state")
+    return bool(st and st.get("svc") == SVC_ID)
 
 
 def wait_bot(dead: bool = False, timeout: int = 40) -> bool:
@@ -128,7 +140,25 @@ def act_run_pf(params: dict) -> None:
         log(f"已建子场次「{child['name']}」({sid})")
     if not sid:
         raise RuntimeError("params 缺 session_id / parent_session")
+    start_bot(sid)
 
+
+def start_bot(sid: str) -> bool:
+    """保证 pf_bot 进程在跑, 并对指定场次 /api/start。返回是否 RUNNING。"""
+    start_bot_process()
+    r = api_post("/api/start", {"session_id": sid})
+    if not r or not r.get("ok"):
+        raise RuntimeError(f"/api/start 失败: {r!r}")
+    ok = wait_running(timeout=60)
+    log(f"已开跑: session={sid} RUNNING={ok}", "info" if ok else "warn")
+    return ok
+
+
+def start_bot_process() -> None:
+    """拉起 pf_bot 进程; 已在跑则直接复用 (幂等)。"""
+    if bot_alive():
+        log("pf_bot 已在运行, 复用该进程")
+        return
     log("后台启动 pf_bot ...")
     lf = open(BOT_LOG, "ab")
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -146,13 +176,7 @@ def act_run_pf(params: dict) -> None:
             creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
     bot  # noqa: B018 (留存引用, 进程随调度器常驻)
     if not wait_bot(dead=False, timeout=60):
-        raise RuntimeError("pf_bot 60s 未就绪 (8787 无响应)")
-    r = api_post("/api/start", {"session_id": sid})
-    if not r or not r.get("ok"):
-        raise RuntimeError(f"/api/start 失败: {r!r}")
-    ok = wait_running(timeout=60)
-    log(f"run_pf 完成: session={sid} RUNNING={ok}",
-        "info" if ok else "warn")
+        raise RuntimeError(f"pf_bot 60s 未就绪 ({WEBUI_PORT} 无响应)")
 
 
 def wait_running(timeout: int = 60) -> bool:
@@ -174,6 +198,155 @@ def act_stop_pf(params: dict) -> None:
     log(f"stop_pf 完成: 进程退出={ok}")
 
 
+def act_run_new_pf(params: dict) -> None:
+    """凌晨新 PF 全链 (用户定义的路线):
+
+    MuMu → 唯一 device → Skullgirls → 清弹窗 → 大厅 → PF hub → 左右滑动找今天
+    新出的 PF(score=0) → 判定它属于哪个类别 → 挂到对应父场次下建当日子场次 → 起 bot。
+
+    params:
+      fallback_title  没扫到 score=0 时的兜底场地关键词 (可选)
+      parents         {场地关键词: 父场次 id} 覆盖 arena_rules.json 的映射 (可选)
+      default_parent  兜底父场次 id (可选)
+      auto_parent     找不到父场次时按场地名新建顶级场次 (默认 True)
+      restart        bot 在跑时先停 (默认 True)
+      no_start       只找到场地+建子场次, 不起 bot (调试用, 默认 False)
+    """
+    from pf_scene import PfScene, ensure_mumu
+    from pf_env import resolve_adb
+    from pf_store import STORE
+
+    if bot_alive():
+        if not params.get("restart", True):
+            log("bot 运行中, restart 未开, 跳过", "warn")
+            return
+        log("bot 运行中, 先停止 (restart=true)")
+        api_post("/api/stop", {})
+        if not wait_bot(dead=True, timeout=40):
+            raise RuntimeError("bot 40s 未退出, 放弃本次触发")
+
+    ensure_mumu(resolve_adb()[0])          # ① 模拟器 + 唯一 device (-v 0)
+    scene = PfScene()
+    scene.launch_game()                    # ② 打开 Skullgirls
+    scene.goto_pf()                        # ③④ 清弹窗 → 大厅 → PF hub
+    #   wait_hall 内部已按 促销弹窗X → 结算CONTINUE → 顶栏房子回家 的顺序逃逸,
+    #   这就是"清掉所有弹窗"那一环 (不另写视觉逻辑, 复用实测过的链路)
+
+    title = pick_new_arena(scene, params)   # ⑤⑥ 左右滑动 + 选今天新出的 PF
+    rule, pid, kind, note = resolve_arena(title, params)   # 划到哪个类别
+
+    if not pid and params.get("auto_parent", True):
+        if len("".join(ch for ch in title.upper() if ch.isalnum())) < 4:
+            raise RuntimeError(
+                f"场地名 {title!r} 过短 (OCR 疑似不完整), 拒绝自动新建顶级场次 —— "
+                f"请人工看 debug/pf/run/ 下当轮截图确认真名后补 arena_rules.json")
+        sess = STORE.create(title, rule)
+        pid, note = sess["id"], note + " | 无匹配父场次, 已新建顶级场次"
+        log(f"新建顶级场次「{sess['name']}」({pid}) 规则={rule}", "warn")
+    if not pid:
+        raise RuntimeError(f"场地「{title}」既无映射父场次也无 auto_parent, 放弃")
+
+    child = STORE.create_child(pid)        # ⑦ 建当日子场次 (继承规则/上界/能量/休息)
+    log(f"子场次「{child['name']}」({child['id']}) <- 父 {pid} | 类别={kind} | {note}")
+    if rule is not None and child.get("rule") != rule:
+        STORE.update(child["id"], rule=rule)
+        log(f"按场地类别改写子场次规则 -> {rule}", "warn")
+
+    if params.get("no_start"):
+        log(f"no_start: 停在已居中的「{title}」, 子场次 {child['id']} 待人工开跑")
+        return
+    start_bot(child["id"])
+
+
+def pick_new_arena(scene, params: dict) -> str:
+    """扫轮播找出今天新出的 PF (score=0), 回到那张卡并返回场地名。
+
+    两条硬校验 (2026-09-18 教训: 标题 OCR 失效 -> center 子串误命中 -> 回落到
+    错卡, 旧实现直接拿错卡建了子场次):
+    1. 回卡用轮播位 (goto_index), 不靠标题匹配;
+    2. 居中后复读分数, 不是 0 就中止, 不建场次不起 bot。
+    """
+    seen = scene.explore()                 # 内部已左滑一圈并恢复初始卡
+    zeros = [(i, t) for i, (t, s) in enumerate(seen) if s == 0 and t]
+    if zeros:
+        idx, target = zeros[0]
+        more = [t for _, t in zeros[1:]]
+        log(f"扫到 {len(seen)} 张场地卡, score=0 的新场: {target!r} (轮播位 {idx})"
+            + (f"; 另有 {more} (取第一个)" if more else ""))
+        scene.goto_index(idx)              # 按轮播位原路回去
+        title, score = scene.read_center_card()
+        if score != 0:
+            raise RuntimeError(
+                f"居中复核失败: 轮播位 {idx} 复读到 {title!r} score={score}, "
+                f"与扫描时的 {target!r} score=0 不符 —— 不建场次 (疑似轮播位漂移/OCR 误判)")
+        log(f"居中复核通过: {title!r} (score={score:,})")
+    else:
+        target = params.get("fallback_title") or ""
+        if not target:
+            raise RuntimeError(
+                f"没有 score=0 的新场 (扫到: {[t for t, _ in seen]}), 且未给 fallback_title")
+        log(f"无 score=0 的场, 按 fallback_title 走 {target}", "warn")
+        title, score = scene.center(target)
+        log(f"已居中新场: {title} (score={score:,})")
+    return title
+
+
+def resolve_arena(title: str, params: dict):
+    """场地名 -> (rule, parent_id, kind, note)。映射见 tools/data/arena_rules.json。"""
+    import json as _json
+    from pathlib import Path as _P
+
+    key = "".join(ch for ch in title.upper() if ch.isalnum())
+    table = {}
+    try:
+        table = (_json.loads((_P(PROJECT_ROOT) / "tools" / "data" /
+                              "arena_rules.json").read_text(encoding="utf-8"))
+                 .get("arenas") or {})
+    except (OSError, _json.JSONDecodeError) as e:
+        log(f"读 arena_rules.json 失败: {e}", "warn")
+
+    spec, tkey = None, None
+    for name, s in table.items():
+        nk = "".join(ch for ch in name.upper() if ch.isalnum())
+        # 短 key (<4 字母) 只接受全等: 'M' 做子串匹配会命中 MEDICISHAKEDOWN
+        # (2026-09-18 实测 OCR 残串导致错挂父场次)。
+        if nk and (nk == key or (len(key) >= 4 and (nk in key or key in nk))):
+            spec, tkey = s, name
+            break
+    if spec is None:
+        log(f"场地「{title}」不在 arena_rules.json 里, 按无规则处理 (需人工确认类别)",
+            "warn")
+        spec = {"rule": None, "parent_id": None, "kind": "未知", "依据": "未收录"}
+        tkey = "(未收录)"
+
+    rule = spec.get("rule")
+    # 自动绑定只允许元素规则: 游戏里**只有元素 PF 限定队伍** (2026-09-16 用户确认),
+    # 角色场/金币场/星助手场/月场都不限定; 而 pf_bot.judge_rule() 对 {"type":"class"}
+    # 是恒返回 False 的桩 —— 一旦被自动写进子场次, 就会每场战斗都进"筛选替换"循环,
+    # 空烧能量且永远满足不了。人工在 WebUI 上设的规则走 sessions.json, 不经过这里。
+    if isinstance(rule, dict) and rule.get("type") != "element":
+        log(f"arena_rules[{tkey}] 的规则 {rule} 不是元素类 —— PF 里只有元素场有限定, "
+            f"自动路径按无规则处理", "warn")
+        rule = None
+    elif rule is not None and not isinstance(rule, dict):
+        log(f"arena_rules[{tkey}] 的规则结构非法 ({rule!r}), 自动路径按无规则处理", "warn")
+        rule = None
+    pid = None
+    for kw, sid in (params.get("parents") or {}).items():
+        if "".join(ch for ch in kw.upper() if ch.isalnum()) in key:
+            pid, note = sid, f"父场次由 params.parents 指定 ({kw})"
+            break
+    if not pid and spec.get("parent_id"):
+        pid = spec["parent_id"]
+        note = f"父场次来自 arena_rules[{tkey}]"
+    if not pid and params.get("default_parent"):
+        pid, note = params["default_parent"], "父场次用 params.default_parent"
+    if not pid:
+        note = "无父场次"
+    note = f"{note} | 依据={spec.get('依据','?')}"
+    return rule, pid, spec.get("kind") or "未知", note
+
+
 def act_explore(params: dict) -> None:
     from pf_scene import PfScene, ensure_mumu
     from pf_env import resolve_adb
@@ -193,7 +366,8 @@ def act_explore(params: dict) -> None:
         act_run_pf({"session_id": params["session_id"], "restart": False})
 
 
-ACTIONS = {"run_pf": act_run_pf, "stop_pf": act_stop_pf, "explore": act_explore}
+ACTIONS = {"run_pf": act_run_pf, "stop_pf": act_stop_pf, "explore": act_explore,
+           "run_new_pf": act_run_new_pf}
 
 # ---------- 调度 ----------
 
@@ -275,6 +449,43 @@ def main() -> int:
         for j in load_jobs():
             print(f"{j.get('time')} {j.get('name')} -> {j.get('action')} {j.get('params')}")
         return 0
+    if "--action" in sys.argv:
+        # 自包含入口: 不依赖 schedule.json, 参数直接跟在后面 (一次凌晨任务用)
+        idx = sys.argv.index("--action")
+        action = sys.argv[idx + 1]
+        fn = ACTIONS.get(action)
+        if not fn:
+            print(f"未知 action: {action} (可用: {', '.join(ACTIONS)})")
+            return 1
+        params = {}
+        if "--params" in sys.argv:
+            params = json.loads(sys.argv[sys.argv.index("--params") + 1])
+        # 硬看门狗: 实测 explore() 会在 MAA OCR 的 post_recognition().wait() 里
+        # 永久卡住 (2026-09-16 凌晨 9 分钟无进展, 只留下 6 张截图)。那次是手动杀的,
+        # 但凌晨无人值守时必须自己兜住 —— 超时就判死退出, 别把设备锁到白天。
+        deadline = int(params.pop("_timeout", 480))
+        log(f"==== 直接执行 action「{action}」params={params} "
+            f"超时上限={deadline}s ====", "warn")
+        box = {}
+
+        def _run():
+            try:
+                fn(params)
+                log(f"==== action「{action}」结束 ====")
+                box["ok"] = True
+            except Exception as e:  # noqa: BLE001
+                log(f"action「{action}」失败: {e}", "err")
+                box["ok"] = False
+
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        th.join(deadline)
+        if th.is_alive():
+            log(f"action「{action}」超过 {deadline}s 未完成 —— 判定卡死 "
+                f"(多半是 MAA OCR 的 wait() 不返回), 强制退出", "err")
+            sys.stdout.flush()
+            os._exit(3)          # 线程杀不掉, 只能整进程退; 子进程/adb 可能残留
+        return 0 if box.get("ok") else 1
     if "--fire" in sys.argv:
         name = sys.argv[sys.argv.index("--fire") + 1]
         job = next((j for j in load_jobs() if j.get("name") == name), None)

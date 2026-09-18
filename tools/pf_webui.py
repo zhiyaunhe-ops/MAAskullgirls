@@ -6,6 +6,9 @@ GET  /api/state         {status, step, fight_no, score, streak, logs, shot_ver, 
 GET  /api/sessions      {sessions: [{id,name,rule,count,last_ts}], active, running}
 GET  /api/summary       {per_min, last_delta}  当前场次轻量统计 (小组件用)
 GET  /api/daily         {data:{queue,pool,names}, saved}  每日任务状态 (debug/pf/daily.json)
+GET  /api/jjc           {snapshot:{day,entries,daily_events,...}, versions, session_names}
+                        JJC 日程快照 + 场次×规则版本账本（peek, 不触网）
+POST /api/jjc/refresh   强制从 sgmnow 抓一次新快照（唯一的 JJC 触网入口）
 POST /api/daily         保存 {queue:[...], pool:{daily,guild}, names:{id:自定义名}}
 GET  /api/history       ?sessions=a,b,c -> {series: [{id,name,rule,points}]}
 GET  /static/...        静态文件（chart.umd.min.js）
@@ -26,14 +29,20 @@ POST /api/sessions/create|update|delete   场次管理（运行中禁改当前�
 import ipaddress
 import json
 import mimetypes
+import socket
 import threading
 import time
+import urllib.request
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from pf_env import STATE
+from pf_env import STATE, WEBUI_PORT
 from pf_store import STORE, UNSET, clean_rest, clean_target, clean_energy
+from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
+
+SVC_ID = "sgm-pf-bot"    # 本服务的身份标签, 见 _gate 说明与 /api/state
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SGM_DIR = Path(__file__).resolve().parent.parent / "sgm"
@@ -47,6 +56,24 @@ def _load_daily() -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _jjc_payload() -> str:
+    """JJC 页签的读接口数据。
+
+    peek() 不触网 —— 切换页签不该发起外部请求; 要最新的话走 /api/jjc/refresh。
+    """
+    snap = JJC.peek()
+    if snap:
+        snap = dict(snap)
+        snap["entries"] = ordered_entries(snap.get("entries") or {})
+        # 归档不是当天的 -> 标 stale, 让前端说清楚这是历史数据不是今日实况
+        snap["stale"] = bool(snap.get("stale")) or snap.get("day") != sgm_day()
+        for key in ("raw_rows", "revisions"):   # 证据留文件里, 不上接口
+            snap.pop(key, None)
+    names = {s["id"]: s["name"] for s in STORE.list_sessions()}
+    return json.dumps({"snapshot": snap, "versions": VERSIONS.all(),
+                       "session_names": names}, ensure_ascii=False)
 
 
 def _save_daily(data: dict) -> None:
@@ -65,10 +92,17 @@ ALLOWED_NETS = [ipaddress.ip_network(n) for n in (
 
 
 def _host_ok(host: str) -> bool:
-    """Host/Origin 校验: 放行 localhost / IP 字面量 / 无点局域网主机名 / .local·.lan;
-    公网域名拒绝 —— 把攻击者域名解析到 127.0.0.1 的 DNS rebinding 在这里被拦下。"""
+    """Host/Origin 校验: 放行 localhost / IP 字面量 / 无点局域网主机名 / .local·.lan·.ts.net;
+    公网域名拒绝 —— 把攻击者域名解析到 127.0.0.1 的 DNS rebinding 在这里被拦下。
+
+    .ts.net 是 Tailscale MagicDNS 的固定后缀 (2026-09-17 加入):
+    它只有 tailnet 成员能解析、也只有 tailnet 内可达, 威胁模型与 .local/.lan 同一档,
+    不属于"公网域名"。没有它, 经 tailscale serve 暴露的端口会被这条白名单 403 挡掉
+    —— 见 PF_BOT.md §6.13。
+    """
+    TAILNET_SUFFIXES = (".local", ".lan", ".ts.net")
     h = (host or "").strip().lower()
-    if h.startswith("["):                 # [::1]:8787
+    if h.startswith("["):                 # [::1]:<port>
         end = h.find("]")
         h = h[1:end] if end != -1 else h[1:]
     elif ":" in h:                        # host:port
@@ -79,7 +113,7 @@ def _host_ok(host: str) -> bool:
         ipaddress.ip_address(h)
         return True
     except ValueError:
-        return "." not in h or h.endswith((".local", ".lan"))
+        return "." not in h or h.endswith(TAILNET_SUFFIXES)
 
 _HTML = """<!doctype html>
 <html lang="zh"><head>
@@ -255,7 +289,7 @@ _HTML = """<!doctype html>
   .pf-subnav button.on { color:var(--txt); border-color:var(--blue); background:rgba(127,178,255,.08); }
   .pf-sub { display:none; flex-direction:column; flex:1; min-height:0; }
   .pf-sub.on { display:flex; }
-  body[data-tab="daily"] .pf-only { display:none; }   /* PF 专属 UI (场次/规则/头部统计与设置) 仅 PF 页签显示 */
+  body:not([data-tab="pf"]) .pf-only { display:none; }   /* PF 专属 UI (场次/规则/头部统计与设置) 仅 PF 页签显示 */
   .page { display:none; }
   .page.on { display:flex; flex-direction:column; flex:1; min-height:0; }
   #runwrap { display:flex; flex:1; min-height:0; padding:0 20px 16px; gap:14px; }
@@ -372,6 +406,45 @@ _HTML = """<!doctype html>
   ::-webkit-scrollbar-thumb { background:#2a3348; border-radius:4px; }
   ::-webkit-scrollbar-track { background:transparent; }
 
+  /* ---- JJC 日程页签 ---- */
+  #jjcwrap { flex:1; min-height:0; overflow-y:auto; padding:16px 20px 24px;
+             display:flex; flex-direction:column; gap:16px; }
+  .jjc-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .jjc-src { font-size:12px; color:var(--dim); }
+  .jjc-src a { color:var(--blue); text-decoration:none; }
+  .jjc-src a:hover { text-decoration:underline; }
+  .jjc-src .stale { color:var(--gold); }
+  .sect-title { font-size:12px; color:var(--dim); letter-spacing:2px; margin:0 0 8px; }
+  .jpanel { background:linear-gradient(160deg,var(--panel2),var(--panel));
+            border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .chip { font-size:12px; padding:5px 11px; border-radius:999px; background:var(--panel2);
+          border:1px solid var(--line); color:var(--txt); display:inline-flex; align-items:center; gap:6px; }
+  .chip img { width:20px; height:20px; object-fit:contain; }
+  .jjc-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(236px,1fr)); gap:12px; }
+  .jjc-card { background:linear-gradient(160deg,var(--panel2),var(--panel));
+              border:1px solid var(--line); border-radius:12px; padding:12px 14px;
+              display:flex; gap:10px; align-items:center; }
+  .jjc-card.off { opacity:.55; }
+  .jjc-card img { width:34px; height:34px; object-fit:contain; flex:0 0 34px; }
+  .jjc-card .jtxt { min-width:0; flex:1; }
+  .jjc-card .jk { font-size:11.5px; color:var(--dim); letter-spacing:.5px; }
+  .jjc-card .jn { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .jjc-card.off .jn { color:var(--faint); font-weight:500; }
+  .jbadge { font-size:10.5px; padding:2px 7px; border-radius:999px; margin-left:6px; vertical-align:middle; }
+  .jbadge.on   { background:rgba(94,224,138,.14); color:var(--green); box-shadow:inset 0 0 0 1px rgba(94,224,138,.35); }
+  .jbadge.last { background:rgba(117,129,154,.14); color:var(--dim); }
+  .jbadge.vol  { background:rgba(246,201,96,.14);  color:var(--gold); }
+  .ver-row { display:flex; gap:12px; padding:9px 0; border-bottom:1px solid var(--line);
+             font-size:12.5px; align-items:baseline; }
+  .ver-row:last-child { border-bottom:0; }
+  .ver-row.del .ver-c { color:var(--red); }
+  .ver-v { color:var(--gold); font-weight:600; min-width:34px; flex:0 0 auto; }
+  .ver-t { color:var(--dim); min-width:132px; flex:0 0 auto; }
+  .ver-c { color:var(--txt); flex:1; min-width:0; }
+  .ver-cfg { color:var(--faint); font-size:11.5px; margin-top:3px; }
+  #jjc-empty { color:var(--dim); font-size:13px; padding:6px 0; }
+
   /* ---- 移动端适配 (桌面 .hdr-ctl 不产生盒子, 布局不变) ---- */
   .hdr-ctl { display: contents; }
   @media (max-width: 900px) {
@@ -427,6 +500,7 @@ _HTML = """<!doctype html>
 <nav>
   <button id="tab-pf" class="on" onclick="switchTab('pf')">Prize Fighter Bot</button>
   <button id="tab-daily" onclick="switchTab('daily')">每日任务</button>
+  <button id="tab-jjc" onclick="switchTab('jjc')">JJC 日程</button>
   <button id="sess-chip" class="sess-chip none pf-only" onclick="openSessionModal()">场次 未选</button>
   <div id="rule-bar" class="pf-only">
     <span class="rule-label">PF规则</span>
@@ -499,6 +573,28 @@ _HTML = """<!doctype html>
     </div>
   </div>
 </div>
+<div id="page-jjc" class="page">
+  <div id="jjcwrap">
+    <div class="jjc-bar">
+      <span class="jjc-src" id="jjc-src">读取中…</span>
+      <button id="jjc-refresh" class="mini-btn">刷新快照</button>
+    </div>
+    <div class="jpanel">
+      <div class="sect-title">今日 daily</div>
+      <div class="chips" id="jjc-daily"></div>
+    </div>
+    <div class="jpanel">
+      <div class="sect-title">当前各类 PF</div>
+      <div class="jjc-grid" id="jjc-grid"></div>
+    </div>
+    <div class="jpanel">
+      <div class="sect-title">场次 × 规则 版本账本
+        <span style="letter-spacing:0;color:var(--faint);">— 仅记录配置变更，重复保存同值不产生版本</span>
+      </div>
+      <div id="jjc-versions"></div>
+    </div>
+  </div>
+</div>
 <div id="sess-modal" class="modal-mask" style="display:none;">
   <div class="modal">
     <div class="modal-title">选择 PF 场次</div>
@@ -535,11 +631,12 @@ function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 let pfSub = 'run';
 function switchTab(t) {
   document.body.dataset.tab = t;
-  for (const n of ['pf','daily']) {
+  for (const n of ['pf','daily','jjc']) {
     document.getElementById('tab-'+n).classList.toggle('on', n===t);
     document.getElementById('page-'+n).classList.toggle('on', n===t);
   }
   if (t === 'daily') loadDaily();
+  if (t === 'jjc') loadJJC();
 }
 function switchPfSub(s) {
   pfSub = s;
@@ -1158,6 +1255,111 @@ document.getElementById('in-energy').addEventListener('change', saveSessionSetti
 document.getElementById('in-restn').addEventListener('change', saveSessionSettings);
 document.getElementById('in-restm').addEventListener('change', saveSessionSettings);
 
+/* ================= JJC 日程 (sgmnow 快照 / 场次×规则版本账本) =================
+   数据来自 Krazete 的 SGM Score Cutoffs 表 now 页; 快照按 SGM reset 日归档,
+   所以"今日"指的是游戏日而不是本机日历日。                                      */
+
+// 元素 -> sgm 官方图标名 (sgmnow 的约定: ElementalIcon<Element>.png)
+const JJC_EL_ICON = {Fire:'Fire', Water:'Water', Wind:'Wind', Light:'Light',
+                     Dark:'Dark', Neutral:'Neutral'};
+
+function jjcIcon(e) {
+  if (e.kind === 'rift' || e.kind === 'element') {
+    const n = (e.name || '').trim();
+    if (JJC_EL_ICON[n]) return `/sgm/image/official/ElementalIcon${n}.png`;
+  }
+  if (e.kind === 'character') {
+    const n = (e.name || '').trim();
+    if (/^[A-Za-z]+$/.test(n)) return `/sgm/image/official/${n}_MasteryIcon.png`;
+  }
+  return '';
+}
+
+function jjcBadge(e) {
+  if (e.volatile) return '<span class="jbadge vol">计算中</span>';
+  if (e.active) return '<span class="jbadge on">开放</span>';
+  if (e.scope === 'last') return '<span class="jbadge last">最近一次</span>';
+  return '<span class="jbadge last">未开</span>';
+}
+
+function renderJJC(d) {
+  const snap = d.snapshot;
+  const src = document.getElementById('jjc-src');
+  if (!snap || snap.missing) {
+    src.innerHTML = '<span class="stale">尚无 JJC 快照</span> —— 点「刷新快照」从 sgmnow 拉一次';
+    document.getElementById('jjc-daily').innerHTML = '';
+    document.getElementById('jjc-grid').innerHTML = '';
+  } else {
+    const seg = [];
+    seg.push(`游戏日 <b>${esc(snap.day)}</b> · rev${snap.revision || 1} · fp=${esc(snap.fp || '')}`);
+    if (snap.source && snap.source.last_edit) seg.push(`源更新 ${esc(snap.source.last_edit)}`);
+    if (snap.stale) seg.push('<span class="stale">当日未取到，显示的是最近一次归档</span>');
+    seg.push('<a href="https://krazete.github.io/sgmnow/" target="_blank" rel="noopener">sgmnow ↗</a>');
+    src.innerHTML = seg.join(' · ');
+
+    document.getElementById('jjc-daily').innerHTML =
+      (snap.daily_events && snap.daily_events.length)
+        ? snap.daily_events.map(n => {
+            const ic = /^[A-Za-z]+$/.test(n) ? `<img src="/sgm/image/official/${n}_MasteryIcon.png" alt="">` : '';
+            return `<span class="chip">${ic}${esc(n)}</span>`;
+          }).join('')
+        : '<span id="jjc-empty">未取到 daily 名单</span>';
+
+    document.getElementById('jjc-grid').innerHTML = (snap.entries || []).map(e => {
+      const ic = jjcIcon(e);
+      return `<div class="jjc-card${e.active ? '' : ' off'}">
+        ${ic ? `<img src="${ic}" alt="">` : '<span style="flex:0 0 34px;"></span>'}
+        <div class="jtxt">
+          <div class="jk">${esc(e.label_cn)}</div>
+          <div class="jn">${e.name ? esc(e.name) : '—'}${jjcBadge(e)}</div>
+        </div></div>`;
+    }).join('');
+  }
+  renderVersions(d.versions, d.session_names || {});
+}
+
+function renderVersions(vers, names) {
+  const box = document.getElementById('jjc-versions');
+  const ids = Object.keys(vers || {});
+  if (!ids.length) { box.innerHTML = '<div id="jjc-empty">尚无版本记录</div>'; return; }
+  box.innerHTML = ids.map(sid => {
+    const hist = vers[sid] || [];
+    const last = hist[hist.length - 1] || {};
+    const rows = hist.slice().reverse().map(v => {
+      const cfg = v.cfg || {};
+      const jj = v.jjc;
+      const jjTxt = jj ? `当日台上: ${[jj.char, jj.elem, jj.holi].filter(Boolean).join(' / ') || '—'}` : '';
+      return `<div class="ver-row${v.op === 'delete' ? ' del' : ''}">
+        <span class="ver-v">v${v.v}</span>
+        <span class="ver-t">${esc(v.time)} · ${esc(v.op)}</span>
+        <span class="ver-c">
+          <div>改了 <b>${esc((v.changed || []).join('、'))}</b>
+            <span style="color:var(--faint);">fp=${esc(v.fp)}</span></div>
+          <div class="ver-cfg">${esc(ruleLabel(cfg.rule))} · 上界${cfg.score_target ?? '不限'} ·
+            能量${cfg.energy_cost} · 休${cfg.rest_every}x${cfg.rest_minutes}${jjTxt ? ' · ' + esc(jjTxt) : ''}</div>
+        </span></div>`;
+    }).join('');
+    return `<div style="margin-bottom:14px;">
+      <div class="sect-title">${esc(names[sid] || last.session || sid)}
+        <span style="letter-spacing:0;color:var(--faint);">${esc(sid)} · ${hist.length} 版</span></div>
+      ${rows}</div>`;
+  }).join('');
+}
+
+async function loadJJC(force) {
+  try {
+    // api() 直接返回已解析的 JSON; fetch 这条要自己解一层
+    const d = force ? await api('/api/jjc/refresh', {})
+                    : await (await fetch('/api/jjc')).json();
+    renderJJC(d);
+  } catch (e) {
+    document.getElementById('jjc-src').innerHTML =
+      '<span class="stale">读取失败: ' + esc(String(e)) + '</span>';
+  }
+}
+document.getElementById('jjc-refresh')
+  .addEventListener('click', () => loadJJC(true));
+
 /* ================= 每日任务 (任务库 / 详情 / 每日请求列表) =================
    任务池整理自 docs/explore/2026-09-05/REPORT.md; 可合并的日常动作已组合成单条。 */
 const DAILY_TASKS = [
@@ -1459,6 +1661,9 @@ class _Handler(BaseHTTPRequestHandler):
             sess = STORE.get(STORE.session_id or "")
             body = json.dumps(
                 {
+                    # 身份标签: 本机 87xx 段挤了一堆别的服务, 光看"端口有响应"
+                    # 会把别的进程认成 bot。调用方必须校验这个字段才算数。
+                    "svc": SVC_ID,
                     "status": STATE.status,
                     "step": STATE.step,
                     "fight_no": STATE.fight_no,
@@ -1522,6 +1727,8 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.dumps({"data": _load_daily(), "saved": DAILY_PATH.is_file()},
                               ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
+        elif path == "/api/jjc":
+            self._send(200, "application/json", _jjc_payload().encode("utf-8"))
         elif path.startswith("/static/"):
             name = Path(path).name
             fp = STATIC_DIR / name
@@ -1713,6 +1920,16 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json", b'{"ok":true}')
             except (ValueError, json.JSONDecodeError) as e:
                 self._json_err(400, str(e))
+        elif self.path == "/api/jjc/refresh":
+            # 唯一允许触网的 JJC 入口 —— 用户显式点「刷新快照」才走
+            try:
+                self._read_json()
+            except (json.JSONDecodeError, Exception):  # noqa: BLE001
+                pass
+            res = JJC.refresh(log=lambda m, level="info": STATE.log(m, level))
+            if res.get("action") == "failed":
+                STATE.log(f"JJC 刷新失败: {res.get('error')}", "warn")
+            self._send(200, "application/json", _jjc_payload().encode("utf-8"))
         elif self.path == "/api/daily":
             try:
                 data = self._read_json()
@@ -1744,8 +1961,59 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, "text/plain", b"not found")
 
 
-def start_webui(port: int = 8787) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
+class _PFHTTPServer(ThreadingHTTPServer):
+    """关掉地址复用。
+
+    基类默认 allow_reuse_address=True, 在 Linux 上只影响 TIME_WAIT, 但**在 Windows 上
+    等于允许第二个进程绑定同一个端口** —— 实测第二个 pf_bot 能悄悄起来, 两个实例同时
+    操作模拟器 (§8-12 的"残留进程双实例"坑)。关掉它才是真锁。
+    """
+    allow_reuse_address = False
+    daemon_threads = True
+
+
+def _port_owner(port: int) -> str:
+    """探测端口占用者: 'self'=另一个 pf_bot / 'other'=别的服务 / ''=空闲。"""
+    import socket
+
+    with closing(socket.socket()) as probe:
+        probe.settimeout(1.0)
+        try:
+            probe.connect(("127.0.0.1", port))
+        except OSError:
+            return ""
+    try:                       # 有人占 -> 问它是不是本服务
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/state", timeout=2) as r:
+            body = json.loads(r.read().decode("utf-8") or "{}")
+        return "self" if isinstance(body, dict) and body.get("svc") == SVC_ID else "other"
+    except Exception:  # noqa: BLE001
+        return "other"
+
+
+def start_webui(port: int = None) -> ThreadingHTTPServer:
+    """启动 WebUI。端口默认取 pf_env.WEBUI_PORT (本机由 config.json 覆盖)。
+
+    端口被占就**直接抛错**, 不悄悄换一个, 也**不允许第二个实例**: 换端口会让写死 URL
+    的调用方全部失联; 双实例会两个人同时点同一个模拟器 (见 §8-12)。宁可启动失败让人
+    看见, 也不装作成功。
+    """
+    port = int(port or WEBUI_PORT)
+    owner = _port_owner(port)
+    if owner == "self":
+        raise RuntimeError(
+            f"端口 {port} 上已经有一个 pf_bot 在跑, 拒绝启动第二个实例 —— "
+            f"两个实例会同时向模拟器注入点击 (见 PF_BOT.md §8-12)。"
+            f"先 Taskkill 掉旧进程, 或去 http://127.0.0.1:{port}/ 点「停止」。")
+    if owner == "other":
+        raise RuntimeError(
+            f"端口 {port} 被别的服务占用 (不是 pf_bot)。 "
+            f"本机 87xx 段很挤, 在 config.json 里加 \"webui_port\" 换一个空闲端口。")
+    try:
+        server = _PFHTTPServer(("0.0.0.0", port), _Handler)
+    except OSError as e:
+        raise RuntimeError(f"绑定端口 {port} 失败: {e}") from e
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
+    STATE.log(f"WebUI 已锁定端口 {port}")
     return server

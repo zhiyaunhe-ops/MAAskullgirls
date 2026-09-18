@@ -1,0 +1,158 @@
+{
+ "_说明": [
+  "场地名 -> {rule, parent_id, kind}. 用于凌晨自动路线: 识别到今天新出的 PF 之后,",
+  "据此决定绑定什么规则、挂在哪个父场次下建当日子场次。",
+  "",
+  "rule: null = 无限制; 未命中的场地 -> 规则继承父场次 + 打 warn 日志。",
+  "parent_id: 对应 debug/pf/sessions.json 里的顶级场次 id。",
+  "",
+  "★★ 铁律: 限定只有「元素」一类 (2026-09-16 用户确认, A 级)。",
+  "  游戏里**只有元素 PF 限定队伍元素**; 角色 PF / 金币 PF / 星助手 PF / 月场",
+  "  都**不限定任何角色或类别** —— 带什么队都行。",
+  "  佐证是用户自己的 sessions.json: 全场次里只有两个非 null 规则, 都是 element",
+  "  (202609元素月场=wind, 光元素场=light); 角色周场/角色月场/金币场 一律 null。",
+  "  ⇒ 本表里**任何非元素场都不许填 rule**。自动绑定路径已加硬校验",
+  "     (pf_schedule.resolve_arena: 非 element 规则一律丢弃并打 warn),",
+  "     但人工在 WebUI 上设的规则不受该限制。",
+  "  ⚠️ 填 {\"type\":\"class\"} 比填 null 更糟: pf_bot.judge_rule() 对 class 是",
+  "     **恒返回 False 的桩** —— 会让 bot 每场战斗都进「筛选替换」循环,",
+  "     空烧能量且永远满足不了 (游戏根本没这条限制)。",
+  "  ⇒ 场地名里的角色/主题只是**名字**, 不构成任何约束; 名字的作用仅限",
+  "     「选对父场次 + 日志可读」。",
+  "",
+  "★ 依据等级:",
+  "  A = 本项目实测文档/自己的场次配置可直接印证;",
+  "  B = 场地名语义推定 (读名字推的, 不是实测);",
+  "  C = 仅语感, 无依据 —— 不要依赖。",
+  "",
+  "★ 命名约定 (2026-09-16 用户确认 + 裁图实证):",
+  "  卡片名字框 ROI_CARD_TITLE 会**同时框到难度层级小字和场地名大字**,",
+  "  所以 OCR 可能吐出 'DIAMOND BLOOD SPORT' 这种串。**DIAMOND/BRONZE/SILVER/GOLD",
+  "  是难度层级, 不是名字的一部分** (BLOOD SPORT 才是艳后 Eliza 的角色场名;",
+  "  注意名字里的角色不构成约束, 角色场无规则 —— 见上面的铁律)。",
+  "  历史条目 'DIAMOND NIGHT'S GHOUL' 就是被层级污染的产物, 已改名为 NIGHT'S GHOUL。",
+  "  pf_scene.read_center_card() 现在把层级前缀展开成候选再择优, 不再写进名字。",
+  "",
+  "★ 月场有两个 (2026-09-16 用户确认; 两者都是最近才更新的):",
+  "  角色月场 = A CLASS OF ONE'S OWN  (parent default)",
+  "  元素月场 = AGAINST THE WIND      (parent s1788366023203, 本月 wind)",
+  "  09-15 实测两张卡剩余时间都是 14D:23H → 同为月量级, 别只认一张。"
+ ],
+ "arenas": {
+  "AGAINST THE WIND": {
+   "rule": {
+    "type": "element",
+    "value": "wind"
+   },
+   "parent_id": "s1788366023203",
+   "kind": "元素月场·风",
+   "依据": "A 用户 2026-09-16 确认属月场; 名称直述风 + 202609元素月场 rule=wind 已是你的实测配置"
+  },
+  "EYE OF THE STORM": {
+   "rule": {
+    "type": "element",
+    "value": "wind"
+   },
+   "parent_id": "s1788366023203",
+   "kind": "元素·风",
+   "依据": "A PF_BOT.md §7.2 记为两日风特场, 元素月场已是 wind"
+  },
+  "TRIAL BY FIRE": {
+   "rule": {
+    "type": "element",
+    "value": "fire"
+   },
+   "parent_id": null,
+   "kind": "元素·火",
+   "依据": "B 场地名直述, 无本仓库实测"
+  },
+  "THE BIG THAW": {
+   "rule": {
+    "type": "element",
+    "value": "water"
+   },
+   "parent_id": null,
+   "kind": "元素·水",
+   "依据": "B thaw->水 属语义推定"
+  },
+  "BLOOD SPORT": {
+   "rule": null,
+   "parent_id": "s1788423741550",
+   "kind": "角色周场(艳后 Eliza)",
+   "依据": "A 用户 2026-09-16 确认 = 艳后(Eliza) 的角色场名, 且**角色场不限定角色, rule 必须为 null**; 09-15 快照 Current Character PF = Eliza, 当天周二落在 Mon–Wed 角色槽; 卡片剩余 01D:23H = 短场量级。名字里的 Eliza 只用于认场和归属, 不产生任何约束"
+  },
+  "NIGHT'S GHOUL": {
+   "rule": null,
+   "parent_id": null,
+   "kind": "未知",
+   "依据": "C 仅做过改名: 原名 'DIAMOND NIGHT'S GHOUL' 的 DIAMOND 是难度层级(用户确认), 已去掉; 类别本身仍无依据, 需人工确认"
+  },
+  "SEEING STARS": {
+   "rule": null,
+   "parent_id": null,
+   "kind": "星助手",
+   "依据": "C 类别无依据; 但排期可查 —— 表里该类固定周五、每 7 天一次 (PF_BOT.md §6.12.1)"
+  },
+  "MEDICI SHAKEDOWN": {
+   "rule": null,
+   "parent_id": "s1788423643718",
+   "kind": "金币",
+   "依据": "A Medici=金币场已被你建过 (s1788423643718)"
+  },
+  "SHAKEDOWN - JINX": {
+   "rule": null,
+   "parent_id": "s1788423643718",
+   "kind": "金币·Jinx",
+   "依据": "A 2026-09-17 01:05 自动化实测命中: 游戏日 09-16 fetch 得 Current Medici PF = Shakedown - Jinx (active, 与 09-15 diff 确认源表已刷新), PF_BOT.md §6.12.8 已升 A。注意口径: hub 卡面 OCR 是 'MEDICI SHAKEDOWN' (命中 MEDICI SHAKEDOWN 条目), 'Shakedown - Jinx' 是数据源里的变体名; 本条保留是为防某天卡面直接写变体名, 下一个验点 09-23 周三应为 Hemofilia"
+  },
+  "SHAKEDOWN - HEMOFILIA": {
+   "rule": null,
+   "parent_id": "s1788423643718",
+   "kind": "金币·Hemofilia",
+   "依据": "B 同表 (09-09 / 09-23), now 页 Last Medici PF 亦为 Shakedown - Hemofilia; 实测佐证: 09-15 快照 medi.name = 'Shakedown - Hemofilia' (title=Last Medici PF)。待 2026-09-23 周三 fetch 命中后升 A"
+  },
+  "GOLD RUSH": {
+   "rule": null,
+   "parent_id": "s1788423643718",
+   "kind": "金币",
+   "依据": "B 名称看是金币类, 未实测"
+  },
+  "BELLE OF THE BRAWL": {
+   "rule": null,
+   "parent_id": "s1788423741550",
+   "kind": "角色周场?",
+   "依据": "C 仅语感"
+  },
+  "ROSHAMBOH": {
+   "rule": null,
+   "parent_id": null,
+   "kind": "未知",
+   "依据": "C 无依据"
+  },
+  "A CLASS OF ONE'S OWN": {
+   "rule": null,
+   "parent_id": "default",
+   "kind": "角色月场",
+   "依据": "A 快照 Current Monthly PF = A Class of Ones Own; 用户 2026-09-16 确认月场有两个且其中一个是它; 卡片剩余 14D:23H = 月量级"
+  },
+  "DEATH METTLE": {
+   "rule": null,
+   "parent_id": "s1788423741550",
+   "kind": "角色周场(Marie)",
+   "依据": "A 2026-09-18 01:05 截图实证: debug/pf/run/0918_010435/0019_scene.jpg 卡面 BRONZE+DEATH METTLE, 剩余 02D:23H:54M, 卡上无 SCORE 行(=新场), 立绘为女仆 Marie; 游戏日 09-17 周四, 快照 Current Character PF 当日 Eliza→Marie, 与 §6.12.2 一对之内「周一-三=前一个, 周四-六=后一个」吻合。角色场无规则 → rule=null(§6.12.7 铁律)。⚠️ 该卡标题比常规版式高 ~60px, 原 ROI_CARD_TITLE 框到倒计时读不出名字 —— 已在 pf_scene 加 ROI_CARD_TITLE_FALLBACK(520,255,780,310) 兜底, 01:29 实测命中。01:30 自动路线用它建成子场次「角色周场 09-18」并起 bot。"
+  }
+ },
+ "_补充": [
+  "光元素场 s1789262584700 (rule=light) 是你另行建的顶级场次, 未在映射里:",
+  "因为无法确认哪个场地名对应光元素。若某个 DAY 它重复出现, 手动加一条 entry 即可。",
+  "",
+  "仍缺依据待实测绑定的名字: NIGHT'S GHOUL / ROSHAMBOH / BELLE OF THE BRAWL /",
+  "TRIAL BY FIRE / THE BIG THAW / GOLD RUSH。它们各自属于哪个类别, 只能等实机看着确认;",
+  "轮换规律 (PF_BOT.md §6.12) 只能告诉你'某天该有哪些类别在台上', 不能反推名字。",
+  "",
+  "绑名字的目的只有两个: ①选对父场次(角色周场/角色月场/金币场/元素场) ②日志可读。",
+  "**绑错角色名不会造成任何后果**(角色场无规则); 但把元素场误判成非元素场,",
+  "或者反过来, 会直接导致该过滤的没过滤 / 不该过滤的瞎过滤 —— 所以元素的依据等级",
+  "才真正要紧。"
+ ]
+}

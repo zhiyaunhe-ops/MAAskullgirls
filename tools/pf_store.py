@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from pf_env import STATE
+from jjc_store import JJC, VERSIONS
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "debug" / "pf"
@@ -20,6 +21,15 @@ SCORE_CSV = DATA_DIR / "score_log.csv"
 HISTORY_CAP = 3000
 
 UNSET = object()   # update() 中区分「未传 rule」与「rule=None」
+
+
+def _jjc_ref():
+    """当前 JJC 快照引用 (只读缓存, 不触网)。
+
+    写进每条版本记录, 用来回答「这次改规则的当天, 台上开的是谁」。
+    """
+    snap = JJC.peek()
+    return JJC.brief(snap) if snap else None
 
 
 def clean_rest(v) -> int:
@@ -93,6 +103,12 @@ class ScoreStore:
                 changed = True
         if changed:
             self._save_sessions()
+        # 老场次补 v1 基线: 版本账本对历史数据同样成立, 不然后建的场次无源头
+        for s in list(self.sessions):
+            try:
+                VERSIONS.ensure_baseline(s)
+            except Exception:  # noqa: BLE001 版本记账失败不能拖垮主流程
+                pass
 
     def _save_sessions(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -134,6 +150,7 @@ class ScoreStore:
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
+        self._ver(sess, op="create")
         return sess
 
     def create_child(self, parent_sid: str, name=None) -> dict:
@@ -156,7 +173,17 @@ class ScoreStore:
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
+        self._ver(sess, op="child", before=p)
         return sess
+
+    def _ver(self, sess: dict, op: str, before: dict = None):
+        """写一笔配置版本。记账失败只告警, 不阻断主流程。"""
+        try:
+            return VERSIONS.record(sess.get("id"), sess, before, op=op,
+                                   jjc=_jjc_ref())
+        except Exception as e:  # noqa: BLE001
+            STATE.log(f"版本记账失败: {e}", "warn")
+            return None
 
     def update(self, sid: str, name=None, rule=UNSET,
                rest_every=UNSET, rest_minutes=UNSET, score_target=UNSET,
@@ -164,6 +191,7 @@ class ScoreStore:
         sess = self.get(sid)
         if not sess:
             raise KeyError(sid)
+        before = dict(sess)          # 变更前的完整快照, 用于算 diff
         if name:
             sess["name"] = name
         if rule is not UNSET:
@@ -178,9 +206,16 @@ class ScoreStore:
             sess["energy_cost"] = clean_energy(energy_cost)
         with self._lock:
             self._save_sessions()
+        self._ver(sess, op="update", before=before)
         return sess
 
     def delete(self, sid: str) -> None:
+        sess = self.get(sid)
+        if sess:
+            try:
+                VERSIONS.mark_deleted(sid, sess, _jjc_ref())
+            except Exception as e:  # noqa: BLE001
+                STATE.log(f"版本记账失败: {e}", "warn")
         with self._lock:
             self.sessions = [s for s in self.sessions if s.get("id") != sid]
             self.history_by.pop(sid, None)

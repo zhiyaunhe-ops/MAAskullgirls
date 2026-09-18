@@ -25,6 +25,10 @@ CONFIG = _load_config()
 MUMU_ADB_PATH = CONFIG.get("adb_path") or ""
 MUMU_ADDRESS = CONFIG.get("address") or "127.0.0.1:16384"
 
+# WebUI 端口的唯一来源。本机同网段被别的服务大量占用 (实测 8787/8788/8791 都被抢),
+# 所以 8787 让位给它们, 本服务锁定 8790; 再撞可在 config.json 里用 "webui_port" 覆盖。
+WEBUI_PORT = int(CONFIG.get("webui_port") or 8790)
+
 
 def resolve_adb():
     """返回 (adb_path, address)。

@@ -20,6 +20,10 @@ pfwidget/
 # 安全扫描工具历史 (mimosa)
 .mimosa/
 
+# 本机会话数据 (WorkBuddy 记忆/自动化记录) —— 不随仓库分发
+.workbuddy/
+.agents/
+
 # Python
 __pycache__/
 *.pyc
