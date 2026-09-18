@@ -35,7 +35,6 @@ TPL_CONTINUE = IMG + "pf_continue_btn.png"      # 结算 CONTINUE (逃出残局�
 TPL_RESULT_CONTINUE = IMG + "result_continue.png"
 TPL_SCENE_X = IMG + "scene_popup_x.png"         # 大厅促销弹窗 X (BACK TO SCHOOL 等)
 TPL_MODAL_X = IMG + "popup_close_x.png"         # 弹窗通用关闭 X (每日奖励/HEADLINER 等)
-TPL_MODAL_X_ROUND = IMG + "popup_close_x_round.png"  # 圆环样式关闭 X (6-DAY DAILY PASS 等)
 
 ROI_HUB_PLAY = (500, 400, 780, 530)   # x0,y0,x1,y1
 ROI_RESULT = (400, 570, 980, 700)
@@ -55,12 +54,16 @@ ROI_SCENE_X = (880, 30, 1240, 180)
 # 否则会误点 OPTIONS. 实测: 本 ROI 内弹窗帧 0.993~1.000, 30 张大堂/战斗图最高仅 0.529,
 # 且每个弹窗内只有一个 >0.70 的峰 —— 阈值 0.90 分离得很干净.
 ROI_MODAL_X = (700, 0, 1000, 300)
-# X 按钮有两种图形, 都是同一 "通用关闭" 语义:
-#   方形按钮 X  (popup_close_x.png)       弹窗帧 0.987+, 非弹窗 340 张最高 0.529, 零误报
-#   金圆环 X    (popup_close_x_round.png) 6-DAY 弹窗 1.000; 但筛选面板的关闭钮是同款
-#             圆环 (flt_1_panel 0.968), 只能抬阈值到 0.95 压住 —— 且那些误报对象本身就是
-#             "可关闭面板的关闭钮", 点了无害; wait_hall 阶段也不会出现筛选面板.
-ROI_MODAL_X_ROUND_TH = 0.95
+# 模态 X 只保留方形按钮这一种图形:
+#   方形按钮 X  (popup_close_x.png)  弹窗帧 0.987+, 非弹窗 340 张最高 0.529, 零误报
+#
+# ⚠️ 2026-09-19 删除 `popup_close_x_round.png` (原阈值 ROI_MODAL_X_ROUND_TH=0.95)。
+#   该文件内容是「近黑底 + 底部一条金边」(实测上半 RGB≈(4,3,1), 下半 (42,77,88)),
+#   均值远暗于真正的 X 按钮 (streak_x/energy_x 均值 ~90) —— 它是**误截的面板边框**,
+#   根本不是关闭钮。危害实证: 在 KEEP STREAK 帧上命中 0.976 伪峰 @(749,185),
+#   那里正是面板金边; 它仅靠 MODAL_X_PEAK_MARGIN(0.05) 侥幸挡住 (差 0.044),
+#   margin 稍松就会点边框空转。KEEP STREAK 的真 X 在 (960,211), 该模板那里只有 0.53。
+#   删掉后, KEEP STREAK 交给 find_popup_x 的 streak_x (0.985) 处理, 覆盖更准。
 # 模态 X 的"峰值唯一性"判据: 主峰与邻域被抹除后的次峰之差下限。
 # 真 X 是孤立峰 (实测次峰仅 0.5x); 背景渐变会形成连片平台 (实测多峰 0.951~0.953,
 # 差仅 0.001~0.002)。取 0.05 —— 真峰远大于此, 伪平台远小于此, 分离很干净。
@@ -165,7 +168,9 @@ class PfScene:
           的次峰"得分差必须够大, 否则视为背景纹理, 不认。
         """
         img_dir = ROOT / "assets" / "resource" / "base" / "image"
-        for tpl_path, th in ((TPL_MODAL_X, 0.90), (TPL_MODAL_X_ROUND, 0.95)):
+        # 只认方形按钮 X。圆环模板 popup_close_x_round.png 已于 2026-09-19 删除
+        # (实为误截的面板金边, 会在 KEEP STREAK 帧上产生 0.976 伪峰) —— 见文件头注释。
+        for tpl_path, th in ((TPL_MODAL_X, 0.90),):
             tpl = cv2.imread(str(img_dir / tpl_path))
             if tpl is None:
                 continue
@@ -348,7 +353,11 @@ class PfScene:
         while time.time() - t0 < HALL_TIMEOUT:
             n += 1
             img = self.snap()
-            modal = self.find_modal_x_cv(img)
+            # 统一走 find_any_popup_x: 之前只认 find_modal_x_cv + TPL_SCENE_X,
+            # KEEP STREAK 的 X (960,211) 那两路都认不出 → 漏检 150s 超时。
+            hit = self.find_any_popup_x(img)
+            modal = hit[0] if hit else None
+            src = hit[1] if hit else ""
             if modal:
                 # 防饿死: 同一处模态 X 连点若干次还在, 说明它关不掉 ——
                 # 要么是 cv2 对非弹窗界面的 X 形图案误匹配, 要么点击位置偏了,
@@ -368,7 +377,7 @@ class PfScene:
                     modal_streak = 1
                 last_modal = modal
                 if modal_streak >= 5:
-                    log(f"模态 X @{modal} 同处连点 {modal_streak} 次未生效, "
+                    log(f"弹窗 X ({src}) @{modal} 同处连点 {modal_streak} 次未生效, "
                         f"疑似误匹配/点击位置偏/输入失效 —— 按返回键+点房子脱离", "warn")
                     self.adb_shell("input keyevent KEYCODE_BACK")
                     time.sleep(2.0)
@@ -377,14 +386,8 @@ class PfScene:
                     last_modal, modal_streak = None, 0
                     time.sleep(3.0)
                     continue
-                log(f"模态弹窗 (每日奖励/通行证等), 点 X 关闭 @ {modal}", "warn")
+                log(f"弹窗 ({src}, 每日奖励/通行证/连胜等), 点 X 关闭 @ {modal}", "warn")
                 self.tap(*modal)
-                time.sleep(1.8)
-                continue
-            x = self.bot.match_tpl(img, TPL_SCENE_X, ROI_SCENE_X, th=0.8)
-            if x:
-                log("促销弹窗, 点 X 关闭", "warn")
-                self.tap(*x)
                 time.sleep(1.8)
                 continue
             cont = (self.bot.match_tpl(img, TPL_RESULT_CONTINUE, ROI_RESULT, th=0.7)
@@ -409,12 +412,51 @@ class PfScene:
                 time.sleep(2.0)
         raise RuntimeError("150s 未回到大厅 (PRIZE FIGHTS 菱形不可见)")
 
+    def find_any_popup_x(self, img, tagged: bool = True):
+        """汇总三个弹窗关闭钮检测器, 命中返回 (中心坐标, 来源标签), 否则 None。
+
+        ⚠️ 2026-09-19 修的断层 (Luna 指出「streak 本就在原逻辑里」):
+        三个检测器各管一小块 ROI, 谁也不覆盖全部 ——
+
+          弹窗                    X 位置      find_popup_x  find_modal_x_cv  TPL_SCENE_X
+          DAILY LOGIN BONUS       (832, 30)       ✗              ✓             ✓
+          HEADLINER DAILY PASS    (832,189)       ✗              ✓             ✓
+          6-DAY DAILY PASS        (855,132)       ✗              ✓(坏模板)      ✗
+          KEEP STREAK             (960,211)       ✓              ✓(坏模板)      ✗
+          OPTIONS                 (1164,14)       ✗              ✗             ✗
+
+        `pf_bot.find_popup_x` (含 `streak_x.png`) 一直在, 但 `pf_scene` 的三条
+        逃逸链只调 `find_modal_x_cv` + `TPL_SCENE_X`, **从没调过它** ——
+        `streak_x` 因此在 pf_scene 侧形同虚设 (setup_env 的模板清单里却有它)。
+        实测 KEEP STREAK 帧: find_popup_x 命中 0.985 @(960,211),
+        而 find_modal_x_cv 的方形模板只有 0.530、圆环模板 0.976 但落在
+        (749,185) 伪峰上被唯一性判据挡掉 → 两路皆空 → 150s 超时。
+
+        现在统一收口到这里, 三条链共用, 不再各写各的。
+        """
+        # 1) 模态 X: ROI_MODAL_X 的方/圆两种样式 (cv2, 带峰值唯一性判据)
+        if tagged:
+            modal = self.find_modal_x_cv(img)
+            if modal:
+                return modal, "模态X"
+        # 2) pf_bot 的通用弹窗 X: 能量/streak/OPTIONS 三模板
+        #    (KEEP STREAK 的 X 只有这一路认得出)
+        x = self.bot.find_popup_x(img)
+        if x:
+            return x, "通用X"
+        # 3) 促销弹窗 X (大厅 Right 上角那种带价格的)
+        x = self.bot.match_tpl(img, TPL_SCENE_X, ROI_SCENE_X, th=0.8)
+        if x:
+            return x, "促销X"
+        return None
+
     def dismiss_popup_once(self, img=None) -> bool:
         """若当前帧有可关闭的弹窗, 点掉它并返回 True。
 
-        覆盖三类关闭钮 (同一"通用关闭"语义):
-          - 模态 X  (ROI_MODAL_X, cv2 直算, 方/圆两种样式)
-          - 促销弹窗 X (ROI_SCENE_X)
+        覆盖三类关闭钮 (同一"通用关闭"语义) —— 见 find_any_popup_x 的覆盖表:
+          - 模态 X     (ROI_MODAL_X, cv2 直算, 方/圆两种样式)
+          - 通用弹窗 X  (pf_bot.find_popup_x: 能量/streak/OPTIONS)  ← 09-19 补接
+          - 促销弹窗 X  (ROI_SCENE_X)
         这是 wait_hall 逃逸链的**可复用内核** —— goto_pf 也要用它, 否则会出现
         「wait_hall 报了大厅就绪, 紧接着弹窗压上来, goto_pf 只认 PLAY/菱形
         两个模板, 对弹窗视而不见 → 30s 空转超时」。
@@ -422,16 +464,11 @@ class PfScene:
          goto_pf 连续 30s 找不到 PLAY, 报「30s 未进入 PF hub」。)
         """
         img = self.snap() if img is None else img
-        modal = self.find_modal_x_cv(img)
-        if modal:
-            log(f"弹窗 X (模态) @ {modal}, 点掉", "warn")
-            self.tap(*modal)
-            time.sleep(1.8)
-            return True
-        x = self.bot.match_tpl(img, TPL_SCENE_X, ROI_SCENE_X, th=0.8)
-        if x:
-            log(f"促销弹窗 X @ {x}, 点掉", "warn")
-            self.tap(*x)
+        hit = self.find_any_popup_x(img)
+        if hit:
+            (x, y), src = hit
+            log(f"弹窗 X ({src}) @ ({x},{y}), 点掉", "warn")
+            self.tap(x, y)
             time.sleep(1.8)
             return True
         return False

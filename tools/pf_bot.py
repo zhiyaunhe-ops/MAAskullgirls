@@ -757,6 +757,15 @@ class PfBot:
                 self.controller.post_click(*srv).wait()
                 time.sleep(2.5)
                 continue
+            # 弹窗优先于"结束"判据: KEEP STREAK?/能量弹窗会盖住结算 CONTINUE,
+            # 不剥掉就一直找不到结算 → 干等满 300s 超时。
+            # (2026-09-19: 结算链与主循环都有 find_popup_x, 唯独这里漏了。)
+            px = self.find_popup_x(img)
+            if px:
+                STATE.log("战斗等待中出现弹窗 (能量/连胜等), 点 X 关闭", "warn")
+                self.controller.post_click(*px).wait()
+                time.sleep(1.8)
+                continue
             if self.match_tpl(img, TPL_DRAGHINT, (430, 405, 850, 465), th=0.6):
                 STATE.log("回到编队页?", "warn")
                 return
