@@ -40,7 +40,13 @@ TPL_MODAL_X_ROUND = IMG + "popup_close_x_round.png"  # 圆环样式关闭 X (6-D
 ROI_HUB_PLAY = (500, 400, 780, 530)   # x0,y0,x1,y1
 ROI_RESULT = (400, 570, 980, 700)
 ROI_TOPRIGHT = (1040, 15, 1260, 115)
-ROI_SCENE_X = (950, 30, 1240, 180)    # 促销弹窗右上 X
+# 促销弹窗 (带价格/商店入口那种) 右上 X。
+# 实测 X 中心 ~(1100,83) 属「金环+蓝底+金 X」款式, x 落在 1073~1130。
+# 2026-09-19 复核: 原 (950,30,1240,180) 其实**够得着**它 (命中 1103,97),
+#   当时误判成 ROI 没框到 —— 真因是 goto_pf() 缺弹窗分支 (见该函数注释)。
+# 起点仍左移到 880 留余量: 历史上 DAILY LOGIN BONUS 的 X 在 832,
+#   交给 ROI_MODAL_X 处理, 这里左移不会有副作用 (两者点同一类关闭钮)。
+ROI_SCENE_X = (880, 30, 1240, 180)
 # 启动时的弹窗栈是一串, X 的位置随各弹窗面板高度变:
 #   DAILY LOGIN BONUS      X 中心 (832, 30)
 #   HEADLINER DAILY PASS   X 中心 (832,189)   <- 关掉上一个才露出这个
@@ -55,6 +61,10 @@ ROI_MODAL_X = (700, 0, 1000, 300)
 #             圆环 (flt_1_panel 0.968), 只能抬阈值到 0.95 压住 —— 且那些误报对象本身就是
 #             "可关闭面板的关闭钮", 点了无害; wait_hall 阶段也不会出现筛选面板.
 ROI_MODAL_X_ROUND_TH = 0.95
+# 模态 X 的"峰值唯一性"判据: 主峰与邻域被抹除后的次峰之差下限。
+# 真 X 是孤立峰 (实测次峰仅 0.5x); 背景渐变会形成连片平台 (实测多峰 0.951~0.953,
+# 差仅 0.001~0.002)。取 0.05 —— 真峰远大于此, 伪平台远小于此, 分离很干净。
+MODAL_X_PEAK_MARGIN = 0.05
 ROI_CARD_SCORE = (505, 138, 775, 185)  # 居中卡 "SCORE: n"
 ROI_CARD_TITLE = (500, 290, 780, 378)  # 居中卡场地名 (可两行)
 # 标题兜底 ROI: 卡面版式不统一, 标题高度不固定。2026-09-18 实测 DEATH METTLE 的
@@ -144,6 +154,15 @@ class PfScene:
         同一张图 cv2 TM_CCOEFF_NORMED 的最高分恰在 (833,110)=1.0。两套引擎的
         命中语义不同 (MAA 疑似 first-hit, 且 method/色彩空间有差异), 所有以
         cv2 做的阈值验证对 MAA 引擎不成立。这里直接用 cv2, 与验证数字同源。
+
+        ⚠️ 2026-09-19 加**峰值唯一性**判据 (踩坑实证):
+          圆环模板在促销弹窗帧上, y=77 整行拿到 0.951~0.953 的**连续平台**
+          (x=722/902/922/942/962 连成一片) —— 那是渐变背景造成的伪峰, 不是 X。
+          单看最高分会命中 (963,77), 而那位置是**顶栏头像按钮**, 点下去会打开
+          PROFILE 面板, 把大厅链路彻底带偏 (实测级联失败: 连点 5 次 → PROFILE
+          打开 → 该面板的 X 又检测不到 → 150s 超时)。
+          真 X 的特征是**孤立单峰**; 伪峰是连片平台。判据: 主峰与"非极大抑制后
+          的次峰"得分差必须够大, 否则视为背景纹理, 不认。
         """
         img_dir = ROOT / "assets" / "resource" / "base" / "image"
         for tpl_path, th in ((TPL_MODAL_X, 0.90), (TPL_MODAL_X_ROUND, 0.95)):
@@ -156,9 +175,23 @@ class PfScene:
                 continue
             res = cv2.matchTemplate(sub, tpl, cv2.TM_CCOEFF_NORMED)
             _, mx, _, ml = cv2.minMaxLoc(res)
-            if mx >= th:
-                return (ml[0] + x0 + tpl.shape[1] // 2,
-                        ml[1] + y0 + tpl.shape[0] // 2)
+            if mx < th:
+                continue
+            # 峰值唯一性: 抹掉主峰邻域后再取次峰。真 X => 次峰明显低;
+            # 背景平台 => 次峰与主峰几乎相同。
+            h, w = tpl.shape[:2]
+            pad = max(h, w) * 2
+            cy0, cx0 = ml[1], ml[0]
+            masked = res.copy()
+            masked[max(0, cy0 - pad):cy0 + pad,
+                   max(0, cx0 - pad):cx0 + pad] = -1.0
+            second = cv2.minMaxLoc(masked)[1]
+            if mx - second < MODAL_X_PEAK_MARGIN:
+                log(f"模态 X 疑似背景伪峰: 主峰 {mx:.3f} @ {ml}, 次峰 {second:.3f} "
+                    f"(差 {mx - second:.3f} < {MODAL_X_PEAK_MARGIN}) —— 忽略", "warn")
+                continue
+            return (ml[0] + x0 + tpl.shape[1] // 2,
+                    ml[1] + y0 + tpl.shape[0] // 2)
         return None
 
     def tap(self, x: int, y: int) -> None:
@@ -317,18 +350,26 @@ class PfScene:
             img = self.snap()
             modal = self.find_modal_x_cv(img)
             if modal:
-                # 防饿死: 同一坐标的模态 X 连点 5 次还在, 说明它关不掉 ——
-                # 要么是 cv2 对非弹窗界面的 X 形图案误匹配 (2026-09-18 实测: 残留的
-                # VS 编队界面在 (901,77) 被误命中, 点击无效且每轮短路, 把下面
-                # "点房子回家"分支饿死, 150s 超时), 要么输入通道整体失效。
-                # 此时改按返回键 + 房子回家, 别再原地打转。
-                if modal == last_modal:
+                # 防饿死: 同一处模态 X 连点若干次还在, 说明它关不掉 ——
+                # 要么是 cv2 对非弹窗界面的 X 形图案误匹配, 要么点击位置偏了,
+                # 要么输入通道整体失效。此时改按返回键 + 房子回家, 别再原地打转。
+                #
+                # ⚠️ 2026-09-19 修: 原判据 `modal == last_modal` 用严格相等 —— 但
+                # cv2 模板匹配的峰值坐标**必然抖动** (实测同一弹窗连读 19 次, x 在
+                # 747~760 之间跳, y 恒 185), streak 每轮被重置成 1, 永远到不了阈值,
+                # 防饿死形同虚设 → 对着面板边框上的伪 X (真 X 在 815,180) 连点 19 次,
+                # 150s 超时。改用「同一区域」判定: 坐标距离 <= MODAL_SAME_TOL 即视为
+                # 同一处。真 X 与伪 X 相距 ~55px, 远超容差, 不会误并。
+                MODAL_SAME_TOL = 15
+                if last_modal and max(abs(modal[0] - last_modal[0]),
+                                      abs(modal[1] - last_modal[1])) <= MODAL_SAME_TOL:
                     modal_streak += 1
                 else:
-                    last_modal, modal_streak = modal, 1
+                    modal_streak = 1
+                last_modal = modal
                 if modal_streak >= 5:
-                    log(f"模态 X @{modal} 连点 {modal_streak} 次未生效, "
-                        f"疑似误匹配/点击无效 —— 按返回键+点房子脱离", "warn")
+                    log(f"模态 X @{modal} 同处连点 {modal_streak} 次未生效, "
+                        f"疑似误匹配/点击位置偏/输入失效 —— 按返回键+点房子脱离", "warn")
                     self.adb_shell("input keyevent KEYCODE_BACK")
                     time.sleep(2.0)
                     self.tap(*HOME_BTN)
@@ -368,15 +409,48 @@ class PfScene:
                 time.sleep(2.0)
         raise RuntimeError("150s 未回到大厅 (PRIZE FIGHTS 菱形不可见)")
 
+    def dismiss_popup_once(self, img=None) -> bool:
+        """若当前帧有可关闭的弹窗, 点掉它并返回 True。
+
+        覆盖三类关闭钮 (同一"通用关闭"语义):
+          - 模态 X  (ROI_MODAL_X, cv2 直算, 方/圆两种样式)
+          - 促销弹窗 X (ROI_SCENE_X)
+        这是 wait_hall 逃逸链的**可复用内核** —— goto_pf 也要用它, 否则会出现
+        「wait_hall 报了大厅就绪, 紧接着弹窗压上来, goto_pf 只认 PLAY/菱形
+        两个模板, 对弹窗视而不见 → 30s 空转超时」。
+        (2026-09-19 实测: GUEST STAR RELIC PACK 促销弹窗在 wait_hall 返回后弹出,
+         goto_pf 连续 30s 找不到 PLAY, 报「30s 未进入 PF hub」。)
+        """
+        img = self.snap() if img is None else img
+        modal = self.find_modal_x_cv(img)
+        if modal:
+            log(f"弹窗 X (模态) @ {modal}, 点掉", "warn")
+            self.tap(*modal)
+            time.sleep(1.8)
+            return True
+        x = self.bot.match_tpl(img, TPL_SCENE_X, ROI_SCENE_X, th=0.8)
+        if x:
+            log(f"促销弹窗 X @ {x}, 点掉", "warn")
+            self.tap(*x)
+            time.sleep(1.8)
+            return True
+        return False
+
     def goto_pf(self) -> None:
-        """大厅 → PF hub (居中场地方程页)。单点未生效则补点 (首点居中再点生效)。"""
-        cx, cy = self.wait_hall()
+        """大厅 → PF hub (居中场地方程页)。单点未生效则补点 (首点居中再点生效)。
+
+        ⚠️ 每轮**先剥弹窗**: 大厅阶段会不定时弹促销/每日奖励弹窗 (它们常盖住
+        PLAY 与菱形), 必须先清掉再看 PLAY —— 见 dismiss_popup_once 的说明。
+        """
+        self.wait_hall()
         t0 = time.time()
         while time.time() - t0 < HUB_TIMEOUT:
             img = self.snap()
             if self.bot.match_tpl(img, TPL_HUB_PLAY, ROI_HUB_PLAY, th=0.7):
                 log("PF hub 就绪")
                 return
+            if self.dismiss_popup_once(img):
+                continue
             box = self.bot.match_tpl(img, TPL_HALL_PRIZE, (0, 0, 0, 0), th=0.72)
             if box:
                 self.tap(*box)
