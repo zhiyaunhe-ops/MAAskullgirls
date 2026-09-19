@@ -221,6 +221,10 @@ class PfScene:
         "A CLASS OF ONE'S OWN", "SEEING STARS", "NIGHT'S GHOUL", "BLOOD SPORT",
         "MEDICI SHAKEDOWN", "ROSHAMBOH", "GOLD RUSH", "BELLE OF THE BRAWL",
         "DEATH METTLE",
+        # 2026-09-20: 暗元素场。卡面 OCR 稳定丢空格且丢字母 I, 读成
+        # 'ASHOTINTHEDARK' / 'ASHOTNTHEDARK' —— 靠 difflib (cutoff 0.55) 归一到本名,
+        # 否则 center('A SHOT IN THE DARK') 会 10 步转不到 (实测 01:27 失败)。
+        "A SHOT IN THE DARK",
     ]
 
     # 卡片上的"难度层级"文字与场次名**同框**: ROI_CARD_TITLE=(500,290,780,378) 实测同时

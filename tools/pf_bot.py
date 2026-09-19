@@ -81,6 +81,19 @@ ROI_FILTER_X = (1150, 30, 1280, 140)  # 筛选面板关闭 X 搜索区
 ELEMENT_HUE = {"fire": [(0, 9), (170, 180)], "water": [(96, 130)],
                "wind": [(50, 97)], "dark": [(131, 146)]}
 
+# ---- 防守队弹窗 (每个新 PF 首次进入时一次性, 见 PfBot.setup_defense_team) ----
+# 实测帧: debug/pf/run/0920_011213/0001_defense_probe.jpg (2026-09-20 01:12)。
+# 弹窗**叠在选对手页之上** (该帧 REFRESH 仍然 0.95 命中), 所以判据不能靠
+# "没有已知界面", 只能认文字: 正文分带 OCR 读出
+# 'Before continuing, you must set a Defense Team. The better your Defense Team
+#  performs against other players, the more points you'll earn in this Prize Fight!'
+# 归一化 (去空格标点) 后含 DEFENSETEAM 即命中。
+# 分带原因: MAA OCR 对整块大区域会读空串 (pf_scene 标题兜底 ROI 注释同源)。
+DEFENSE_BANDS = [(250, y, 1030, y + 50) for y in range(180, 470, 50)]
+# OK 按钮: 同帧绿色按钮块 (x672 y526 w159 h31) 的中心, 该区域 OCR 读出 'OK' ——
+# 依据 A 级 (坐标与标签同源)。离线复验: 正样本命中, 18 张非弹窗帧零误报。
+DEFENSE_OK_BTN = (751, 541)
+
 
 class PfBot:
     def __init__(self) -> None:
@@ -92,6 +105,7 @@ class PfBot:
         self._rule_redo = 0           # 本场规则重做次数 (能量替换破坏规则时++)
         self._filter_cleared = False  # 本次开始运行以来是否已归位过筛选 (首次编队)
         self._battle_auto_checked = False  # 首场战斗已做过自动战斗/速度检查
+        self._defense_done = False         # 本场次已处理过「先设防守队」弹窗 (每 PF 一次)
         self.fights_since_rest = 0    # 距上次休息的已结算场数
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
 
@@ -178,6 +192,68 @@ class PfBot:
         return (self.match_tpl(img, TPL_ENERGY_X, ROI_POPUP, th=0.7)
                 or self.match_tpl(img, TPL_STREAK_X, ROI_POPUP, th=0.7)
                 or self.match_tpl(img, TPL_OPTIONS_X, (1140, 5, 1240, 75), th=0.7))
+
+    def find_defense_popup(self, img) -> bool:
+        """「先设防守队」弹窗是否在前台。
+
+        每个新 PF 第一次进入时必弹 (2026-09-18 起每次新场都撞上), 不设就打不了。
+        只认正文文字, 不认图形 —— 它压在选对手页之上, 底下的 REFRESH/FIGHT 都还在,
+        任何"已知界面"判据都会漏掉它 (2026-09-20 实测: bot 因此空转 8 轮 score=0)。
+        """
+        parts = [self.ocr_text(img, roi) for roi in DEFENSE_BANDS]
+        norm = "".join(ch for ch in " ".join(parts).upper() if ch.isalpha())
+        return "DEFENSETEAM" in norm
+
+    def setup_defense_team(self) -> bool:
+        """防守队弹窗: OK → 编队页 → 按元素规则左1放合规角色 → FIGHT 确认。
+
+        元素通用规定 (用户 2026-09-20): 元素场把**对应元素的角色放在左1**。
+        非元素场 (rule 为 None) 不动左1, 交给常规编队 —— 按项目铁律, 只有元素
+        PF 限定队伍, 角色/金币/星/月场一律无规则。
+        """
+        STATE.set_step("设防守队")
+        STATE.log("防守队弹窗: 点 OK 进编队", "warn")
+        img = None
+        for attempt in range(3):
+            self._tap(*DEFENSE_OK_BTN)      # 驻留式点击: 面板会吃掉零时长 post_click
+            time.sleep(2.5)
+            img = self.snap(f"防守队OK后{attempt + 1}")
+            if self.match_tpl(img, TPL_DRAGHINT, (430, 405, 850, 465), th=0.6):
+                break
+            STATE.log(f"OK 后没进编队页 (第{attempt + 1}次) —— 可能是按钮坐标偏了, "
+                      f"见 DEFENSE_OK_BTN 注释", "warn")
+        else:
+            STATE.log("防守队弹窗: 连点 3 次 OK 都没进编队页, 交回主循环 (不无限重试)",
+                      "err")
+            return False
+
+        rule = STATE.pf_rule or {}
+        fav_chips = [FILTER_HEART] if STATE.filter_favorite else []
+        if rule.get("type") == "element":
+            chip = ELEMENT_CHIPS.get(rule.get("value"))
+            if chip:
+                STATE.log(f"防守队: 左1 放一个 {rule['value']} 角色 (元素通用规定)", "warn")
+                if not self.refill_rule_slot(0, [chip] + fav_chips, fav_chips):
+                    STATE.log("防守队: 左1 放不进合规角色 (筛选池无达标能量 / 元素复验"
+                              "不过), 交回主循环", "err")
+                    return False
+            else:
+                STATE.log(f"防守队: 规则元素 {rule.get('value')!r} 没有筛选芯片, 跳过", "err")
+        else:
+            STATE.log("防守队: 本场无元素规则, 左1 不强制换人 (交给常规编队)", "warn")
+
+        fight = self.match_tpl(self.snap("防守队确认前"), TPL_FIGHT, ROI_TOPRIGHT)
+        if not fight:
+            STATE.log("防守队确认: 找不到 FIGHT 按钮, 交回主循环", "err")
+            return False
+        self.controller.post_click(*fight).wait()
+        time.sleep(2.5)
+        STATE.log("防守队已确认 (点 FIGHT), 接着等本场打完")
+        if not self._battle_auto_checked:
+            self._battle_auto_checked = True
+            self.ensure_battle_auto()
+        self.wait_battle_end()
+        return True
 
     def ocr_text(self, img, roi: tuple) -> str:
         """rec-only OCR, roi 为 (x0,y0,x1,y1)。返回识别文本。"""
@@ -511,7 +587,12 @@ class PfBot:
                     STATE.log(f"队伍不满足规则 {rule['type']}={rule['value']}, 筛选替换", "warn")
                     placed = 0
                     while placed < 3 and STATE.running:
-                        if not self.refill_rule_slot(placed, chips, fav_chips):
+                        # ⚠️ 2026-09-20 修: 这里原来是 `chips` —— 该名字在本函数里
+                        # 根本不存在 (只有 rule_chips / fav_chips), 一进"规则不满足"
+                        # 分支就 NameError 崩掉。以前所有场次 rule 都是 null,
+                        # 这条路径从没被执行过, 所以 bug 一直躺着; 2026-09-20 首次
+                        # 给场次设 element=dark (A SHOT IN THE DARK) 才踩到。
+                        if not self.refill_rule_slot(placed, rule_chips, fav_chips):
                             STATE.log(f"规则补人失败 (复验不过或筛选池无达标能量, "
                                       f"已放入{placed}), 停止", "err")
                             return False
@@ -829,7 +910,8 @@ class PfBot:
                 STATE.rest_until = 0
             if STATE.status != "RUNNING":
                 STATE.status = "RUNNING"
-                self._filter_cleared = False  # 每次(重)开始: 首次编队重新按设置归位筛选
+                self._filter_cleared = False   # 每次(重)开始: 首次编队重新按设置归位筛选
+                self._defense_done = False     # 换场次: 防守队弹窗重新允许触发 (每 PF 一次)
                 STATE.log("==== PF Bot 运行中 ====")
             try:
                 self.step()
@@ -896,6 +978,15 @@ class PfBot:
             self.controller.post_click(*box).wait()
             time.sleep(3.0)
             self.snap("play点击后")
+        elif (not self._defense_done and STATE.fight_no <= 1
+              and self.find_defense_popup(img)):
+            # 防守队弹窗: 压在选对手页之上, 底下的 REFRESH 仍命中, 所以必须排在
+            # REFRESH 分支**前面**, 否则 bot 会一直"选对手→CONTINUE"空转 (2026-09-20)。
+            # 每场次只处理一次: 失败也置位, 避免无限点 OK (2026-09-18 空烧教训)。
+            self.unknown_tries = 0
+            self._defense_done = True
+            if not self.setup_defense_team():
+                STATE.log("防守队处理未成功, 本场次不再重试 (需人工看截图)", "err")
         elif self.match_tpl(img, TPL_REFRESH, (700, 15, 960, 115), th=0.7):
             self.unknown_tries = 0
             self.track_score(img)

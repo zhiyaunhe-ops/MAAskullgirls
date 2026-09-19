@@ -140,6 +140,15 @@
    "parent_id": "s1788423741550",
    "kind": "角色周场(Marie)",
    "依据": "A 2026-09-18 01:05 截图实证: debug/pf/run/0918_010435/0019_scene.jpg 卡面 BRONZE+DEATH METTLE, 剩余 02D:23H:54M, 卡上无 SCORE 行(=新场), 立绘为女仆 Marie; 游戏日 09-17 周四, 快照 Current Character PF 当日 Eliza→Marie, 与 §6.12.2 一对之内「周一-三=前一个, 周四-六=后一个」吻合。角色场无规则 → rule=null(§6.12.7 铁律)。⚠️ 该卡标题比常规版式高 ~60px, 原 ROI_CARD_TITLE 框到倒计时读不出名字 —— 已在 pf_scene 加 ROI_CARD_TITLE_FALLBACK(520,255,780,310) 兜底, 01:29 实测命中。01:30 自动路线用它建成子场次「角色周场 09-18」并起 bot。"
+  },
+  "A SHOT IN THE DARK": {
+   "rule": {
+    "type": "element",
+    "value": "dark"
+   },
+   "parent_id": "s1789837426152",
+   "kind": "元素周场·暗",
+   "依据": "A 用户 2026-09-20 明确「这是暗场, 按元素通用规定左1放一个暗」(用户口径=本项目最高依据); 独立佐证: 游戏日 09-19(周六) 快照 Current Elemental PF 由 Light(未开) → Dark(开放), 与 §6.12.1「元素 PF = 周六, 35 天」A 级周期吻合。2026-09-20 hub 扫到该卡 score=0 = 当日新开。⚠️ OCR 会丢空格读成 ASHOTINTHEDARK / ASHOTNTHEDARK, 匹配走字母归一, 两边都命中。parent_id 是当天自动新建的顶级场次(名字待人工校正), 复用它是为了避免下次再新建一个。"
   }
  },
  "_补充": [
