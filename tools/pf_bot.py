@@ -242,11 +242,18 @@ class PfBot:
         else:
             STATE.log("防守队: 本场无元素规则, 左1 不强制换人 (交给常规编队)", "warn")
 
-        fight = self.match_tpl(self.snap("防守队确认前"), TPL_FIGHT, ROI_TOPRIGHT)
-        if not fight:
-            STATE.log("防守队确认: 找不到 FIGHT 按钮, 交回主循环", "err")
+        # 确认按钮: 防守队编辑器里它**未必还是 FIGHT** (2026-09-18 人工记录里提到
+        # 一个 CONFIRM 按钮)。先找 FIGHT, 找不到再找结算款 CONTINUE —— 两者都不在
+        # 就老实报错退出, 不猜坐标。⚠️ 这一段本次没实机跑过 (弹窗已被消费),
+        # 下次新 PF 触发时看有没有「防守队确认」日志来判断。
+        img2 = self.snap("防守队确认前")
+        btn = (self.match_tpl(img2, TPL_FIGHT, ROI_TOPRIGHT)
+               or self.match_tpl(img2, TPL_CONTINUE, ROI_TOPRIGHT))
+        if not btn:
+            STATE.log("防守队确认: FIGHT/CONTINUE 都找不到, 交回主循环 "
+                      f"(截图 {self.run_dir.name}/防守队确认前)", "err")
             return False
-        self.controller.post_click(*fight).wait()
+        self.controller.post_click(*btn).wait()
         time.sleep(2.5)
         STATE.log("防守队已确认 (点 FIGHT), 接着等本场打完")
         if not self._battle_auto_checked:
