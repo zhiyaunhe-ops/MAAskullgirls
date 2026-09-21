@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from pf_env import (
+    mumu_shutdown,
     resolve_adb,
     PROJECT_ROOT,
     STATE,
@@ -107,6 +108,7 @@ class PfBot:
         self._battle_auto_checked = False  # 首场战斗已做过自动战斗/速度检查
         self._defense_done = False         # 本场次已处理过「先设防守队」弹窗 (每 PF 一次)
         self.fights_since_rest = 0    # 距上次休息的已结算场数
+        self._goal_closed = False     # 本次运行是否已因达标关过模拟器 (只做一次)
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
 
     # ---------- 基础设施 ----------
@@ -371,6 +373,7 @@ class PfBot:
             STATE.log(f"总分 {val:,} 已达上限 {STATE.score_target:,}, 自动暂停", "warn")
             STATE.status = "PAUSED"
             STATE.running = False
+            self.on_goal_reached(val)
             return
         ev = self.tracker.on_score(val, STATE.fight_no)
         if ev is None:
@@ -386,6 +389,23 @@ class PfBot:
             # 没打仗但分数变了（手动干预等），同样记录
             STATE.log(f"总分变化: {val:,}{streak_txt}")
         STORE.record(sid, val, STATE.streak, STATE.fight_no)
+
+    def on_goal_reached(self, val: int) -> None:
+        """达标收尾: 开关打开则关掉 MuMu。
+
+        关模拟器是**有副作用的外界动作** (会连带打断同一实例上别的 MAA 自启),
+        所以只在用户显式打开「达标关模拟器」时执行, 且每次运行只做一次 ——
+        否则达标后 bot 停在对手页, 每次循环都会再读一次总分、再关一次。
+        """
+        if not STATE.close_mumu_on_goal or self._goal_closed:
+            return
+        self._goal_closed = True
+        STATE.set_step("达标关机")
+        STATE.log(f"已达到目标分 {STATE.score_target:,}, 正在关闭 MuMu ...", "warn")
+        if mumu_shutdown():
+            STATE.log("MuMu 已关闭 (达标收尾)", "warn")
+        else:
+            STATE.log("关闭 MuMu 失败: MuMuManager 不可用或未响应 (请手动关闭)", "err")
 
     # ---------- 各阶段 ----------
 
@@ -919,6 +939,10 @@ class PfBot:
                 STATE.status = "RUNNING"
                 self._filter_cleared = False   # 每次(重)开始: 首次编队重新按设置归位筛选
                 self._defense_done = False     # 换场次: 防守队弹窗重新允许触发 (每 PF 一次)
+                # 达标关机的"只做一次"标记: 分数还没到目标才复位, 避免刚恢复运行
+                # 就因为当前分已超标而立刻又关一次模拟器。
+                if STATE.score_target is None or (STATE.score or 0) < STATE.score_target:
+                    self._goal_closed = False
                 STATE.log("==== PF Bot 运行中 ====")
             try:
                 self.step()

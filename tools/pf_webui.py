@@ -19,6 +19,12 @@ POST /api/pause         请求暂停（可恢复）
 POST /api/stop          请求停止（主循环退出, 进程结束, WebUI 一并关闭）
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
 POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删）
+GET  /api/mumu             {running, busy, close_on_goal, game_pkg}  模拟器状态
+POST /api/mumu/launch      启动 MuMu（后台线程, 等 start_finished）
+POST /api/mumu/game        启动 MuMu(如需) + adb monkey 拉起 Skullgirls
+POST /api/mumu/shutdown    关闭 MuMu（bot 运行中会先暂停; 只走 MuMuManager control）
+POST /api/settings         {filter_favorite, close_mumu_on_goal}
+                           close_mumu_on_goal: 总分达标时自动关闭 MuMu（默认关）
 
 访问安全（所有请求先过 _gate 门卫，不合法一律 40x 并写入运行日志）:
   - 来源 IP 限 本机回环 / 内网 (10/172.16/192.168) / Tailscale (100.64/10)，公网来源 403
@@ -38,7 +44,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from pf_env import STATE, WEBUI_PORT
+from pf_env import (GAME_PKG, STATE, WEBUI_PORT, mumu_is_running,
+                    mumu_launch_game, mumu_shutdown, mumu_start)
 from pf_store import STORE, UNSET, clean_rest, clean_target, clean_energy
 from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
 
@@ -123,17 +130,57 @@ _HTML = """<!doctype html>
 <title>SGM Bot</title>
 <script src="/static/chart.umd.min.js"></script>
 <style>
-  :root {
-    --bg0:#0e1118; --bg1:#141824; --panel:#181e2a; --panel2:#1c2230; --line:#262e40;
-    --txt:#dde4ee; --dim:#75819a; --faint:#4a5570;
+  /* ===== 主题令牌 =====
+     每套主题只覆盖这一组变量, 其余样式一律引用变量 —— 加主题 = 加一个块, 不动选择器。
+     配色分两档: 深色(午夜/极光/熔岩/霓虹) 与浅色(樱花/素纸), 由 JS 同步 color-scheme。 */
+  :root, [data-theme="midnight"] {
+    --bg0:#0e1118; --bg1:#141824; --bg2:#1b2336; --panel:#181e2a; --panel2:#1c2230;
+    --line:#262e40; --txt:#dde4ee; --txt2:#aeb9cf; --dim:#75819a; --faint:#4a5570;
     --gold:#f6c960; --green:#5ee08a; --red:#ff7b8b; --blue:#7fb2ff;
+    --mask:rgba(5,8,14,.66); --shadow:0 6px 24px rgba(0,0,0,.34);
+    --shadow-lg:0 18px 60px rgba(0,0,0,.6); --sheen:rgba(255,255,255,.03);
+  }
+  [data-theme="aurora"] {
+    --bg0:#071310; --bg1:#0c1c18; --bg2:#123a2e; --panel:#0f1f1a; --panel2:#142a22;
+    --line:#1f4136; --txt:#dcf3ea; --txt2:#9dc9b8; --dim:#6f9c8c; --faint:#446258;
+    --gold:#ffd479; --green:#3ee0a0; --red:#ff8a8a; --blue:#5fd0ff;
+    --mask:rgba(3,12,9,.66); --shadow:0 6px 24px rgba(0,0,0,.36);
+    --shadow-lg:0 18px 60px rgba(0,0,0,.62); --sheen:rgba(120,255,210,.04);
+  }
+  [data-theme="ember"] {
+    --bg0:#150c0a; --bg1:#1e1210; --bg2:#3d1b12; --panel:#251513; --panel2:#2d1b16;
+    --line:#43251c; --txt:#f5e6de; --txt2:#d3a995; --dim:#a3806f; --faint:#6d4c3f;
+    --gold:#ffb347; --green:#7ed49a; --red:#ff6f61; --blue:#ff9e7a;
+    --mask:rgba(14,5,3,.66); --shadow:0 6px 24px rgba(0,0,0,.38);
+    --shadow-lg:0 18px 60px rgba(0,0,0,.64); --sheen:rgba(255,180,120,.04);
+  }
+  [data-theme="neon"] {
+    --bg0:#0b0a16; --bg1:#121020; --bg2:#2a1a55; --panel:#17142a; --panel2:#1e1a38;
+    --line:#302858; --txt:#e9e5ff; --txt2:#b3aae6; --dim:#8b83bd; --faint:#5a5386;
+    --gold:#ffd166; --green:#4fe3c1; --red:#ff6b9d; --blue:#a78bfa;
+    --mask:rgba(6,4,16,.66); --shadow:0 6px 24px rgba(0,0,0,.4);
+    --shadow-lg:0 18px 60px rgba(0,0,0,.66); --sheen:rgba(170,140,255,.05);
+  }
+  [data-theme="sakura"] {
+    --bg0:#f0e7ed; --bg1:#f9f5f8; --bg2:#ffffff; --panel:#ffffff; --panel2:#fdf8fb;
+    --line:#e7d8e1; --txt:#3b2b34; --txt2:#6d5764; --dim:#8a7480; --faint:#ab97a3;
+    --gold:#c98a2e; --green:#1f9160; --red:#d9455f; --blue:#7561d0;
+    --mask:rgba(59,43,52,.28); --shadow:0 6px 20px rgba(120,80,105,.13);
+    --shadow-lg:0 18px 50px rgba(120,80,105,.22); --sheen:rgba(255,255,255,.6);
+  }
+  [data-theme="paper"] {
+    --bg0:#eae7e1; --bg1:#f7f5f1; --bg2:#fffdf8; --panel:#fffefb; --panel2:#fbf9f4;
+    --line:#e2ddd2; --txt:#2f2c27; --txt2:#605a51; --dim:#7a746a; --faint:#9a9388;
+    --gold:#b8811a; --green:#2b8455; --red:#c04a4a; --blue:#4a6fa5;
+    --mask:rgba(47,44,39,.26); --shadow:0 6px 20px rgba(80,72,60,.14);
+    --shadow-lg:0 18px 50px rgba(80,72,60,.22); --sheen:rgba(255,255,255,.7);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     margin:0; color:var(--txt);
     font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
-    background:radial-gradient(1200px 500px at 50% -120px, #1b2336 0%, var(--bg1) 45%, var(--bg0) 100%);
+    background:radial-gradient(1200px 500px at 50% -120px, var(--bg2) 0%, var(--bg1) 45%, var(--bg0) 100%);
     display:flex; flex-direction:column;
   }
   .mono { font-family:Consolas,"JetBrains Mono",monospace; }
@@ -158,12 +205,12 @@ _HTML = """<!doctype html>
     border-radius:8px; padding:6px 18px; cursor:pointer; font-size:13px; transition:background .15s;
   }
   #startbtn:hover { background:rgba(94,224,138,.18); }
-  .stat { font-size:13px; color:#aeb9cf; }
+  .stat { font-size:13px; color:var(--txt2); }
   .stat b { color:var(--txt); font-weight:600; }
   #h-score b { color:var(--gold); } #h-streak b { color:var(--green); }
   #step { font-size:12.5px; color:var(--dim); }
   #pausebtn {
-    margin-left:auto; background:rgba(127,178,255,.08); color:var(--blue);
+    margin-left:6px; background:rgba(127,178,255,.08); color:var(--blue);
     border:1px solid rgba(127,178,255,.35); border-radius:8px; padding:6px 18px;
     cursor:pointer; font-size:13px; transition:background .15s;
   }
@@ -224,13 +271,13 @@ _HTML = """<!doctype html>
   .sess-chip.none { border-style:dashed; }
 
   .modal-mask {
-    position:fixed; inset:0; background:rgba(5,8,14,.66); z-index:100;
+    position:fixed; inset:0; background:var(--mask); z-index:100;
     display:flex; align-items:center; justify-content:center;
   }
   .modal {
     width:560px; max-width:94vw; max-height:86vh; overflow-y:auto;
     background:var(--panel2); border:1px solid var(--line); border-radius:14px;
-    padding:18px 20px; box-shadow:0 18px 60px rgba(0,0,0,.6);
+    padding:18px 20px; box-shadow:var(--shadow-lg);
   }
   .modal-title { font-size:14px; color:var(--txt); font-weight:600; letter-spacing:2px; margin-bottom:12px; }
   .sess-row {
@@ -238,7 +285,7 @@ _HTML = """<!doctype html>
     border:1px solid var(--line); border-radius:10px; background:var(--panel);
     cursor:pointer; transition:border-color .12s, background .12s;
   }
-  .sess-row:hover { border-color:#33405c; }
+  .sess-row:hover { border-color:var(--dim); }
   .sess-row.sel { border-color:var(--blue); background:rgba(127,178,255,.08);
                   box-shadow:0 0 8px rgba(127,178,255,.15); }
   .sess-row .s-name { color:var(--txt); font-size:13px; font-weight:600; }
@@ -297,7 +344,7 @@ _HTML = """<!doctype html>
     flex:1 1 44%; overflow-y:auto; padding:12px 16px; font-size:12.5px; line-height:1.6;
     background:var(--panel); border:1px solid var(--line); border-radius:12px;
   }
-  #logpane .info, #daily-log .info { color:#c4cde0; }
+  #logpane .info, #daily-log .info { color:var(--txt2); }
   #logpane .warn, #daily-log .warn { color:var(--gold); }
   #logpane .err, #daily-log .err { color:var(--red); }
   #logpane .step, #daily-log .step { color:var(--blue); font-weight:600; margin-top:5px; }
@@ -306,8 +353,8 @@ _HTML = """<!doctype html>
     flex:1 1 56%; display:flex; gap:14px; align-items:center; justify-content:center;
     background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px;
   }
-  #shot { max-width:100%; max-height:calc(100vh - 150px); border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,.4); }
-  #sideinfo { font-size:13px; color:#aeb9cf; line-height:2.1; }
+  #shot { max-width:100%; max-height:calc(100vh - 150px); border-radius:8px; box-shadow:var(--shadow); }
+  #sideinfo { font-size:13px; color:var(--txt2); line-height:2.1; }
   #sideinfo b { color:var(--txt); }
 
   /* ---- 每日任务页签 ---- */
@@ -321,13 +368,13 @@ _HTML = """<!doctype html>
   #daily-logwrap { flex:1 1 33%; }
   #daily-log { flex:1; overflow-y:auto; padding:12px 16px; font-size:12.5px; line-height:1.6; }
   .dpanel-title { display:flex; align-items:baseline; padding:12px 16px 9px;
-                  font-size:13px; letter-spacing:2px; color:#aeb9cf; font-weight:600;
+                  font-size:13px; letter-spacing:2px; color:var(--txt2); font-weight:600;
                   border-bottom:1px solid var(--line); }
   .q-count { margin-left:auto; font-size:11.5px; color:var(--faint); letter-spacing:0; }
   #pool-list { flex:1; overflow-y:auto; padding:6px 8px 10px; }
   .pool-group { font-size:11.5px; color:var(--faint); letter-spacing:2px; padding:9px 8px 3px; }
   .task-row { display:flex; align-items:center; gap:8px; padding:8px 10px;
-              border-radius:8px; cursor:pointer; font-size:13px; color:#c4cde0;
+              border-radius:8px; cursor:pointer; font-size:13px; color:var(--txt2);
               transition:background .12s, box-shadow .12s; }
   .task-row:hover { background:var(--panel2); }
   .task-row.sel { background:rgba(127,178,255,.08); box-shadow:inset 0 0 0 1px rgba(127,178,255,.3); }
@@ -346,7 +393,7 @@ _HTML = """<!doctype html>
   #detail-body { flex:1; overflow-y:auto; padding:14px 16px; }
   .d-head { font-size:15px; font-weight:600; color:var(--txt); margin-bottom:9px; }
   .d-badges { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
-  .d-hint { font-size:12.5px; color:#aeb9cf; line-height:1.8; margin-bottom:14px; }
+  .d-hint { font-size:12.5px; color:var(--txt2); line-height:1.8; margin-bottom:14px; }
   .d-ph { border:1px dashed var(--line); border-radius:10px; padding:14px 16px; }
   .d-ph-title { font-size:12.5px; color:var(--dim); letter-spacing:1px; margin-bottom:12px; }
   .d-ph-line { height:10px; border-radius:5px; background:var(--panel2); margin-bottom:8px; }
@@ -397,13 +444,13 @@ _HTML = """<!doctype html>
     border:1px solid var(--line); border-radius:12px; padding:16px 18px 12px; margin-bottom:16px;
   }
   .chart-head { display:flex; align-items:baseline; gap:12px; margin-bottom:8px; }
-  .chart-title { font-size:13px; color:#aeb9cf; letter-spacing:3px; font-weight:600; }
+  .chart-title { font-size:13px; color:var(--txt2); letter-spacing:3px; font-weight:600; }
   .chart-val { font-size:16px; font-weight:600; }
   .chart-sub { font-size:11.5px; color:var(--faint); margin-left:auto; }
   .chart-body { position:relative; height:250px; }
   #empty { color:var(--dim); padding:60px; text-align:center; font-size:14px; }
   ::-webkit-scrollbar { width:8px; height:8px; }
-  ::-webkit-scrollbar-thumb { background:#2a3348; border-radius:4px; }
+  ::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px; }
   ::-webkit-scrollbar-track { background:transparent; }
 
   /* ---- JJC 日程页签 ---- */
@@ -445,6 +492,72 @@ _HTML = """<!doctype html>
   .ver-cfg { color:var(--faint); font-size:11.5px; margin-top:3px; }
   #jjc-empty { color:var(--dim); font-size:13px; padding:6px 0; }
 
+  /* ---- 质感层: 面板浮起 + 统一过渡 (只动视觉, 不动布局) ---- */
+  #logpane, #shotpane, .dpanel, .chart-card, .stat-card, .jpanel, .jjc-card,
+  .modal, .seg, .sess-chip, .rule-applied {
+    box-shadow: var(--shadow);
+  }
+  #logpane, #shotpane, .dpanel, .chart-card, .stat-card {
+    transition: border-color .18s ease, box-shadow .18s ease, background-color .25s ease;
+  }
+  .chart-card:hover, .stat-card:hover { border-color:var(--dim); }
+  /* 顶部高光: 走 background-image 叠在原渐变之上 —— 不能用 ::before 覆盖层,
+     定位伪元素会盖在卡片内容(canvas/文字)之上, 浅色主题下会把字洗白。 */
+  .chart-card, .stat-card {
+    background-image:linear-gradient(180deg, var(--sheen), transparent 42%),
+                     linear-gradient(160deg, var(--panel2), var(--panel));
+  }
+  header h1 {
+    background:linear-gradient(96deg, var(--blue), var(--gold));
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    color:var(--blue); font-weight:700; letter-spacing:1px;
+  }
+  .pill { letter-spacing:1px; }
+  nav button.on { box-shadow:inset 0 2px 0 var(--blue), 0 -1px 12px rgba(127,178,255,.12); }
+  .inp, .mini-btn, .rbtn, .sess-chip { transition:border-color .15s, color .15s, background .15s; }
+  .inp:focus, .mini-btn:focus-visible, nav button:focus-visible { outline:2px solid var(--blue); outline-offset:1px; }
+  ::selection { background:var(--blue); color:var(--bg0); }
+
+  /* ---- 设备(模拟器)控件 ---- */
+  .dev-group { display:inline-flex; align-items:center; gap:6px; margin-left:auto; }
+  .dev-dot {
+    width:9px; height:9px; border-radius:50%; background:var(--faint); flex:none;
+    box-shadow:0 0 0 3px rgba(127,178,255,0); transition:background .2s, box-shadow .2s;
+  }
+  .dev-dot.on   { background:var(--green); box-shadow:0 0 8px rgba(94,224,138,.7), 0 0 0 3px rgba(94,224,138,.14); }
+  .dev-dot.busy { background:var(--gold); box-shadow:0 0 8px rgba(246,201,96,.7), 0 0 0 3px rgba(246,201,96,.14);
+                  animation:devpulse 1s ease-in-out infinite; }
+  @keyframes devpulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+  .ghost-btn {
+    background:var(--panel); color:var(--txt2); border:1px solid var(--line); border-radius:8px;
+    padding:5px 12px; font-size:12.5px; font-family:inherit; cursor:pointer; white-space:nowrap;
+    transition:color .15s, border-color .15s, background .15s, transform .1s;
+  }
+  .ghost-btn:hover { color:var(--txt); border-color:var(--blue); background:var(--panel2); }
+  .ghost-btn:active { transform:translateY(1px); }
+  .ghost-btn:disabled { opacity:.45; cursor:not-allowed; transform:none; }
+  .ghost-btn.warn:hover { color:var(--red); border-color:var(--red); }
+  .hdr-sep { width:1px; height:20px; background:var(--line); margin:0 2px; flex:none; }
+
+  /* ---- 主题选择 ---- */
+  .theme-wrap { position:relative; display:inline-flex; }
+  .theme-menu {
+    position:absolute; top:calc(100% + 8px); right:0; z-index:60; width:212px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:12px;
+    padding:8px; box-shadow:var(--shadow-lg);
+  }
+  .theme-menu .tm-head { font-size:11px; color:var(--faint); letter-spacing:2px; padding:4px 8px 8px; }
+  .tm-item {
+    display:flex; align-items:center; gap:10px; width:100%; padding:7px 8px; cursor:pointer;
+    background:none; border:none; border-radius:8px; font-family:inherit; font-size:13px;
+    color:var(--txt2); text-align:left; transition:background .12s, color .12s;
+  }
+  .tm-item:hover { background:var(--panel); color:var(--txt); }
+  .tm-item.on { color:var(--txt); box-shadow:inset 0 0 0 1px var(--blue); }
+  .tm-sw { width:34px; height:18px; border-radius:5px; flex:none; border:1px solid var(--line); }
+  .tm-item .tm-name { flex:1; }
+  .tm-item .tm-tick { color:var(--blue); font-size:12px; }
+
   /* ---- 移动端适配 (桌面 .hdr-ctl 不产生盒子, 布局不变) ---- */
   .hdr-ctl { display: contents; }
   @media (max-width: 900px) {
@@ -453,6 +566,8 @@ _HTML = """<!doctype html>
     nav { flex-wrap: wrap; row-gap: 0; padding: 10px 14px 0; }
     #sess-chip { padding: 7px 16px; }
     #rule-bar { flex-basis: 100%; margin-top: 8px; }
+    .dev-group { flex-basis: 100%; margin-left: 0; flex-wrap: wrap; }
+    .theme-menu { width: 200px; }
     .rbtn { padding: 7px 11px; font-size: 13.5px; }
     .rbtn img { width: 20px; height: 20px; }
     .cls-btn img { width: 24px; height: 24px; }
@@ -477,7 +592,15 @@ _HTML = """<!doctype html>
     .sess-row { flex-wrap: wrap; }
     .sess-row .s-meta { flex-basis: 100%; margin-left: 0; order: 9; }
   }
-</style></head>
+</style>
+<script>
+/* 主题首屏防闪: 必须在 <body> 渲染前把 data-theme 打上, 否则会先画一帧默认深色再跳。 */
+(function () {
+  var t = 'midnight';
+  try { t = localStorage.getItem('sgm-theme') || 'midnight'; } catch (e) {}
+  document.documentElement.dataset.theme = t;
+})();
+</script></head>
 <body data-tab="pf">
 <header>
   <h1>SGM Bot</h1>
@@ -492,6 +615,18 @@ _HTML = """<!doctype html>
     <span class="stat"><label title="编队筛选是否只看喜爱角色：每次开始运行后的首次编队，会在游戏内按此勾选/清除喜爱筛选"><input type="checkbox" id="in-fav" checked> 喜爱筛选</label></span>
     <span class="stat">每 <input id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
     休 <input id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
+    <span class="stat"><label title="总分达到「目标总分」时自动暂停, 并优雅关闭 MuMu 模拟器 (走 MuMuManager control shutdown)"><input type="checkbox" id="in-closegoal"> 达标关模拟器</label></span>
+  </span>
+  <span class="dev-group">
+    <span id="mumu-dot" class="dev-dot" title="MuMu 模拟器状态"></span>
+    <button id="btn-mumu" class="ghost-btn" title="启动 MuMu 模拟器(未开时拉起并等待就绪)" onclick="mumuCmd('/api/mumu/launch')">启动 MuMu</button>
+    <button id="btn-game" class="ghost-btn" title="启动 Skullgirls Mobile (模拟器未开则先开机)" onclick="mumuCmd('/api/mumu/game')">启动游戏</button>
+    <button id="btn-mumu-off" class="ghost-btn warn" title="优雅关闭 MuMu (bot 运行中会先暂停)" onclick="mumuCmd('/api/mumu/shutdown')">关机</button>
+    <span class="hdr-sep"></span>
+    <span class="theme-wrap">
+      <button id="theme-btn" class="ghost-btn" onclick="toggleThemeMenu(event)" title="切换界面主题">◑ 主题</button>
+      <div id="theme-menu" class="theme-menu" style="display:none;"></div>
+    </span>
   </span>
   <button id="startbtn" onclick="onStartClick()" style="display:none;">开始</button>
   <button id="pausebtn" style="display:none;" onclick="api('/api/pause',{}).then(()=>pollState())">暂停</button>
@@ -628,6 +763,104 @@ const logPanes = ['logpane', 'daily-log'].map(id => {   // 运行页与每日任
   return el;
 });
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+/* ================= 主题 =================
+   6 套: 午夜蓝(原默认) / 极光绿 / 熔岩橙 / 霓虹紫 / 樱花白 / 素纸米。
+   配色全部走 CSS 变量 (见 <style> 的 [data-theme] 块), JS 只负责切换 + 把
+   变量值同步给 Chart.js (canvas 不吃 CSS 变量)。选择记在 localStorage。 */
+const THEMES = [
+  { id:'midnight', name:'午夜蓝', scheme:'dark',  sw:['#0e1118','#1b2336','#7fb2ff','#f6c960'] },
+  { id:'aurora',   name:'极光绿', scheme:'dark',  sw:['#071310','#123a2e','#5fd0ff','#3ee0a0'] },
+  { id:'ember',    name:'熔岩橙', scheme:'dark',  sw:['#150c0a','#3d1b12','#ff9e7a','#ffb347'] },
+  { id:'neon',     name:'霓虹紫', scheme:'dark',  sw:['#0b0a16','#2a1a55','#a78bfa','#ff6b9d'] },
+  { id:'sakura',   name:'樱花白', scheme:'light', sw:['#f0e7ed','#ffffff','#7561d0','#d9455f'] },
+  { id:'paper',    name:'素纸米', scheme:'light', sw:['#eae7e1','#fffdf8','#4a6fa5','#b8811a'] },
+];
+const THEME_KEY = 'sgm-theme';
+function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function rgbaOf(hex, a) {                      // CSS 变量取回的是 #rrggbb, canvas 要 rgba
+  const h = (hex || '').replace('#','').trim();
+  if (h.length !== 6 && h.length !== 3) return hex;
+  const s = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  const n = parseInt(s, 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+function applyTheme(id) {
+  const t = THEMES.find(x => x.id === id) || THEMES[0];
+  document.documentElement.dataset.theme = t.id;
+  const m = document.querySelector('meta[name="color-scheme"]');
+  if (m) m.content = t.scheme;
+  try { localStorage.setItem(THEME_KEY, t.id); } catch (e) {}
+  const b = document.getElementById('theme-btn');
+  if (b) b.textContent = '◑ ' + t.name;
+  applyChartTheme();
+  renderThemeMenu();
+  if (pfSub === 'chart') pollHistory();     // 图表数据集重建时才会吃新配色
+}
+function renderThemeMenu() {
+  const box = document.getElementById('theme-menu');
+  if (!box) return;
+  const cur = document.documentElement.dataset.theme;
+  box.innerHTML = '<div class="tm-head">界面主题</div>' + THEMES.map(t =>
+    `<button class="tm-item${t.id === cur ? ' on' : ''}" onclick="applyTheme('${t.id}')">
+       <span class="tm-sw" style="background:linear-gradient(90deg,${t.sw[0]} 0 50%,${t.sw[1]} 50% 100%);
+             box-shadow:inset 0 -3px 0 ${t.sw[3]}, inset 3px 0 0 ${t.sw[2]}, inset 0 0 0 1px var(--line)"></span>
+       <span class="tm-name">${t.name}</span>
+       <span class="tm-tick">${t.id === cur ? '●' : ''}</span>
+     </button>`).join('');
+}
+function toggleThemeMenu(e) {
+  if (e) e.stopPropagation();
+  const m = document.getElementById('theme-menu');
+  const open = m.style.display === 'none';
+  m.style.display = open ? 'block' : 'none';
+  if (open) setTimeout(() => document.addEventListener('click', closeThemeMenu, { once:true }), 0);
+}
+function closeThemeMenu() {
+  const m = document.getElementById('theme-menu');
+  if (m) m.style.display = 'none';
+}
+/* canvas 不吃 CSS 变量: 把当前主题色读出来喂给 Chart.js */
+function applyChartTheme() {
+  refreshPalette();
+  if (typeof Chart === 'undefined') return;
+  Chart.defaults.color = cssVar('--dim') || Chart.defaults.color;
+  Chart.defaults.borderColor = cssVar('--line') || Chart.defaults.borderColor;
+  const tt = { backgroundColor: cssVar('--panel2'), borderColor: cssVar('--line'),
+               titleColor: cssVar('--txt'), bodyColor: cssVar('--txt2') };
+  for (const ch of [chScore, chDelta, chStreak]) {
+    if (!ch) continue;
+    ch.options.plugins.tooltip = Object.assign(ch.options.plugins.tooltip || {}, tt);
+    for (const k of ['x', 'y']) {
+      const s = ch.options.scales && ch.options.scales[k];
+      if (!s) continue;
+      s.ticks = Object.assign(s.ticks || {}, { color: cssVar('--dim') });
+      if (s.grid) s.grid.color = cssVar('--line');
+    }
+    ch.update('none');
+  }
+}
+
+/* ================= 模拟器 (MuMu) 控制 =================
+   启停都是秒级动作, 后端丢后台线程执行, 这里只发指令 + 轮询状态点。 */
+async function mumuCmd(url) {
+  const dot = document.getElementById('mumu-dot');
+  if (dot) { dot.className = 'dev-dot busy'; dot.title = '指令已发送…'; }
+  try { await api(url, {}); } catch (e) {}
+  pollMumu();
+}
+async function pollMumu() {
+  try {
+    const d = await (await fetch('/api/mumu')).json();
+    const dot = document.getElementById('mumu-dot');
+    dot.className = 'dev-dot' + (d.busy ? ' busy' : (d.running ? ' on' : ''));
+    dot.title = d.busy ? ('MuMu ' + d.busy + ' 中…')
+                       : (d.running ? 'MuMu 已就绪' : 'MuMu 未运行');
+    document.getElementById('btn-mumu').disabled = !!d.busy;
+    document.getElementById('btn-game').disabled = !!d.busy;
+    document.getElementById('btn-mumu-off').disabled = !!d.busy || !d.running;
+  } catch (e) {}
+}
 let pfSub = 'run';
 function switchTab(t) {
   document.body.dataset.tab = t;
@@ -679,6 +912,8 @@ async function pollState() {
     }
     const fav = document.getElementById('in-fav');
     if (!fav.dataset.touched) fav.checked = !!d.filter_favorite;
+    const cg = document.getElementById('in-closegoal');
+    if (cg && !cg.dataset.touched) cg.checked = !!d.close_on_goal;
     if (d.rest_until * 1000 > Date.now()) {
       const m = Math.ceil((d.rest_until * 1000 - Date.now()) / 60000);
       document.getElementById('step').textContent = '休息中 (剩 ~' + m + ' 分钟, 回能)';
@@ -702,12 +937,17 @@ async function pollState() {
 }
 
 /* ================= Chart.js 图表 ================= */
-const GOLD = '#f6c960', GREEN = '#5ee08a', RED = '#ff7b8b';
+let GOLD = '#f6c960', GREEN = '#5ee08a', RED = '#ff7b8b';
+function refreshPalette() {                 // 主题切换后重读: canvas 不继承 CSS 变量
+  GOLD  = cssVar('--gold')  || GOLD;
+  GREEN = cssVar('--green') || GREEN;
+  RED   = cssVar('--red')   || RED;
+}
 const fmtN = v => Math.round(v).toLocaleString();
 const fmtTs = ts => { const d = new Date(ts*1000);
   return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2); };
-Chart.defaults.color = '#75819a';
-Chart.defaults.borderColor = '#232a3c';
+Chart.defaults.color = cssVar('--dim') || '#75819a';
+Chart.defaults.borderColor = cssVar('--line') || '#232a3c';
 Chart.defaults.font.family = "Consolas, 'JetBrains Mono', monospace";
 Chart.defaults.animation = false;
 
@@ -715,14 +955,16 @@ let chScore = null, chDelta = null, chStreak = null;
 let ptsMeta = [];   // 与标签平行的采样点元数据
 
 const ttStyle = {
-  backgroundColor: 'rgba(14,17,24,.95)', borderColor: '#262e40', borderWidth: 1,
-  titleColor: '#dde4ee', bodyColor: '#c4cde0', padding: 10,
+  backgroundColor: cssVar('--panel2') || 'rgba(14,17,24,.95)',
+  borderColor: cssVar('--line') || '#262e40', borderWidth: 1,
+  titleColor: cssVar('--txt') || '#dde4ee', bodyColor: cssVar('--txt2') || '#c4cde0', padding: 10,
   displayColors: false, cornerRadius: 8, titleFont: {weight: '600'},
 };
 const axisX = {
   ticks: { maxTicksLimit: 7, maxRotation: 0 }, grid: { display: false },
 };
-const axisYn = { ticks: { callback: v => Number(v).toLocaleString() }, grid: { color: '#20283a' } };
+const axisYn = { ticks: { callback: v => Number(v).toLocaleString() },
+                 grid: { color: cssVar('--line') || '#20283a' } };
 
 function ensureCharts() {
   if (chScore) return;
@@ -730,7 +972,7 @@ function ensureCharts() {
     type: 'line',
     data: { labels: [], datasets: [{
       data: [], borderColor: GOLD, borderWidth: 2, fill: true,
-      backgroundColor: 'rgba(246,201,96,.10)', tension: .35,
+      backgroundColor: rgbaOf(GOLD, .10), tension: .35,
       pointRadius: 2.5, pointHoverRadius: 5.5, pointBackgroundColor: GOLD,
     }]},
     options: {
@@ -906,7 +1148,7 @@ function renderSingle(s) {
   chScore.data.labels = scored.map(p => fmtTs(p.ts));
   chScore.data.datasets = [{
     data: scored.map(p => p.score), borderColor: GOLD, borderWidth: 2, fill: true,
-    backgroundColor: 'rgba(246,201,96,.10)', tension: .4,
+    backgroundColor: rgbaOf(GOLD, .10), tension: .4,
     pointRadius: 0, pointHitRadius: 10, pointHoverRadius: 5, pointBackgroundColor: GOLD,
   }];
   chScore.update('none');
@@ -1235,9 +1477,13 @@ modalMask.addEventListener('click', e => { if (e.target === modalMask) closeModa
 document.getElementById('in-fav').addEventListener('change', e => {
   e.target.dataset.touched = '1'; saveSettings();
 });
-async function saveSettings() {               // 全局: 喜爱
+document.getElementById('in-closegoal').addEventListener('change', e => {
+  e.target.dataset.touched = '1'; saveSettings();
+});
+async function saveSettings() {               // 全局: 喜爱 / 达标关模拟器
   await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ filter_favorite: document.getElementById('in-fav').checked }) });
+    body: JSON.stringify({ filter_favorite: document.getElementById('in-fav').checked,
+      close_mumu_on_goal: document.getElementById('in-closegoal').checked }) });
 }
 async function saveSessionSettings() {        // 随场次: 能量/分数上界/休息 (编辑当前选中场次)
   if (!activeSess || running) return;
@@ -1581,9 +1827,82 @@ document.getElementById('pool-list').addEventListener('pointerdown', e => {
 });
 
 setInterval(pollState, 1500);
+setInterval(pollMumu, 4000);
 setInterval(() => { if (pfSub === 'chart' && document.getElementById('page-pf').classList.contains('on')) pollHistory(); }, 2500);
+/* 初始化: 主题沿用 localStorage(首屏已由 head 脚本打好), 模拟器状态点立即取一次 */
+applyTheme(document.documentElement.dataset.theme || 'midnight');
 pollState();
+pollMumu();
 </script></body></html>"""
+
+
+# ---------- MuMu 启停 (WebUI 按钮后端) ----------
+# 启动/关模拟器都是**秒级阻塞** (拉起要等 start_finished, 关机要等状态回落),
+# 放在 HTTP handler 里会把整个 ThreadingHTTPServer 的该连接卡住, 所以一律丢后台线程,
+# 进度只通过 STATE.log 回传到运行日志。幂等: 同一动作未完成时重复点击直接返回。
+_MUMU_BUSY = {"op": None}
+_MUMU_LOCK = threading.Lock()
+
+
+def _mumu_run(op: str, fn) -> bool:
+    with _MUMU_LOCK:
+        if _MUMU_BUSY["op"]:
+            STATE.log(f"MuMu 操作进行中 ({_MUMU_BUSY['op']}), 忽略本次 {op}", "warn")
+            return False
+        _MUMU_BUSY["op"] = op
+
+    def _wrap():
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            STATE.log(f"MuMu {op} 异常: {e}", "err")
+        finally:
+            with _MUMU_LOCK:
+                _MUMU_BUSY["op"] = None
+    threading.Thread(target=_wrap, daemon=True, name=f"mumu-{op}").start()
+    return True
+
+
+def _mumu_do_launch(with_game: bool = False) -> None:
+    """拉起模拟器; with_game=True 则在就绪后顺手拉起 Skullgirls。"""
+    if mumu_is_running():
+        STATE.log("MuMu 已在运行", "info")
+    else:
+        STATE.log("正在启动 MuMu ...", "warn")
+        if not mumu_start(timeout=120):
+            STATE.log("MuMu 启动失败: MuMuManager/MuMuNxMain 不可用或超时", "err")
+            return
+        STATE.log("MuMu 已就绪", "warn")
+    if with_game:
+        _mumu_do_game()
+
+
+def _mumu_do_game() -> None:
+    if not mumu_is_running():
+        STATE.log("MuMu 未运行, 先启动模拟器 ...", "warn")
+        if not mumu_start(timeout=120):
+            STATE.log("MuMu 启动失败, 放弃拉起游戏", "err")
+            return
+    ok, out = mumu_launch_game()
+    if ok:
+        STATE.log(f"已发出 Skullgirls 启动指令 ({GAME_PKG})", "warn")
+    else:
+        STATE.log(f"启动 Skullgirls 失败: {out or 'monkey 未返回 Events injected: 1'}", "err")
+
+
+def _mumu_do_shutdown() -> None:
+    if not mumu_is_running():
+        STATE.log("MuMu 未在运行, 无需关闭", "info")
+        return
+    if STATE.running:
+        STATE.running = False    # 先停 bot, 否则 adb 断开会刷一片异常
+        STATE.status = "PAUSED"
+        STATE.log("关闭 MuMu 前先暂停 bot", "warn")
+    STATE.log("正在关闭 MuMu ...", "warn")
+    if mumu_shutdown():
+        STATE.log("MuMu 已关闭", "warn")
+    else:
+        STATE.log("关闭 MuMu 失败: MuMuManager 不可用或未响应", "err")
 
 
 def _apply_session(sess: dict) -> None:
@@ -1675,6 +1994,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "sess_rest_every": (STORE.get(STORE.session_id or "") or {}).get("rest_every") or 0,
                     "sess_rest_minutes": (STORE.get(STORE.session_id or "") or {}).get("rest_minutes") or 0,
                     "filter_favorite": STATE.filter_favorite,
+                    "close_on_goal": bool(STATE.close_mumu_on_goal),
                     "rest_every": STATE.rest_every,
                     "rest_minutes": STATE.rest_minutes,
                     "rest_until": STATE.rest_until,
@@ -1709,6 +2029,15 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.dumps({"per_min": per_min, "last_delta": last_delta,
                                "score": score_now, "target": target, "eta_sec": eta_sec},
                               ensure_ascii=False).encode("utf-8")
+            self._send(200, "application/json", body)
+        elif path == "/api/mumu":
+            # 模拟器状态: 每次真查 MuMuManager (启动/关闭都是秒级动作, 这里不需要轮询频率)
+            body = json.dumps({
+                "running": mumu_is_running(),
+                "busy": _MUMU_BUSY["op"],
+                "close_on_goal": bool(STATE.close_mumu_on_goal),
+                "game_pkg": GAME_PKG,
+            }, ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
         elif path == "/api/sessions":
             body = json.dumps(
@@ -1789,6 +2118,16 @@ class _Handler(BaseHTTPRequestHandler):
             STATE.quit = True
             STATE.log("收到 WebUI 停止请求, 主循环即将退出", "warn")
             self._send(200, "application/json", b'{"ok":true}')
+        elif self.path == "/api/mumu/launch":
+            _mumu_run("launch", lambda: _mumu_do_launch(False))
+            self._send(200, "application/json", b'{"ok":true}')
+        elif self.path == "/api/mumu/game":
+            # 一键直达: 模拟器没开就先开, 就绪后拉起 Skullgirls
+            _mumu_run("game", lambda: _mumu_do_launch(True))
+            self._send(200, "application/json", b'{"ok":true}')
+        elif self.path == "/api/mumu/shutdown":
+            _mumu_run("shutdown", _mumu_do_shutdown)
+            self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/start":
             try:
                 data = self._read_json()
@@ -1797,6 +2136,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json_err(400, "需要有效的 session_id")
                 return
             _apply_session(sess)
+            if not mumu_is_running():
+                STATE.log("MuMu 未运行 —— bot 连接会失败, 请先点「启动 MuMu」", "err")
             STATE.running = True
             STATE.log(f"收到 WebUI 开始请求: 场次「{sess['name']}」", "warn")
             self._send(200, "application/json", b'{"ok":true}')
@@ -1911,6 +2252,8 @@ class _Handler(BaseHTTPRequestHandler):
                 data = self._read_json()
                 if "filter_favorite" in data:
                     STATE.filter_favorite = bool(data["filter_favorite"])
+                if "close_mumu_on_goal" in data:
+                    STATE.close_mumu_on_goal = bool(data["close_mumu_on_goal"])
                 # 能量门槛/目标总分/休息已随场次, 由 /api/sessions/update 维护
                 rule_desc = f"{STATE.pf_rule['type']}={STATE.pf_rule['value']}" if STATE.pf_rule else "无"
                 rest_desc = (f"每 {STATE.rest_every} 场休 {STATE.rest_minutes} 分钟"

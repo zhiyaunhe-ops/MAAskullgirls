@@ -282,6 +282,22 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
   注意：**休息计数在进程重启时归零**（fights_since_rest 是内存态），频繁重启则
   一直数不满 N 场
 - 接口：`/api/state`、`/api/history`、`/api/start`、`/api/stop`、`/api/settings`、`/static/*`
+- **模拟器控制**（2026-09-21）：头部「启动 MuMu / 启动游戏 / 关机」+ 状态灯
+  - `GET /api/mumu`、`POST /api/mumu/launch|game|shutdown`；启停都是秒级动作，
+    后端一律丢后台线程（幂等锁 `_MUMU_BUSY`），进度只回写到运行日志，不卡 HTTP
+  - 唯一实现在 `pf_env.py` 的 `mumu_*`，`pf_scene.ensure_mumu` 也转发过去 ——
+    **关模拟器只能走 `MuMuManager control -v 0 shutdown`**（强杀 MuMuNxMain.exe
+    会被 MuMuNxService 以 --from-oem 拉回；该实例还挂着用户另一个 MAA 的自启）
+  - 状态判据要兼容两种字段集：MuMu 12.0 未启动时 `info -v 0` 只有
+    `is_android_started` 布尔位，没有 `player_state`（见 `mumu_state`）
+- **达标自动关模拟器**（2026-09-21）：头部「达标关模拟器」开关
+  （`STATE.close_mumu_on_goal`，**默认关** —— 关模拟器是有副作用的外界动作）。
+  总分达 `score_target` 时照旧暂停，开关打开则再关 MuMu；每次运行只做一次
+  （`_goal_closed`），且只有「当前分 < 目标」才复位，避免恢复运行后立刻又关一次
+- **界面主题**（2026-09-21）：6 套（午夜蓝 / 极光绿 / 熔岩橙 / 霓虹紫 / 樱花白 / 素纸米），
+  头部「◑ 主题」切换，存 localStorage，首屏由 `<head>` 内脚本预置 `data-theme` 防闪。
+  配色全部走 `[data-theme]` 的 CSS 变量（加主题 = 加一个变量块，不动选择器）；
+  **canvas 不吃 CSS 变量**，Chart.js 由 `applyChartTheme()` 读变量后 `update()`
 
 ### 6.8 首场战斗 AUTO/3x 自检（ensure_battle_auto，2026-09-06）
 

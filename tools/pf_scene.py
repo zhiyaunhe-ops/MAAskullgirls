@@ -25,9 +25,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "tools"))
 
 from pf_bot import PROJECT_ROOT as ROOT  # noqa: F401,E402  (统一 sys.path 语义)
 from pf_bot import PfBot  # noqa: E402
-from pf_env import resolve_adb  # noqa: E402
+from pf_env import GAME_PKG, mumu_is_running, mumu_start, resolve_adb  # noqa: E402
 
-GAME_PKG = "com.autumn.skullgirls"
 IMG = "pf/"
 TPL_HALL_PRIZE = IMG + "hall_prize_fights.png"  # 大厅 PRIZE FIGHTS 菱形
 TPL_HUB_PLAY = IMG + "hub_play.png"             # PF hub 居中卡 PLAY!
@@ -90,32 +89,20 @@ def log(msg: str, level: str = "info") -> None:
 
 def ensure_mumu(adb_path: str) -> None:
     """MuMu 未启动则拉起 0 号设备, 等到 start_finished (须在 PfScene 构建前调用,
-    否则 setup() 的 adb 连接会先炸)。"""
-    mgr = str(Path(adb_path).with_name("MuMuManager.exe"))
-    nx_main = Path(adb_path).with_name("MuMuNxMain.exe")
+    否则 setup() 的 adb 连接会先炸)。
+
+    启停语义统一在 pf_env.mumu_* (那里也定义了「只能走 MuMuManager shutdown」的铁律),
+    本函数只负责重试与日志。
+    """
+    if mumu_is_running(adb_path):
+        log("MuMu 设备已就绪")
+        return
     for _ in range(2):
-        p = subprocess.run([mgr, "info", "-v", "0"],
-                           capture_output=True, text=True, timeout=15)
-        try:
-            info = json.loads(p.stdout)
-        except json.JSONDecodeError:
-            info = {}
-        if info.get("player_state") == "start_finished":
+        log("启动 MuMu 0 号设备 ...")
+        if mumu_start(adb_path, timeout=120):
             log("MuMu 设备已就绪")
             return
-        log("启动 MuMu 0 号设备 ...")
-        subprocess.Popen([str(nx_main), "-v", "0"], cwd=str(nx_main.parent))
-        for _ in range(60):
-            time.sleep(2)
-            q = subprocess.run([mgr, "info", "-v", "0"],
-                               capture_output=True, text=True, timeout=15)
-            try:
-                if json.loads(q.stdout).get("player_state") == "start_finished":
-                    log("MuMu 设备已就绪")
-                    return
-            except json.JSONDecodeError:
-                pass
-    raise RuntimeError("MuMu 120s 内未就绪")
+    raise RuntimeError("MuMu 未就绪")
 
 
 class PfScene:

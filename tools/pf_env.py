@@ -2,6 +2,7 @@
 import ctypes
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.json"
+GAME_PKG = "com.autumn.skullgirls"   # Skullgirls Mobile 包名 (adb monkey 拉起用)
 
 
 def _load_config() -> dict:
@@ -49,6 +51,108 @@ def resolve_adb():
     return None, addr
 
 
+# ---------- MuMu 设备控制 (启停/拉游戏) ----------
+# 唯一入口: 所有"开/关模拟器"的调用都必须走这里, 不要在别处另写一套 subprocess。
+# 铁律 (2026-09 实测): 关模拟器**只能**用 `MuMuManager control -v 0 shutdown`。
+#   强杀 MuMuNxMain.exe 会被 MuMuNxService 以 --from-oem 立刻拉回;
+#   且该实例上还挂着用户另一个 MAA(明日方舟) 的自启, 强杀会连带打断。
+
+def mumu_paths(adb_path: str = None) -> tuple[str | None, str | None, str]:
+    """(MuMuManager.exe, MuMuNxMain.exe, address)。adb_path 为空则回落到 resolve_adb()。"""
+    adb, addr = (adb_path, MUMU_ADDRESS) if adb_path else resolve_adb()
+    if not adb:
+        return None, None, addr
+    base = Path(adb)
+    mgr = base.with_name("MuMuManager.exe")
+    nx = base.with_name("MuMuNxMain.exe")
+    return (str(mgr) if mgr.is_file() else None,
+            str(nx) if nx.is_file() else None,
+            addr)
+
+
+def mumu_info(adb_path: str = None, timeout: float = 15) -> dict:
+    """`MuMuManager info -v 0` 的 JSON。取不到返回 {} (含 MuMuManager 不存在)。"""
+    mgr, _, _ = mumu_paths(adb_path)
+    if not mgr:
+        return {}
+    try:
+        p = subprocess.run([mgr, "info", "-v", "0"],
+                           capture_output=True, text=True, timeout=timeout)
+        return json.loads(p.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def mumu_state(adb_path: str = None) -> str:
+    """设备状态串: start_finished / stopped / unknown。"""
+    info = mumu_info(adb_path)
+    if not info:
+        return "unknown"
+    for key in ("player_state", "state"):
+        if info.get(key):
+            return str(info[key])
+    # MuMu 12.0 的 `info -v 0` 字段集随运行态变化: 未启动时只有布尔位
+    # (is_android_started / is_process_started), 没有 player_state。两个口径都认。
+    if "is_android_started" in info:
+        return "start_finished" if info.get("is_android_started") else "stopped"
+    return "unknown"
+
+
+def mumu_is_running(adb_path: str = None) -> bool:
+    """设备是否已就绪。"""
+    return mumu_state(adb_path) == "start_finished"
+
+
+def mumu_start(adb_path: str = None, timeout: float = 120) -> bool:
+    """未启动则拉起 MuMuNxMain, 轮询到 start_finished。返回是否就绪。"""
+    if mumu_is_running(adb_path):
+        return True
+    _, nx, _ = mumu_paths(adb_path)
+    if not nx:
+        return False
+    subprocess.Popen([nx, "-v", "0"], cwd=str(Path(nx).parent))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(2)
+        if mumu_is_running(adb_path):
+            time.sleep(2)      # adbd 比 start_finished 晚一点起来, 留个沉降窗口
+            return True
+    return False
+
+
+def mumu_shutdown(adb_path: str = None, timeout: float = 30) -> bool:
+    """优雅关闭模拟器 (MuMuManager control shutdown)。返回是否已脱离 start_finished。"""
+    mgr, _, _ = mumu_paths(adb_path)
+    if not mgr:
+        return False
+    try:
+        subprocess.run([mgr, "control", "-v", "0", "shutdown"],
+                       capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(2)
+        if not mumu_is_running(adb_path):
+            return True
+    return not mumu_is_running(adb_path)
+
+
+def mumu_launch_game(adb_path: str = None, pkg: str = GAME_PKG) -> tuple[bool, str]:
+    """adb monkey 拉起游戏。返回 (是否成功, 原始输出/错误)。"""
+    adb, addr = (adb_path, MUMU_ADDRESS) if adb_path else resolve_adb()
+    if not adb:
+        return False, "未找到 adb (config.json 配 adb_path 或先启动模拟器)"
+    try:
+        p = subprocess.run([adb, "-s", addr, "shell", "monkey", "-p", pkg,
+                            "-c", "android.intent.category.LAUNCHER", "1"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+    out = (p.stdout or "") + (p.stderr or "")
+    return ("Events injected: 1" in out, out.strip())
+
+
 def preload_msvcrt() -> None:
     """先加载 System32 新版 VC 运行库，避免 anaconda 旧 CRT 导致 MAA DLL 初始化失败。
 
@@ -84,6 +188,9 @@ class BotState:
         self.shot_path = None
         self.running = False          # 暂停开关（WebUI 可置 False, 可恢复）
         self.quit = False             # 硬停止开关: 置 True 后主循环退出、进程结束
+        # 达标收尾: 总分达到 score_target 时自动关闭 MuMu (省电/释放机器)。
+        # 默认 False —— 关模拟器是有副作用的外界动作, 必须用户显式打开。
+        self.close_mumu_on_goal = False
 
     def log(self, msg: str, level: str = "info") -> None:
         stamp = time.strftime("%H:%M:%S")
