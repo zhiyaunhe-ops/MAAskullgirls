@@ -212,6 +212,13 @@ class PfScene:
         # 'ASHOTINTHEDARK' / 'ASHOTNTHEDARK' —— 靠 difflib (cutoff 0.55) 归一到本名,
         # 否则 center('A SHOT IN THE DARK') 会 10 步转不到 (实测 01:27 失败)。
         "A SHOT IN THE DARK",
+        # 2026-09-22: Annie 的角色场名 (游戏日 09-21 周一新开)。实机实证:
+        # BRONZE + INFINITY AND BEYOND, 无 SCORE 行, 剩 02D:23H:55M, 立绘绿发星饰;
+        # 快照 Current Character PF 当日 Marie(收)→Annie(开), 与 §6.12.2 该周
+        # Annie/Big Band 对、周一-三=前一个 吻合。OCR 实读 'NFINITYAND BETOND'
+        # (丢首字母 I、丢 Y), difflib 能归一, 但**必须先收录**, 否则 fallback 读数
+        # 会被丢弃 (见 read_center_card 2026-09-22 注)。
+        "INFINITY AND BEYOND",
     ]
 
     # 卡片上的"难度层级"文字与场次名**同框**: ROI_CARD_TITLE=(500,290,780,378) 实测同时
@@ -299,8 +306,23 @@ class PfScene:
         """读居中场地的 (名称, 分数)。名称优先匹配已知场地名。
 
         层级前缀不直接删, 而是展开成候选再择优 —— 见 TIER_PREFIXES 上面的说明。
+
+        2026-09-22 两条修:
+        1. fallback 读数不再"只在接受 KNOWN 命中时才用"。INFINITY AND BEYOND
+           首见时 primary ROI 框到倒计时, OCR '02:23 51' 剥完非字母=空串,
+           fallback 读出 'NFINITYAND BETOND' 但表里没有这名字 -> 整卡报 ('', -1),
+           explore 八连空、新场漏判。09-18 DEATH METTLE 恰好当次补进了 KNOWN,
+           把这条路全掩住了。现在 primary 剥完为空而 fallback 非空时,
+           采用 fallback 串返回 (即使未命中 KNOWN —— 让上层至少拿到近似名,
+           走「未收录」路径留痕, 而不是静默变空)。
+        2. 无 SCORE 行的卡判 0。新场 (从没打过) 的卡面**没有 SCORE 行**
+           (2026-09-18 DEATH METTLE / 2026-09-22 INFINITY AND BEYOND 两次实证),
+           SCORE ROI 读出空串 != OCR 失灵。判 0 的门卫: 标题必须命中 KNOWN
+           (证明 OCR 通道活着、画面确实是张卡), 否则保持 -1 如实报读不出 ——
+           宁可漏跑不可错跑 (误判 0 会错建场次)。
         """
-        score = self.parse_score_ocr(self.ocr(ROI_CARD_SCORE))
+        raw_score = self.ocr(ROI_CARD_SCORE)
+        score = self.parse_score_ocr(raw_score)
         raw_title = self.ocr(ROI_CARD_TITLE)
         full, cands, stripped = self._title_cands(raw_title)
         best = self._match_known(cands)
@@ -315,6 +337,16 @@ class PfScene:
                     f"-> {best2!r}", "warn")
                 full, cands, stripped = full2, cands2, stripped2
                 best = best2
+            elif not cands[0] and cands2[0]:
+                # 2026-09-22: primary 剥完是空串而 fallback 读出了字母 ->
+                # 采用 fallback 串 (全新名字未收录时也留痕, 不再静默丢成 '')。
+                log(f"标题 ROI 读空, 采用兜底 ROI 未收录名: {raw_title!r} -> {raw2!r}",
+                    "warn")
+                full, cands, stripped = full2, cands2, stripped2
+        score_body = re.sub(r"(?i)\bscore\b\s*:?", " ", raw_score).strip()
+        if score == -1 and best is not None and not score_body:
+            log(f"卡面无 SCORE 行 (标题 {best!r} 识别正常), 按新场 0 处理", "warn")
+            score = 0
         if best:
             if stripped:
                 log(f"场地名带层级前缀, 归一为 {best!r}: OCR 原文 {full}", "warn")
@@ -520,11 +552,24 @@ class PfScene:
         return title, score
 
     def explore(self) -> list[tuple[str, int]]:
-        """左滑扫场轮播: 收集每个居中场地的分数, 报告 score=0, 回到初始居中卡。"""
+        """左滑扫场轮播: 收集每个居中场地的分数, 报告 score=0, 回到初始居中卡。
+
+        2026-09-22: PF hub 轮播**不循环** —— 滑到最右一张后再滑画面不动
+        (实证 09-22: 第 3 张 INFINITY AND BEYOND 后连滑 7 次画面停在原卡,
+        卡上无 SCORE 行 -> 连续 8 次读出 ('', -1), 空串 key 不触发已有的
+        标题去重, 白白扫满 10 槽还把扫描结果塞满 8 条空项)。加"相邻两次
+        读数完全相同 -> 到头, 提前结束"判据: 正常轮播相邻两卡名字必不同,
+        相同只可能是同一张卡 (滑动无效)。
+        """
         seen: list[tuple[str, int]] = []
+        prev: tuple[str, int] | None = None
         for i in range(10):
             title, score = self.read_center_card()
             log(f"居中卡[{i}] {title!r} score={score}")
+            if prev is not None and (title, score) == prev:
+                log("画面与上一张完全相同, 轮播已到头, 扫描结束")
+                break
+            prev = (title, score)
             key = re.sub(r"[^A-Z0-9]", "", title)[:14]
             if any(key and key == re.sub(r"[^A-Z0-9]", "", t)[:14] for t, _ in seen):
                 log("转回已见场地, 扫描结束")

@@ -490,6 +490,14 @@ Double/Squigly → Valentine/Fukua → Eliza/Marie → Annie/Big Band
 （截图 `debug/pf/run/0918_010435/0019_scene.jpg`；已入 arena_rules.json，rule=null）。
 半周切换这条从 B 级升为「B 级 + 两次独立实测」。
 
+**2026-09-22 三次实证（游戏日 09-21 周一）**：上周（09-14）= Eliza/Marie 对，
+按 9 对循环本周应为 **Annie/Big Band**、周一-三 = 前一个 = Annie ——
+快照 `Current Character PF` 当日由 Marie(收) → **Annie(开)**，命中。
+实机同步扫到新场 `INFINITY AND BEYOND`（BRONZE，无 SCORE 行，剩 02D:23H:55M，
+立绘绿发星饰 = Annie）⇒ **Annie 的角色场名 = INFINITY AND BEYOND**，
+已入 arena_rules.json（rule=null，parent=角色周场，A 级）。
+按口径只做记录对齐，9 对循环本身维持 B 级不升级。
+
 ### 6.12.3 元素 PF 顺序（B 级）
 
 社区表：**Water → Fire → Wind → Light → Dark**，5 周一轮。与快照

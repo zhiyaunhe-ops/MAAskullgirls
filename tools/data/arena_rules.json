@@ -149,6 +149,12 @@
    "parent_id": "s1789837426152",
    "kind": "元素周场·暗",
    "依据": "A 用户 2026-09-20 明确「这是暗场, 按元素通用规定左1放一个暗」(用户口径=本项目最高依据); 独立佐证: 游戏日 09-19(周六) 快照 Current Elemental PF 由 Light(未开) → Dark(开放), 与 §6.12.1「元素 PF = 周六, 35 天」A 级周期吻合。2026-09-20 hub 扫到该卡 score=0 = 当日新开。⚠️ OCR 会丢空格读成 ASHOTINTHEDARK / ASHOTNTHEDARK, 匹配走字母归一, 两边都命中。parent_id 是当天自动新建的顶级场次(名字待人工校正), 复用它是为了避免下次再新建一个。"
+  },
+  "INFINITY AND BEYOND": {
+   "rule": null,
+   "parent_id": "s1788423741550",
+   "依据": "A 2026-09-22 01:05 实机实证: 游戏日 09-21(周一) hub 扫到 BRONZE + INFINITY AND BEYOND, 卡面无 SCORE 行(=新场), 剩余 02D:23H:55M(半周量级, 与角色场周一开/周四换吻合), 立绘绿发双辫星饰(Annie of the Stars 特征); 同帧快照 Current Character PF 由 Marie(09-20 收) → Annie(09-21 开), 与 PF_BOT.md §6.12.2 九对循环「该周=Annie/Big Band, 周一-三=前一个」吻合。角色场不限定角色 → rule=null(§6.12.7 铁律)。parent=角色周场(同 BLOOD SPORT/DEATH METTLE)。⚠️ OCR 实读 NFINITYAND BETOND(丢首字母 I/丢 Y), 已入 pf_scene.KNOWN_TITLES 靠 difflib 归一; 且该卡版式无 SCORE 行、标题比常规版式高 —— read_center_card 已加「无 SCORE 行+标题命中=判 0」兜底。子场次 score_target 沿用角色周场父级 8kw 口径(用户 2026-09-19)。",
+   "kind": "角色场"
   }
  },
  "_补充": [
