@@ -71,15 +71,31 @@ def mumu_paths(adb_path: str = None) -> tuple[str | None, str | None, str]:
 
 
 def mumu_info(adb_path: str = None, timeout: float = 15) -> dict:
-    """`MuMuManager info -v 0` 的 JSON。取不到返回 {} (含 MuMuManager 不存在)。"""
+    """`MuMuManager info -v 0` 的 JSON。取不到返回 {} (含 MuMuManager 不存在)。
+
+    ⚠️ 2026-09-22 实测崩溃根因: `subprocess.run(capture_output=True, timeout=...)`
+    在**自己超时时会先杀掉子进程, 再抛 TimeoutExpired, 而 `p.stdout` 是 None**
+    (调用超时/被杀的进程没有输出)。`json.loads(None)` 抛的是 **TypeError**,
+    不在原先捕获的 (OSError, SubprocessError, JSONDecodeError, ValueError) 里,
+    于是异常一路冒到 WebUI 的 do_GET, 把请求线程打出一整屏 traceback。
+
+    触发场景不是理论: MuMuManager 是 RPC 客户端, 模拟器正在启停/被别的进程独占时
+    会卡住 >15s; 而 `/api/mumu` 是**每 4 秒轮询一次**的接口, 于是刷屏。
+    两道防线都补上: ①stdout 空值直接判失败; ②兜底捕 Exception。
+    """
     mgr, _, _ = mumu_paths(adb_path)
     if not mgr:
         return {}
     try:
         p = subprocess.run([mgr, "info", "-v", "0"],
                            capture_output=True, text=True, timeout=timeout)
-        return json.loads(p.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        if not p.stdout:                      # 超时/被杀 -> None; 空串也无从解析
+            return {}
+        data = json.loads(p.stdout)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        # 这里刻意捕 Exception 而不是列举: 这是"给界面看设备状态"的旁路,
+        # 失败只该退化成"状态未知", 任何解析类意外都不该冒到 HTTP 线程。
         return {}
 
 
@@ -151,6 +167,27 @@ def mumu_launch_game(adb_path: str = None, pkg: str = GAME_PKG) -> tuple[bool, s
         return False, str(e)
     out = (p.stdout or "") + (p.stderr or "")
     return ("Events injected: 1" in out, out.strip())
+
+
+def adb_connect(adb_path: str = None, timeout: float = 30) -> bool:
+    """确保 adb 连上模拟器 (adb connect <address>)。
+
+    为什么需要: pf_bot 的 `controller.post_connection()` 是 MAA 内部重连, **不会**
+    自建 TCP 连接。bot 停在 IDLE 不动时, adb 与模拟器之间的连接会因模拟器重启 /
+    adb server 被回收而失效; 此时点「开始」只会撞一串
+    `AdbControlUnitMgr::connect failed`(实测 08:39 那屏), 而用户看到的只是"没反应"。
+    所以 /api/start 之前先补一次 connect —— 幂等, 已连上就秒回。
+    """
+    adb, addr = (adb_path, MUMU_ADDRESS) if adb_path else resolve_adb()
+    if not adb:
+        return False
+    try:
+        p = subprocess.run([adb, "connect", addr],
+                           capture_output=True, text=True, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return False
+    out = ((p.stdout or "") + (p.stderr or "")).lower()
+    return "connected to" in out or "already connected" in out
 
 
 def preload_msvcrt() -> None:

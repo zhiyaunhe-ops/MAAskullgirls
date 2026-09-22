@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from pf_env import (GAME_PKG, STATE, WEBUI_PORT, mumu_is_running,
+from pf_env import (GAME_PKG, STATE, WEBUI_PORT, adb_connect, mumu_is_running,
                     mumu_launch_game, mumu_shutdown, mumu_start)
 from pf_store import STORE, UNSET, clean_rest, clean_target, clean_energy
 from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
@@ -621,7 +621,7 @@ _HTML = """<!doctype html>
     <span id="mumu-dot" class="dev-dot" title="MuMu 模拟器状态"></span>
     <button id="btn-mumu" class="ghost-btn" title="启动 MuMu 模拟器(未开时拉起并等待就绪)" onclick="mumuCmd('/api/mumu/launch')">启动 MuMu</button>
     <button id="btn-game" class="ghost-btn" title="启动 Skullgirls Mobile (模拟器未开则先开机)" onclick="mumuCmd('/api/mumu/game')">启动游戏</button>
-    <button id="btn-mumu-off" class="ghost-btn warn" title="优雅关闭 MuMu (bot 运行中会先暂停)" onclick="mumuCmd('/api/mumu/shutdown')">关机</button>
+    <button id="btn-mumu-off" class="ghost-btn warn" title="优雅关闭 MuMu (bot 运行中会先暂停)" onclick="onMumuOffClick()">关机</button>
     <span class="hdr-sep"></span>
     <span class="theme-wrap">
       <button id="theme-btn" class="ghost-btn" onclick="toggleThemeMenu(event)" title="切换界面主题">◑ 主题</button>
@@ -848,6 +848,12 @@ async function mumuCmd(url) {
   if (dot) { dot.className = 'dev-dot busy'; dot.title = '指令已发送…'; }
   try { await api(url, {}); } catch (e) {}
   pollMumu();
+}
+/* 「关机」是破坏性的: 关掉后这个 WebUI 什么都干不了。2026-09-22 早上被误点过一次,
+   之后的「开始」全无声无息 —— 加二次确认, 免得再踩。 */
+function onMumuOffClick() {
+  if (!confirm('关闭 MuMu 模拟器？\n\n关闭后 bot 无法运行（会先自动暂停）。\n需要时点「开始」会自动重新拉起模拟器。')) return;
+  mumuCmd('/api/mumu/shutdown');
 }
 async function pollMumu() {
   try {
@@ -1337,12 +1343,28 @@ function closeModal() { modalMask.style.display = 'none'; }
 // 开始: 已有选中场次直接开, 没选过才弹选择弹窗
 async function onStartClick() {
   if (running) return;
-  if (activeSess) {
-    await api('/api/start', { session_id: activeSess });
-    pollState();
+  if (!activeSess) { openSessionModal(); return; }
+  const st = document.getElementById('status'), sp = document.getElementById('step');
+  const prevSt = st.textContent, prevSp = sp.textContent;
+  st.textContent = 'STARTING'; st.className = 'pill PAUSED';
+  sp.textContent = '正在启动…';
+  let d = null;
+  try {
+    d = await api('/api/start', { session_id: activeSess });
+  } catch (e) {
+    d = { error: '请求失败: ' + e.message };
+  }
+  if (!d || d.error) {
+    st.textContent = prevSt; st.className = 'pill ' + prevSt;
+    sp.textContent = '启动失败: ' + ((d && d.error) || '无响应');
+    alert('启动失败：' + ((d && d.error) || '无响应'));
     return;
   }
-  openSessionModal();
+  // 模拟器没开时后端会拉起它 (秒级, 期间状态仍是 IDLE), 这里给个进度反馈,
+  // 否则那十几秒看起来还是"没反应" —— 2026-09-22 的原始抱怨就是这个观感。
+  if (d.starting_mumu) sp.textContent = '模拟器未开机, 正在拉起 MuMu…';
+  pollState();
+  pollMumu();
 }
 // 停止: 主循环退出、进程结束 (WebUI 一并关闭), 重新运行 pf_bot 才能再启动
 async function onStopClick() {
@@ -1890,7 +1912,23 @@ def _mumu_do_game() -> None:
         STATE.log(f"启动 Skullgirls 失败: {out or 'monkey 未返回 Events injected: 1'}", "err")
 
 
-def _mumu_do_shutdown() -> None:
+def _mumu_do_connect() -> None:
+    """补一次 adb connect。幂等 —— 已连上时 adb 回 'already connected'。"""
+    if adb_connect():
+        return
+    STATE.log("adb connect 未成功 (模拟器可能刚重启, 稍后重试)", "warn")
+
+
+def _mumu_do_launch_and_connect() -> None:
+    """「开始」时模拟器没开: 拉起它并补 adb connect, 之后 run() 循环会自己跑起来。"""
+    if not mumu_start(timeout=120):
+        STATE.log("MuMu 启动失败, bot 会在连接时报错 (可在 WebUI 重试)", "err")
+        return
+    STATE.log("MuMu 已就绪, 补一次 adb connect", "warn")
+    _mumu_do_connect()
+
+
+def _mumu_do_shutdown(by_user_click: bool = True) -> None:
     if not mumu_is_running():
         STATE.log("MuMu 未在运行, 无需关闭", "info")
         return
@@ -1901,6 +1939,11 @@ def _mumu_do_shutdown() -> None:
     STATE.log("正在关闭 MuMu ...", "warn")
     if mumu_shutdown():
         STATE.log("MuMu 已关闭", "warn")
+        if by_user_click:
+            # 关掉模拟器 = 这个 WebUI 之后什么都干不了, 必须说清"怎么回来"。
+            # 2026-09-22 实测教训: 早上误点「关机」后连点三次「开始」全无反应,
+            # 用户以为按钮坏了 —— 其实只是模拟器没了。
+            STATE.log("提示: 之后点「开始」会先自动拉起模拟器; 也可点「启动 MuMu」", "warn")
     else:
         STATE.log("关闭 MuMu 失败: MuMuManager 不可用或未响应", "err")
 
@@ -2031,9 +2074,16 @@ class _Handler(BaseHTTPRequestHandler):
                               ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
         elif path == "/api/mumu":
-            # 模拟器状态: 每次真查 MuMuManager (启动/关闭都是秒级动作, 这里不需要轮询频率)
+            # 模拟器状态。前端每 4s 轮询, 所以这里必须**绝不抛异常** —— 一次未捕获的
+            # 异常会把整屏 traceback 打给用户 (2026-09-22 实测: MuMuManager 调用超时
+            # 返回 stdout=None, json.loads 抛 TypeError)。mumu_is_running 已在
+            # pf_env 里兜底, 这里再包一层防"未来新增字段"重蹈覆辙。
+            try:
+                running = mumu_is_running()
+            except Exception:  # noqa: BLE001
+                running = False
             body = json.dumps({
-                "running": mumu_is_running(),
+                "running": running,
                 "busy": _MUMU_BUSY["op"],
                 "close_on_goal": bool(STATE.close_mumu_on_goal),
                 "game_pkg": GAME_PKG,
@@ -2136,11 +2186,25 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json_err(400, "需要有效的 session_id")
                 return
             _apply_session(sess)
-            if not mumu_is_running():
-                STATE.log("MuMu 未运行 —— bot 连接会失败, 请先点「启动 MuMu」", "err")
+            # 「开始」必须自足: 模拟器没开就先开, adb 断了就补连。
+            # 2026-09-22 教训 —— 原先只打一条日志提醒"请先点启动 MuMu", 用户点「开始」
+            # 什么都不会发生 (提示只躺在日志里), 连点三次都"没反应"。
+            # 拉起模拟器是秒级阻塞, 放后台线程, 立即返回 starting_mumu 让前端给进度。
+            starting = False
+            try:
+                if not mumu_is_running():
+                    starting = True
+                    STATE.log("MuMu 未运行, 先拉起模拟器 (就绪后自动开跑)", "warn")
+                    _mumu_run("start-bot", _mumu_do_launch_and_connect)
+                else:
+                    _mumu_run("adb-connect", _mumu_do_connect)
+            except Exception as e:  # noqa: BLE001
+                STATE.log(f"启动前环境检查异常: {e}", "err")
             STATE.running = True
             STATE.log(f"收到 WebUI 开始请求: 场次「{sess['name']}」", "warn")
-            self._send(200, "application/json", b'{"ok":true}')
+            self._send(200, "application/json",
+                       json.dumps({"ok": True, "starting_mumu": starting},
+                                  ensure_ascii=False).encode("utf-8"))
         elif self.path == "/api/sessions/select":
             # 仅绑定当前场次不开始; 之后可在主页改规则/上界/休息
             try:
