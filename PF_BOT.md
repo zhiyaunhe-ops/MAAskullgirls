@@ -290,6 +290,16 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
     会被 MuMuNxService 以 --from-oem 拉回；该实例还挂着用户另一个 MAA 的自启）
   - 状态判据要兼容两种字段集：MuMu 12.0 未启动时 `info -v 0` 只有
     `is_android_started` 布尔位，没有 `player_state`（见 `mumu_state`）
+  - ⚠️ **`subprocess.run(capture_output=True, timeout=)` 自己超时时 `p.stdout` 是
+    `None`**，`json.loads(None)` 抛的是 `TypeError`（不在常规捕获列表里），
+    会冒到 HTTP 线程刷一屏 traceback。`/api/mumu` 是 4 秒轮询接口，
+    MuMuManager 卡一次就刷屏 —— 见 `mumu_info` 的两道防线（2026-09-22）
+- **「开始」自足化**（2026-09-22）：`/api/start` 现在是「模拟器没开就先拉起 +
+  补一次 `adb connect`」再置 RUNNING，返回 `starting_mumu` 供前端出进度文案。
+  为什么必须补 connect：MAA 的 `post_connection()` 只是**内部**重连，不自建 TCP
+  连接；bot 停在 IDLE 期间连接会因模拟器重启 / adb server 被回收而失效，
+  此时点开始只会撞一串 `AdbControlUnitMgr::connect failed`。
+  「关机」按钮加了二次确认 —— 关掉后 WebUI 什么都干不了，2026-09-22 早上被误点过一次
 - **达标自动关模拟器**（2026-09-21）：头部「达标关模拟器」开关
   （`STATE.close_mumu_on_goal`，**默认关** —— 关模拟器是有副作用的外界动作）。
   总分达 `score_target` 时照旧暂停，开关打开则再关 MuMu；每次运行只做一次
