@@ -629,7 +629,13 @@ Double/Squigly → Valentine/Fukua → Eliza/Marie → Annie/Big Band
 `action=new`、`entries.medi = {active: true, name: "Shakedown - Jinx", title: "Current Medici PF:"}`，
 且与 09-15 的 diff 为 `Shakedown - Hemofilia (未开) → Shakedown - Jinx (开放)`（源表确实刷新）。
 原判据「明早 fetch 后看 `Current Medici PF` 是不是 `Shakedown - Jinx`」成立，
-等级由 B 升 A。下一步可验点：2026-09-23 周三应为 `Shakedown - Hemofilia`。
+等级由 B 升 A。
+
+**2026-09-23 第二次实测命中（维持 A 级）。** 游戏日 `2026-09-23`（周三），fetch 一次命中
+（`source.last_edit = 2026-09-23T00:00:38`），`entries.medi = {active: true, name: "Shakedown - Hemofilia"}`，
+与 09-22 的 diff 为 `Shakedown - Jinx (未开) → Shakedown - Hemofilia (开放)`；
+`medici` 预填页 `09-23-26` 一行给出的正是 `Shakedown - Hemofilia`，三者一致 → 交替规律再次成立。
+下一步可验点：**2026-09-30 周三应为 `Shakedown - Jinx`**。
 
 ⚠️ 另一处坑：`character2` / `element` 两页在同一窗口内**完全无数据**（最后条目停在
 2024 年底 / 2025 年初），角色场与元素场**不能**用这张表预知，只能靠 `now` 页 + 轮换规律。
