@@ -794,6 +794,20 @@ tailnet 内可达**，威胁模型与 `.local` / `.lan` 同一档，不属于「
     对它不成立 —— 端口再变必须手改这两处再重新打包 APK（2026-09-19 核）；
     ② `/api/state` 带 `svc` 身份标签，`bot_alive()` 必须校验它。
     端口被占时 `start_webui` **直接抛错**，不偷偷换端口 —— 换了等于骗过所有写死 URL 的调用方
+20. **🔴 `_HTML` 里的 JS 字符串出现裸换行 ⇒ 整页脚本全废**（2026-09-24，详见
+    `docs/incident-2026-09-24-webui-js-dead.md`）：`onMumuOffClick()` 的 `confirm`
+    写成单引号字面量却内含三个真实换行（`\n` 只写在注释里），`_HTML` 是普通 `"""`
+    三引号 → 裸换行原样进 `<script>` → 浏览器 `Invalid or unexpected token`。
+    **症状是「页面能开、样式正常、所有按钮点了毫无反应」**，不是只坏那一个键 ——
+    浏览器对 `<script>` 块是**原子解析**，语法错误在块内首行执行前就抛，
+    其后所有 `addEventListener`/`setInterval` 一并作废。
+    ⚠️ **服务端零告警**：HTTP 200、日志干净、后端 API 手工 curl 全通，
+    唯一信号在浏览器 console。日志里的「未知请求 GET /api/settings」是**下游后果不是原因**。
+    ⇒ **判据：界面能开但按钮全死 = 先怀疑页面 JS 整体没跑，别逐个按钮排查。**
+    ⇒ **护栏：改 `_HTML` 里的 JS，提交前必须导出页面跑 `node --check`**
+    （`python -c "import pf_webui;print(pf_webui._HTML)"` → 抽 `<script>` → `node --check`）；
+    `ast.parse` 通过**不能**说明问题（修前也通过）。根治方向见事故文档 §7.2
+    （容器内 JS 统一改模板字面量，或内联 JS 拆成 `/static/*.js`）
 
 ---
 
