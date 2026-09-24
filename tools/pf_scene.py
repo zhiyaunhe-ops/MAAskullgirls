@@ -223,6 +223,15 @@ class PfScene:
         # (丢首字母 I、丢 Y), difflib 能归一, 但**必须先收录**, 否则 fallback 读数
         # 会被丢弃 (见 read_center_card 2026-09-22 注)。
         "INFINITY AND BEYOND",
+        # 2026-09-25: Big Band 的角色场名 (游戏日 09-24 周四半周切换新开)。实机实证:
+        # BRONZE + BIG BEN'S BEATDOWN, 无 SCORE 行, 剩 02D:23H:56M, 立绘礼帽+耳机+
+        # 喇叭手臂 = Big Band; 快照 Current Character PF 当日 Annie→Big Band, 与
+        # §6.12.2 该周 Annie/Big Band 对、周四-六=后一个 吻合。OCR 实读
+        # 'IG BEN'S BEATDOWN' (丢首字母 B, BEN=BAND 的变体), difflib 能归一。
+        # ⚠️ 此卡与 DEATH METTLE/INFINITY AND BEYOND 同款版式: 顶部是 BRONZE
+        # 层级标签+装饰图, SCORE ROI (y138-185) 框到装饰区, 读数是随机噪声
+        # ('ROgO0' / '900'), 见 read_center_card 2026-09-25 注。
+        "BIG BEN'S BEATDOWN",
     ]
 
     # 卡片上的"难度层级"文字与场次名**同框**: ROI_CARD_TITLE=(500,290,780,378) 实测同时
@@ -347,9 +356,26 @@ class PfScene:
                 log(f"标题 ROI 读空, 采用兜底 ROI 未收录名: {raw_title!r} -> {raw2!r}",
                     "warn")
                 full, cands, stripped = full2, cands2, stripped2
+        # 无 SCORE 行判 0 的两种形态 (门卫同为「标题命中 KNOWN」= OCR 通道活着、
+        # 画面确实是张已收录的卡):
+        # ① SCORE ROI 剥完标签为空 —— 读到 'SCORE: O' 这类纯标签
+        #    (2026-09-22 原修, 要求 score==-1)。
+        # ② 2026-09-25 (BIG BEN'S BEATDOWN 实证): SCORE ROI 读到的文本**不含
+        #    SCORE 字样** —— 该区域根本不是 SCORE 行。角色新场卡顶部是 BRONZE
+        #    层级标签+装饰图, SCORE ROI (y138-185) 框到装饰区, OCR 读数是
+        #    随机噪声且每次不同 (同一次运行: 扫描时 'ROgO0'→个位数兜底判 0,
+        #    复读时 '900'→parse 成 900 ≥10 不走兜底 → 复核 900≠0 误 abort)。
+        #    所以形态②不看 parse 结果, 但加领域上限: 噪声若 ≥10000 则不覆盖
+        #    (SGM PF 真分数都是百万量级, 若某天 SCORE 区读出 ≥1 万的数, 更可能
+        #    是真分数丢了 SCORE 标签, 保持原值让复核防守生效 —— 宁可漏跑不错跑)。
         score_body = re.sub(r"(?i)\bscore\b\s*:?", " ", raw_score).strip()
-        if score == -1 and best is not None and not score_body:
-            log(f"卡面无 SCORE 行 (标题 {best!r} 识别正常), 按新场 0 处理", "warn")
+        has_score_label = bool(re.search(r"(?i)score", raw_score))
+        if best is not None and (
+            (score == -1 and not score_body)
+            or (not has_score_label and 0 <= score < 10000)
+        ):
+            log(f"卡面无 SCORE 行 (标题 {best!r} 识别正常, SCORE 区原文 {raw_score!r}), "
+                f"按新场 0 处理", "warn")
             score = 0
         if best:
             if stripped:

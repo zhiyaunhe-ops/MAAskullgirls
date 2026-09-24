@@ -155,6 +155,12 @@
    "parent_id": "s1788423741550",
    "依据": "A 2026-09-22 01:05 实机实证: 游戏日 09-21(周一) hub 扫到 BRONZE + INFINITY AND BEYOND, 卡面无 SCORE 行(=新场), 剩余 02D:23H:55M(半周量级, 与角色场周一开/周四换吻合), 立绘绿发双辫星饰(Annie of the Stars 特征); 同帧快照 Current Character PF 由 Marie(09-20 收) → Annie(09-21 开), 与 PF_BOT.md §6.12.2 九对循环「该周=Annie/Big Band, 周一-三=前一个」吻合。角色场不限定角色 → rule=null(§6.12.7 铁律)。parent=角色周场(同 BLOOD SPORT/DEATH METTLE)。⚠️ OCR 实读 NFINITYAND BETOND(丢首字母 I/丢 Y), 已入 pf_scene.KNOWN_TITLES 靠 difflib 归一; 且该卡版式无 SCORE 行、标题比常规版式高 —— read_center_card 已加「无 SCORE 行+标题命中=判 0」兜底。子场次 score_target 沿用角色周场父级 8kw 口径(用户 2026-09-19)。",
    "kind": "角色场"
+  },
+  "BIG BEN'S BEATDOWN": {
+   "rule": null,
+   "parent_id": "s1788423741550",
+   "kind": "角色场(Big Band)",
+   "依据": "A 2026-09-25 01:02 实机实证: 游戏日 09-24(周四) hub 截图 debug/pf/run/0925_010210/0038_scene.jpg 卡面 BRONZE + BIG BEN'S BEATDOWN, 无 SCORE 行(=新场), 剩余 02D:23H:56M(半周量级, 周四开/周六收), 立绘礼帽+耳机+喇叭手臂 = Big Band 特征; 同日快照 Current Character PF 由 Annie(09-21 周一开)→Big Band, 与 PF_BOT.md §6.12.2 九对循环「该周=Annie/Big Band, 周四-六=后一个」吻合。角色场不限定角色 → rule=null(§6.12.7 铁律)。parent=角色周场(同 BLOOD SPORT/DEATH METTLE/INFINITY AND BEYOND)。⚠️ OCR 丢首字母 B: IG BENS BEATDOWN, 已入 pf_scene.KNOWN_TITLES 靠 difflib 归一。⚠️ 该卡 SCORE ROI (y138-185) 框到顶部装饰区, 读数是随机噪声('ROgO0'/'900') —— read_center_card 已加「SCORE 区不含 SCORE 字样→按无 SCORE 行判 0」判据②(2026-09-25)。子场次 score_target 沿用角色周场父级 8kw 口径(用户 2026-09-19)。"
   }
  },
  "_补充": [
