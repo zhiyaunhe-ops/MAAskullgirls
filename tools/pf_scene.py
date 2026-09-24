@@ -25,7 +25,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "tools"))
 
 from pf_bot import PROJECT_ROOT as ROOT  # noqa: F401,E402  (统一 sys.path 语义)
 from pf_bot import PfBot  # noqa: E402
-from pf_env import GAME_PKG, mumu_is_running, mumu_start, resolve_adb  # noqa: E402
+from pf_env import (GAME_PKG, SUBPROC_TEXT, mumu_is_running, mumu_start,  # noqa: E402
+                    resolve_adb)
 
 IMG = "pf/"
 TPL_HALL_PRIZE = IMG + "hall_prize_fights.png"  # 大厅 PRIZE FIGHTS 菱形
@@ -116,8 +117,11 @@ class PfScene:
     # ---------- 设备层 ----------
 
     def adb_shell(self, cmd: str) -> str:
+        # SUBPROC_TEXT: 见 pf_env 顶部说明 —— adb 输出可能含 UTF-8 中文设备名,
+        # 而 bat 起进程时 locale 是 GBK, 不指定就会在 subprocess 读线程里炸且捕不住。
         p = subprocess.run([self.adb, "-s", "127.0.0.1:16384", "shell", cmd],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30,
+                           **SUBPROC_TEXT)
         return p.stdout.strip()
 
     def ensure_mumu(self) -> None:

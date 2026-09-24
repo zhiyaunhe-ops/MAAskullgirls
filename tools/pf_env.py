@@ -13,6 +13,22 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 GAME_PKG = "com.autumn.skullgirls"   # Skullgirls Mobile 包名 (adb monkey 拉起用)
 
+# ⚠️ 本机子进程输出的解码口径 —— 一律 UTF-8 且 errors="replace"。
+#
+# 为什么不能用默认值 (2026-09-24 实测): `subprocess.run(text=True)` 在**不写
+# encoding=** 时用 locale.getpreferredencoding()，而 启动PF.bat 是从 cmd.exe
+# 起的、locale 是 **cp936(GBK)**。MuMuManager 输出的 JSON 里带设备名
+# "MuMu安卓设备"（UTF-8: ...e8 ae be e5 a4 87...），第 **448** 字节 0xa4 是
+# 「设」的续字节 —— GBK 见到无法配对的 0xa4 立刻抛:
+#     UnicodeDecodeError: 'gbk' codec can't decode byte 0xa4 in position 448
+#
+# 要命的是这个异常**捕不住**: 它发生在 subprocess 内部的 _readerthread 里，
+# Popen.__init__ 不 join 该线程、_communicate 只等 process.wait()，
+# 所以调用方 (甚至 pf_webui 的 try/except) 完全看不到，只在 stderr 打一整屏
+# traceback。而 /api/mumu 是**每 4 秒轮询一次**的接口 ⇒ 刷屏。
+# 唯一可靠解法 = 从源头指定编码，别依赖 locale。
+SUBPROC_TEXT = {"encoding": "utf-8", "errors": "replace"}
+
 
 def _load_config() -> dict:
     """本机参数 (adb 路径/端口等), gitignored, 不随仓库分发。"""
@@ -88,7 +104,8 @@ def mumu_info(adb_path: str = None, timeout: float = 15) -> dict:
         return {}
     try:
         p = subprocess.run([mgr, "info", "-v", "0"],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           **SUBPROC_TEXT)
         if not p.stdout:                      # 超时/被杀 -> None; 空串也无从解析
             return {}
         data = json.loads(p.stdout)
@@ -143,7 +160,8 @@ def mumu_shutdown(adb_path: str = None, timeout: float = 30) -> bool:
         return False
     try:
         subprocess.run([mgr, "control", "-v", "0", "shutdown"],
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True, timeout=timeout,
+                       **SUBPROC_TEXT)
     except (OSError, subprocess.SubprocessError):
         return False
     deadline = time.time() + timeout
@@ -162,7 +180,8 @@ def mumu_launch_game(adb_path: str = None, pkg: str = GAME_PKG) -> tuple[bool, s
     try:
         p = subprocess.run([adb, "-s", addr, "shell", "monkey", "-p", pkg,
                             "-c", "android.intent.category.LAUNCHER", "1"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30,
+                           **SUBPROC_TEXT)
     except (OSError, subprocess.SubprocessError) as e:
         return False, str(e)
     out = (p.stdout or "") + (p.stderr or "")
@@ -183,7 +202,8 @@ def adb_connect(adb_path: str = None, timeout: float = 30) -> bool:
         return False
     try:
         p = subprocess.run([adb, "connect", addr],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           **SUBPROC_TEXT)
     except Exception:  # noqa: BLE001
         return False
     out = ((p.stdout or "") + (p.stderr or "")).lower()
