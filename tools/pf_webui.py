@@ -852,7 +852,7 @@ async function mumuCmd(url) {
 /* 「关机」是破坏性的: 关掉后这个 WebUI 什么都干不了。2026-09-22 早上被误点过一次,
    之后的「开始」全无声无息 —— 加二次确认, 免得再踩。 */
 function onMumuOffClick() {
-  if (!confirm('关闭 MuMu 模拟器？\n\n关闭后 bot 无法运行（会先自动暂停）。\n需要时点「开始」会自动重新拉起模拟器。')) return;
+  if (!confirm('关闭 MuMu 模拟器？\\n\\n关闭后 bot 无法运行（会先自动暂停）。\\n需要时点「开始」会自动重新拉起模拟器。')) return;
   mumuCmd('/api/mumu/shutdown');
 }
 async function pollMumu() {
