@@ -193,7 +193,11 @@ def _pids_on_port(port: int) -> list[int]:
 # ---------------- 菜单动作 (都在后台线程跑, 不卡托盘) ----------------
 
 def _bg(fn, name: str):
-    def run():
+    """把动作包成 pystray 回调: 后台线程执行 + 置忙碌标记 + 兜底落盘。
+
+    ⚠️ 内层必须收 `(icon, item)`: pystray 对所有回调统一传这两个参数。
+    """
+    def run(icon=None, item=None):
         global _busy
         _busy = name
         _refresh_icon()
@@ -326,8 +330,15 @@ def _fmt(n) -> str:
         return str(n)
 
 
-def _state_head() -> str:
-    """菜单顶部那行不可点的状态文字。"""
+def _state_head(item=None) -> str:
+    """菜单顶部那行不可点的状态文字。
+
+    ⚠️ 必须收一个参数: pystray 是**调用** text/callable 求值的 (`descriptor.text`
+    属性会执行 `self._text(self)`), 零参函数会炸:
+        TypeError: _state_head() takes 0 positional arguments but 1 was given
+    菜单是在 `_mark_ready()` 里构建的 ⇒ 托盘会在启动瞬间就挂掉, 且因为 pythonw
+    没有控制台, 只能靠 excepthook 落盘才发现 (2026-09-24 实测)。
+    """
     st = _last_state
     if _busy:
         return "%s..." % _busy
