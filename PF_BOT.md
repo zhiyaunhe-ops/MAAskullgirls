@@ -104,6 +104,8 @@
 | 6.0 | api/pause／api/stop | PAUSED保进程／quit=True退出、WebUI关闭 |
 | 6.0 | 达标／ERROR | PAUSED、可关MuMu／running=False、人工检查后可重开 |
 | 6.0 | IDLE／暂停 | 仍约每2s清弹窗；不代表设备无动作 |
+| 6.0 | IDLE截图卡死 | 带超时10s＋每分钟告警；停止·开始仍可响应，不随MAA内部重连一起等 |
+| 6.0 | api/mumu/game | 先adb connect再monkey；device not found时补连重试一次 |
 | 6.1 | step优先级 | 弹窗X→服务器错误→详情→hub→防守队→REFRESH→编队→VS→结算→未知 |
 | 6.1 | KEEP STREAK? | 关X；不点CONFIRM／WATCH AD |
 | 6.1 | 未知界面 | 等待→交替返回／右上X；单按左上可能开OPTIONS |
@@ -241,6 +243,8 @@ tailscale serve --https=8444 off
 | 18 | 宿主整树结束→bot／MuMu退出 | breakaway被拒用WMI；普通回退仍有风险 |
 | 19 | /api/state 200属于其它服务 | svc=sgm-pf-bot身份校验 |
 | 20 | Python吞JS转义→全页按钮无响应 | 独立JS＋语法检查；[事故](docs/incident-2026-09-24-webui-js-dead.md) |
+| 21 | adb kill-server死等→截图永不返回，停止·开始全失效 | 截图超时＋卡住告警；§6.0 |
+| 22 | 模拟器报就绪≠adb有该设备→拉起游戏device not found | monkey前补connect＋重试一次；§6.0 |
 
 ## 9. 常用操作
 
@@ -252,7 +256,7 @@ tailscale serve --https=8444 off
 | 调度 | python tools/pf_schedule.py；--list；--fire 任务名 |
 | 截图 | python tools/screencap.py |
 | 日程 | python tools/jjc_store.py fetch；show；days；versions（子命令分别执行） |
-| 排障 | debug/maa/debug/maafw.log；debug/pf/bot_stdout.log；debug/pf/run/ |
+| 排障 | debug/debug/maafw.log；debug/pf/bot_stdout.log；debug/pf/run/ |
 
 ## 10. 文档维护
 

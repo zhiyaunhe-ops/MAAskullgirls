@@ -173,11 +173,23 @@ def _mumu_do_game() -> None:
         if not mumu_start(timeout=120):
             STATE.log("MuMu 启动失败, 放弃拉起游戏", "err")
             return
-    ok, out = mumu_launch_game()
-    if ok:
-        STATE.log(f"已发出 Skullgirls 启动指令 ({GAME_PKG})", "warn")
-    else:
+    # 2026-09-27 实测: mumu_start() 报就绪 ≠ adb 里已经有这台设备 —— MuMu 自己的 connect
+    # 可能还没跑完, 或 adb server 刚被回收重建, 此时 monkey 直接回
+    # "device '127.0.0.1:16384' not found" (当天 01:02 连点两次, 日志里只留下这两条 err)。
+    # 所以拉起游戏前必须自己补一次 connect; 仍说没设备就等一拍再试一次 (幂等)。
+    device_missing = ("not found", "offline", "no devices", "unauthorized")
+    for attempt in (1, 2):
+        _mumu_do_connect()
+        ok, out = mumu_launch_game()
+        if ok:
+            STATE.log(f"已发出 Skullgirls 启动指令 ({GAME_PKG})", "warn")
+            return
+        if attempt == 1 and any(s in out.lower() for s in device_missing):
+            STATE.log(f"adb 设备表里还没有模拟器, 补连后重试一次: {out}", "warn")
+            time.sleep(3)
+            continue
         STATE.log(f"启动 Skullgirls 失败: {out or 'monkey 未返回 Events injected: 1'}", "err")
+        return
 
 
 def _mumu_do_connect() -> None:

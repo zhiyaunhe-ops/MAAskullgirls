@@ -110,6 +110,8 @@ class PfBot:
         self._defense_done = False         # 本场次已处理过「先设防守队」弹窗 (每 PF 一次)
         self.fights_since_rest = 0    # 距上次休息的已结算场数
         self._goal_closed = False     # 本次运行是否已因达标关过模拟器 (只做一次)
+        self._stuck_shot = None       # 卡住未完成的截图作业 (见 _screencap_bounded)
+        self._stuck_shot_warned = 0.0  # 上次提醒"截图卡住"的时间戳
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
 
     # ---------- 基础设施 ----------
@@ -891,6 +893,53 @@ class PfBot:
 
     # ---------- 主循环 ----------
 
+    def _screencap_bounded(self, timeout: float = 10.0):
+        """带超时的截图封装; 卡住返回 None —— 主循环不许被 MAA 的内部重连拖死。
+
+        2026-09-27 实测: MAA 的 AdbControlUnitMgr 在连接丢失后会先跑 `adb kill-server`
+        再 connect, 而本机这条 kill-server 会死等 (maafw.log 里 duration=34825717ms
+        ≈ 9h40m; 另一个同类子进程挂了一小时仍在跑)。于是 post_screencap().wait()
+        永不返回: 主循环停在 IDLE 分支里连 STATE.quit 都读不到 —— 用户点「停止」只留
+        一行日志, 点「开始」毫无反应, 进程还占着 WebUI 端口 (2026-09-27 01:02 现场)。
+        超时后主循环照常转; 卡住那张作业留在 MAA 里, 下次靠它的 done 自愈 ——
+        卡住期间不再往 MAA 里叠新作业 (否则每轮叠一个)。
+        """
+        if self._screencap_stuck():
+            return None
+        try:
+            job = self.controller.post_screencap()
+        except Exception:  # noqa: BLE001
+            return None                      # 同旧行为: 取不到图就当这轮没图
+        self._stuck_shot = job
+        deadline = time.time() + timeout
+        while not job.done and time.time() < deadline:
+            time.sleep(0.05)
+        if not job.done:
+            return None                      # 卡住 (作业仍在 MAA 内), 见上方说明
+        self._stuck_shot = None
+        try:
+            return job.get()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _screencap_stuck(self) -> bool:
+        job = self._stuck_shot
+        if job is None:
+            return False
+        try:
+            return not job.done
+        except Exception:  # noqa: BLE001
+            return False                     # 句柄不可用当没卡住, 让下一次调用自己报错
+
+    def _warn_stuck_screencap(self) -> None:
+        """截图卡住时每分钟提醒一次 —— "点了没反应"必须在日志里有答案。"""
+        now = time.time()
+        if now - self._stuck_shot_warned < 60:
+            return
+        self._stuck_shot_warned = now
+        STATE.log("截图调用卡住未返回 (MAA 内部重连 / adb kill-server 死等), 本轮已跳过; "
+                  "停止·开始仍可响应, 持续不恢复请重启 bot", "warn")
+
     def run(self) -> None:
         """常驻监督循环: WebUI 可随时 开始/暂停/停止 (停止则进程退出)。"""
         STATE.status = "IDLE"
@@ -906,10 +955,14 @@ class PfBot:
                     # 也避免占用 STOPPED (那是进程真退出的状态, /api/pause 不该冒用)。
                     STATE.status = "PAUSED"
                     STATE.log("==== PF Bot 已暂停 ====")
-                # 暂停期间仍清理阻塞弹窗 (服务器错误/X), 防止屏幕卡死
-                try:
-                    img = self.controller.post_screencap().wait().get()
-                    if img is not None:
+                # 暂停期间仍清理阻塞弹窗 (服务器错误/X), 防止屏幕卡死。
+                # 截图走带超时的封装: MAA 内部重连有可能死等 (见 _screencap_bounded),
+                # 不能让主循环陪着一起等 —— 那会让「停止」「开始」全部失效。
+                img = self._screencap_bounded()
+                if self._screencap_stuck():
+                    self._warn_stuck_screencap()
+                elif img is not None:
+                    try:
                         srv = self.find_server_error(img)
                         if srv:
                             STATE.log("暂停期间出现服务器错误弹窗, 点按钮", "warn")
@@ -920,8 +973,8 @@ class PfBot:
                             if x:
                                 self.controller.post_click(*x).wait()
                                 time.sleep(1.5)
-                except Exception:  # noqa: BLE001
-                    pass
+                    except Exception:  # noqa: BLE001
+                        pass
                 time.sleep(2)
                 continue
             if self.tracker.ensure(STORE.session_id):
