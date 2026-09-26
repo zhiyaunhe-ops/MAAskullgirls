@@ -55,10 +55,44 @@ python tools/pf_bot.py             # 启动后打开 WebUI 点「开始」
 
 > 本机参数（adb 路径/端口）只放在 `config.json`，**该文件不入仓库**（已在 `.gitignore`），见 `config.example.json`。
 
+## WebUI 主题与预览
+
+新版工作台提供侧栏导航、运行概览、折叠设置、日志搜索 / 级别筛选 / 跟随开关、
+截图空态与更新时间、目标进度，以及重新排版的战绩分析、每日任务和 JJC 日程。
+每日任务模块目前保存任务编排配置，尚未接入自动执行逻辑。
+
+| 主题 | 风格 |
+|---|---|
+| Canopy Noir · 冠层黑金 | Art Deco、黄铜边线、深墨与衬线标题 |
+| Emerald Glass · 翡翠之境 | 绿意柔光、圆润面板 |
+| Foundry · 铸造工坊 | 工业铜橙、硬边、压印阴影 |
+| Neon Arcade · 霓虹街机 | 紫电网格、等宽标题 |
+| Sakura Studio · 樱花画室 | 浅色花粉、柔和曲线 |
+| Atelier Paper · 纸上工作室 | 暖纸油墨、编辑式双线 |
+
+顶部主题选择器自动保存选择，支持键盘操作，图表与原生输入控件同步切换。
+原有主题 ID 保留，因此旧浏览器偏好仍然有效。前端文件位于 `tools/static/`，
+HTML、CSS、主题逻辑与业务 JS 分开维护，避免 Python 字符串转义破坏整页脚本。
+
+无需模拟器或第三方依赖，即可预览真实界面：
+
+```bash
+python tools/preview_webui.py --port 8800
+# 打开 http://127.0.0.1:8800/
+```
+
+预览使用示例分数和存档截图；操作仅保存在内存，不执行 ADB / MuMu 指令。
+部署到子目录时，静态资源、API 与截图请求自动跟随当前挂载路径。
+
+后续需要自测时可运行 `python tools/lint_webui.py`；浏览器回归脚本为
+`tests/webui-smoke.mjs`（需要 Playwright 与 Chromium，支持环境变量指定路径）。
+
 ## 可选增强：sgm 图鉴仓库
 
 把 [Krazete/sgm](https://github.com/Krazete/sgm)（Skullgirls Mobile 图鉴）克隆到项目根目录命名为 `sgm/`，
-可解锁 WebUI 的元素/职业图标并优先使用其变体数据。不克隆也能跑——`tools/data/variants.json`
+可优先使用其变体数据。WebUI 所需的原版元素 / 角色图标已内置于
+`tools/static/icons/sgm/`，不再需要额外克隆才能显示（来源见该目录的 `ATTRIBUTION.md`）。
+不克隆也能跑——`tools/data/variants.json`
 已内置 306 个变体的数据副本。
 
 ## JJC 日程与版本追溯

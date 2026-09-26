@@ -1,0 +1,73 @@
+/* Six visual identities. Keep the legacy IDs so saved preferences still work. */
+:root, [data-theme="midnight"] {
+  color-scheme: dark;
+  --bg0:#101719; --bg1:#141d20; --bg2:#263437; --panel:#1a2528; --panel2:#202e31;
+  --line:#344548; --txt:#f3efe4; --txt2:#b9c6c4; --dim:#a1b3b1; --faint:#92a5a2;
+  --gold:#e7c68b; --green:#9fd6af; --red:#ff9b91; --blue:#e7c68b;
+  --mask:rgba(4,10,12,.78); --shadow:0 8px 26px #0002; --shadow-lg:0 24px 80px #0008;
+  --sheen:#fff4; --accent-ink:#182124; --radius:4px;
+  --display:Georgia,"Noto Serif SC",serif; --heading-weight:400;
+  --texture:repeating-linear-gradient(135deg,transparent 0 39px,#e7c68b06 40px 41px,transparent 42px 80px);
+  --hero-bg:linear-gradient(115deg,#223235,#1a2528 65%);
+  --hero-line:#e7c68b; --tracking:.04em;
+}
+[data-theme="aurora"] {
+  color-scheme:dark;
+  --bg0:#081c1b; --bg1:#0c2624; --bg2:#15443a; --panel:#102e2a; --panel2:#173c34;
+  --line:#31584c; --txt:#e6f5e9; --txt2:#b1cfbf; --dim:#9ebfb0; --faint:#92b6a7;
+  --gold:#dbdf9b; --green:#9be3b0; --red:#ffa5a5; --blue:#a5e7c3;
+  --mask:rgba(2,16,14,.75); --shadow:0 12px 40px #001e1830; --shadow-lg:0 24px 80px #0008;
+  --sheen:#bbffd40a; --accent-ink:#12362a; --radius:20px;
+  --display:"Segoe UI","Microsoft YaHei",sans-serif; --heading-weight:600;
+  --texture:radial-gradient(ellipse at 90% 15%,#74d59f1c,transparent 55%),radial-gradient(ellipse at 0 90%,#4bbcbc16,transparent 50%);
+  --hero-bg:radial-gradient(ellipse at 100% 0,#39745d80,transparent 70%),linear-gradient(115deg,#183e35,#102e2a);
+  --hero-line:#8fd5ac; --tracking:-.035em;
+}
+[data-theme="ember"] {
+  color-scheme:dark;
+  --bg0:#1b1917; --bg1:#22201d; --bg2:#3d2f26; --panel:#2a2723; --panel2:#332e28;
+  --line:#53483c; --txt:#f3eadd; --txt2:#cfc0ac; --dim:#b6a68f; --faint:#b5a48f;
+  --gold:#ffbb75; --green:#acd49a; --red:#ff9a87; --blue:#ffbb75;
+  --mask:rgba(15,10,7,.8); --shadow:4px 4px 0 #0e0b0940; --shadow-lg:8px 8px 0 #0e0b0960;
+  --sheen:#ffbb7508; --accent-ink:#2c1b0c; --radius:0px;
+  --display:"Arial Narrow",Impact,"Microsoft YaHei",sans-serif; --heading-weight:700;
+  --texture:repeating-linear-gradient(0deg,#fff02 0 1px,transparent 1px 4px);
+  --hero-bg:repeating-linear-gradient(135deg,transparent 0 16px,#ffbb7504 16px 18px),linear-gradient(115deg,#423124,#2a2723);
+  --hero-line:#ffbb75; --tracking:-.015em;
+}
+[data-theme="neon"] {
+  color-scheme:dark;
+  --bg0:#141027; --bg1:#1b1435; --bg2:#362254; --panel:#231b3d; --panel2:#2d224b;
+  --line:#51436c; --txt:#f1eaff; --txt2:#cec0e9; --dim:#b7a6d5; --faint:#b1a0d0;
+  --gold:#f2d783; --green:#82edd8; --red:#ffa0d2; --blue:#d7b0ff;
+  --mask:rgba(10,4,26,.8); --shadow:0 8px 30px #0c04294d; --shadow-lg:0 24px 80px #08001bb3;
+  --sheen:#d7b0ff0a; --accent-ink:#271339; --radius:10px;
+  --display:"Courier New","Microsoft YaHei",monospace; --heading-weight:700;
+  --texture:linear-gradient(#b080ff09 1px,transparent 1px),linear-gradient(90deg,#b080ff09 1px,transparent 1px);
+  --hero-bg:radial-gradient(ellipse at 90% 10%,#8946bb40,transparent 60%),linear-gradient(115deg,#302044,#231b3d);
+  --hero-line:#d7b0ff; --tracking:-.055em;
+}
+[data-theme="sakura"] {
+  color-scheme:light;
+  --bg0:#f6edf0; --bg1:#fcf5f7; --bg2:#f7dce5; --panel:#fffafb; --panel2:#f9eef2;
+  --line:#dbc4ce; --txt:#4b2c3c; --txt2:#735161; --dim:#7c5b6b; --faint:#805b6c;
+  --gold:#965d29; --green:#28794e; --red:#b33d5c; --blue:#a0446b;
+  --mask:rgba(70,30,50,.35); --shadow:0 10px 32px #a24d7210; --shadow-lg:0 24px 80px #71395130;
+  --sheen:#fff8; --accent-ink:#fffafb; --radius:24px;
+  --display:Georgia,"Noto Serif SC",serif; --heading-weight:400;
+  --texture:radial-gradient(ellipse at 95% 5%,#f0bad14d,transparent 45%),radial-gradient(ellipse at 0 90%,#eed3ca4d,transparent 50%);
+  --hero-bg:radial-gradient(ellipse at 100% 0,#efc9d980,transparent 65%),linear-gradient(115deg,#fffafb,#f9edf2);
+  --hero-line:#b26986; --tracking:-.025em;
+}
+[data-theme="paper"] {
+  color-scheme:light;
+  --bg0:#efebe2; --bg1:#f7f4ed; --bg2:#e7e0d2; --panel:#fcfaf4; --panel2:#f3eee3;
+  --line:#c9c2b4; --txt:#302d26; --txt2:#575348; --dim:#6a6356; --faint:#706758;
+  --gold:#8c641c; --green:#3b7353; --red:#a94235; --blue:#355f69;
+  --mask:rgba(40,35,23,.35); --shadow:0 3px 0 #bfb4a826; --shadow-lg:0 24px 80px #42381930;
+  --sheen:#fff6; --accent-ink:#fcfaf4; --radius:2px;
+  --display:Georgia,"Noto Serif SC",serif; --heading-weight:400;
+  --texture:repeating-linear-gradient(0deg,transparent 0 31px,#74665308 31px 32px);
+  --hero-bg:linear-gradient(115deg,#fcfaf4,#f2ede2);
+  --hero-line:#355f69; --tracking:-.025em;
+}

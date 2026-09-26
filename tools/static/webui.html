@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>MAAskullgirls · Prize Fight Companion</title>
+<link rel="icon" href="static/mark.svg" type="image/svg+xml">
+<script src="static/chart.umd.min.js"></script>
+<link rel="stylesheet" href="static/themes.css">
+<link rel="stylesheet" href="static/webui.css">
+<script src="static/theme-init.js"></script></head>
+<body data-tab="pf">
+<header class="app-header">
+  <a class="brand" href="./" aria-label="MAAskullgirls 首页"><span class="brand-mark" aria-hidden="true">✦</span><span>MAA<span class="brand-light">skullgirls</span><small>PRIZE FIGHT COMPANION</small></span></a>
+  <span id="connection" class="connection" role="status">连接中…</span>
+  <span class="dev-group">
+    <span id="mumu-label" class="device-label">MuMu</span><span id="mumu-dot" class="dev-dot" title="MuMu 模拟器状态"></span>
+    <button id="btn-mumu" class="ghost-btn" title="启动 MuMu 模拟器(未开时拉起并等待就绪)" onclick="mumuCmd('/api/mumu/launch')">启动 MuMu</button>
+    <button id="btn-game" class="ghost-btn" title="启动 Skullgirls Mobile (模拟器未开则先开机)" onclick="mumuCmd('/api/mumu/game')">启动游戏</button>
+    <button id="btn-mumu-off" class="ghost-btn warn" title="优雅关闭 MuMu (bot 运行中会先暂停)" onclick="onMumuOffClick()">关机</button>
+    <span class="hdr-sep"></span>
+    <span class="theme-wrap">
+      <button id="theme-btn" class="ghost-btn" onclick="toggleThemeMenu(event)" title="切换界面主题" aria-haspopup="true" aria-expanded="false" aria-controls="theme-menu">◑ 主题</button>
+      <div id="theme-menu" class="theme-menu" style="display:none;"></div>
+    </span>
+  </span>
+</header>
+<nav class="main-nav" aria-label="主要导航">
+  <span class="nav-caption">WORKSPACE / 工作台</span>
+  <button id="tab-pf" class="on" onclick="switchTab('pf')" aria-current="page"><span class="nav-icon" aria-hidden="true">◈</span><span>Prize Fight<small>竞技场控制台</small></span><span class="nav-num">01</span></button>
+  <button id="tab-daily" onclick="switchTab('daily')"><span class="nav-icon" aria-hidden="true">☷</span><span>Daily Tasks<small>每日任务</small></span><span class="nav-num">02</span></button>
+  <button id="tab-jjc" onclick="switchTab('jjc')"><span class="nav-icon" aria-hidden="true">▦</span><span>Event Schedule<small>JJC 日程</small></span><span class="nav-num">03</span></button>
+  <div class="nav-note"><span class="note-star" aria-hidden="true">✦</span><b>Every fight counts.</b><span>选好阵容，让循环继续。</span></div>
+  <div class="nav-foot"><span class="tiny-dot"></span> SKULLGIRLS MOBILE<span id="theme-caption">CANOPY NOIR</span></div>
+</nav>
+<main id="page-pf" class="page on">
+  <div class="page-heading"><div><span class="eyebrow">01 / AUTOMATION</span><h1>Prize Fight<span class="heading-dot">.</span></h1><p>你的阵容，你的节奏。掌控每一场战斗。</p></div><div class="run-actions">  <button id="startbtn" onclick="onStartClick()" style="display:none;">开始</button>
+  <button id="pausebtn" style="display:none;" onclick="api('/api/pause',{}).then(()=>pollState())">暂停</button>
+  <button id="stopbtn" style="display:none;" onclick="onStopClick()">停止</button>
+</div></div>
+  <div id="demo-banner" class="module-note" hidden>演示预览 · 使用示例分数与存档截图，操作仅保存在内存，不连接模拟器。</div>
+  <section class="run-overview" aria-label="运行概览">
+    <div class="overview-intro"><span class="eyebrow">CURRENT SESSION / 当前场次</span><strong id="session-heading">选择场次，准备出发</strong><div><span id="status" class="pill IDLE">IDLE</span><span id="step">等待连接</span></div></div>
+    <div class="metric"><span class="metric-label">TOTAL SCORE / 总分</span><span id="h-score" class="stat">总分 <b>—</b></span></div>
+    <div class="metric"><span class="metric-label">WIN STREAK / 连胜</span><span id="h-streak" class="stat">连胜 <b>—</b></span></div>
+    <div class="metric"><span class="metric-label">FIGHTS / 场数</span><span id="fight" class="stat">—</span></div>
+  </section>
+  <div class="session-context">  <button id="sess-chip" class="sess-chip none pf-only" onclick="openSessionModal()">场次 未选</button>
+  <div id="rule-bar" class="pf-only">
+    <span class="rule-label">PF规则</span>
+    <div class="seg" id="ruleSeg"></div>
+    <span id="rule-applied" class="rule-applied"></span>
+  </div>
+</div>
+  <details class="settings-panel"><summary><span>运行设置 <small>目标 · 能量 · 休息策略</small></span><span class="settings-toggle">展开 / 收起 ＋</span></summary>  <span class="hdr-ctl">
+    <span class="stat">目标总分 <input aria-label="目标总分" id="in-target" class="inp" type="number" min="0" step="100000" placeholder="不限"></span>
+    <span class="stat">能量门槛 <input aria-label="能量门槛" id="in-energy" class="inp" type="number" min="1" max="10" step="1"></span>
+    <span class="stat"><label title="编队筛选是否只看喜爱角色：每次开始运行后的首次编队，会在游戏内按此勾选/清除喜爱筛选"><input type="checkbox" id="in-fav" checked> 喜爱筛选</label></span>
+    <span class="stat">每 <input aria-label="连续场数" id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
+    休 <input aria-label="休息分钟" id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
+    <span class="stat"><label title="总分达到「目标总分」时自动暂停, 并优雅关闭 MuMu 模拟器 (走 MuMuManager control shutdown)"><input type="checkbox" id="in-closegoal"> 达标关模拟器</label></span>
+  </span>
+</details>
+
+  <div class="pf-subnav">
+    <button id="subtab-run" class="on" onclick="switchPfSub('run')">运行监控</button>
+    <button id="subtab-chart" onclick="switchPfSub('chart')">战绩分析</button>
+  </div>
+  <div id="pf-run" class="pf-sub on">
+  <div id="runwrap">
+    <section class="log-card">
+      <div class="panel-heading"><span><i class="tiny-dot"></i> 运行日志 <small>ACTIVITY</small></span><button id="log-follow" class="text-btn" aria-pressed="true">跟随最新 ↓</button></div>
+      <div class="log-toolbar"><input id="log-search" class="inp" type="search" placeholder="搜索日志…" aria-label="搜索日志"><select id="log-level" class="inp" aria-label="日志级别"><option value="all">全部级别</option><option value="warn">警告 / 错误</option><option value="step">步骤</option></select><span id="log-count">0 条</span></div>
+      <div id="logpane" class="mono" tabindex="0" aria-label="运行日志"></div>
+      <div id="log-empty" class="log-empty" hidden>等待运行日志…</div>
+    </section>
+    <section id="shotpane">
+      <div class="panel-heading"><span>模拟器画面 <small>LIVE VIEW</small></span><span class="screen-tag">1280 × 720</span></div>
+      <div class="shot-stage"><img id="shot" alt="MuMu 模拟器最新游戏截图" hidden><div id="shot-empty" class="shot-empty"><span aria-hidden="true">▣</span><b>等待模拟器画面</b><p>启动 MuMu 并开始场次后，截图会自动更新。</p></div></div>
+      <div class="shot-footer"><span id="sideinfo">尚无截图</span><span id="shot-freshness">等待更新</span></div>
+      <div class="goal-panel"><div><span>目标进度</span><strong id="goal-label">未设上限</strong></div><progress id="goal-progress" value="0" max="100" aria-label="目标总分进度"></progress></div>
+    </section>
+  </div>
+  </div>
+  <div id="pf-chart" class="pf-sub">
+  <div id="charts">
+    <div id="view-chips"></div>
+    <div id="stats-row"></div>
+    <div id="empty" style="display:none;">暂无数据 —— 等第一场结算后这里会长出曲线</div>
+    <div class="chart-card"><div class="chart-head">
+        <span class="chart-title" id="t-score">总 分</span><span id="v-score" class="chart-val v-gold"></span>
+        <span class="chart-sub" id="sub-score">悬浮查看每个采样点</span></div>
+      <div class="chart-body"><canvas id="ch-score"></canvas></div></div>
+    <div class="chart-card" id="delta-card"><div class="chart-head">
+        <span class="chart-title">单场收益</span><span id="v-delta" class="chart-val"></span>
+        <span class="chart-sub">相邻结算点差值</span></div>
+      <div class="chart-body"><canvas id="ch-delta"></canvas></div></div>
+    <div class="chart-card" id="cmp-card" style="display:none;"><div class="chart-head">
+        <span class="chart-title">场次对比</span>
+        <span class="chart-sub">总分对比为各场次收益累计（起点=0），更直观</span></div>
+      <table class="cmp-table" id="cmp-table"></table></div>
+    <div class="chart-card"><div class="chart-head">
+        <span class="chart-title">连 胜</span><span id="v-streak" class="chart-val v-green"></span>
+        <span class="chart-sub" id="sub-streak">推进曲线</span></div>
+      <div class="chart-body"><canvas id="ch-streak"></canvas></div></div>
+  </div>
+  </div>
+</main>
+<main id="page-daily" class="page"><div class="page-heading"><div><span class="eyebrow">02 / ROUTINES</span><h1>Daily Tasks<span class="heading-dot">.</span></h1><p>整理任务库，编排每日请求列表。</p></div><span class="heading-tag">任务编排</span></div><p class="module-note">当前模块保存任务顺序与配置；自动执行逻辑尚未接入。</p>
+  <div id="dailywrap">
+    <div id="task-pool" class="dpanel">
+      <div class="dpanel-title">任务库</div>
+      <div id="pool-list"></div>
+      <div class="pool-foot">
+        <button id="pool-all" class="mini-btn" title="勾选全部每日任务">全选</button>
+        <button id="pool-clear" class="mini-btn">清空</button>
+        <span class="pool-hint">☰ 组内拖动排序 · ✎ 改名 · 勾选进请求列表</span>
+      </div>
+    </div>
+    <div id="task-mid">
+      <div id="task-queue" class="dpanel">
+        <div class="dpanel-title">每日请求列表<span id="queue-count" class="q-count"></span></div>
+        <div id="queue-list"></div>
+        <div class="pool-foot"><span class="pool-hint">拖 ☰ 调整执行顺序 · ✕ 移除</span></div>
+      </div>
+      <div id="task-detail" class="dpanel">
+        <div class="dpanel-title">任务详情</div>
+        <div id="detail-body"></div>
+      </div>
+    </div>
+    <div id="daily-logwrap" class="dpanel">
+      <div class="dpanel-title">运行日志</div>
+      <div id="daily-log" class="mono"></div>
+    </div>
+  </div>
+</main>
+<main id="page-jjc" class="page"><div class="page-heading"><div><span class="eyebrow">03 / CALENDAR</span><h1>Event Schedule<span class="heading-dot">.</span></h1><p>今日活动、竞技场规则与配置历史，一目了然。</p></div><span class="heading-tag">SGM 游戏日</span></div>
+  <div id="jjcwrap">
+    <div class="jjc-bar">
+      <span class="jjc-src" id="jjc-src">读取中…</span>
+      <button id="jjc-refresh" class="mini-btn">刷新快照</button>
+    </div>
+    <div class="jpanel">
+      <div class="sect-title">今日 daily</div>
+      <div class="chips" id="jjc-daily"></div>
+    </div>
+    <div class="jpanel">
+      <div class="sect-title">当前各类 PF</div>
+      <div class="jjc-grid" id="jjc-grid"></div>
+    </div>
+    <div class="jpanel">
+      <div class="sect-title">场次 × 规则 版本账本
+        <span style="letter-spacing:0;color:var(--faint);">— 仅记录配置变更，重复保存同值不产生版本</span>
+      </div>
+      <div id="jjc-versions"></div>
+    </div>
+  </div>
+</main>
+<div id="sess-modal" class="modal-mask" role="dialog" aria-modal="true" aria-labelledby="session-modal-title" style="display:none;">
+  <div class="modal">
+    <div id="session-modal-title" class="modal-title">选择 PF 场次</div>
+    <div id="sess-list"></div>
+    <div class="sess-new">
+      <input aria-label="新场次名称" id="new-sess-name" class="inp" placeholder="新场次名称" style="width:130px;">
+      <input aria-label="新场次分数上界" id="new-sess-target" class="inp" type="number" min="0" step="1000000" placeholder="分数上界" style="width:92px;">
+      <input aria-label="新场次能量门槛" id="new-sess-energy" class="inp" type="number" min="1" max="10" step="1" placeholder="能量" style="width:60px;">
+      <input aria-label="新场次连续场数" id="new-sess-restn" class="inp" type="number" min="0" step="1" placeholder="每N场" style="width:60px;">
+      <input aria-label="新场次休息分钟" id="new-sess-restm" class="inp" type="number" min="0" step="5" placeholder="休M分" style="width:60px;">
+      <div id="new-sess-rule" class="rule-mini"></div>
+      <button id="new-sess-btn" class="mini-btn">创建</button>
+    </div>
+    <div class="modal-foot">
+      <button id="sess-cancel" class="mini-btn">取消</button>
+      <button id="sess-pick" class="mini-btn" disabled>仅选择</button>
+      <button id="sess-child" class="mini-btn" disabled>建子场次</button>
+      <button id="sess-start" class="mini-btn primary" disabled>开始</button>
+    </div>
+  </div>
+</div>
+<div id="notice" class="notice" role="alert" hidden></div>
+<script src="static/themes.js"></script>
+<script src="static/webui.js"></script></body></html>
