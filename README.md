@@ -36,7 +36,7 @@ Skullgirls Mobile 是一款被严重低估的 2D 格斗 + RPG 手游：手绘动
 | 模拟器 | MuMu 12（ADB 默认端口 `127.0.0.1:16384`） |
 | 分辨率 | **1280x720 横屏**（所有视觉判据基于此） |
 | 游戏语言 | ⚠️ **必须英文界面（English）**——所有 OCR 文字识别与模板判据均基于英文 UI，其他语言会直接识别失败 |
-| Python | 3.8+，依赖见 `requirements.txt`（MaaFw / numpy / opencv-python） |
+| Python | 3.10+，依赖见 `requirements.txt`（MaaFw / numpy / opencv-python） |
 | 系统 | Windows（CRT 预载逻辑针对 Windows DLL 解析特性） |
 
 ## 快速开始
@@ -110,15 +110,19 @@ python tools/jjc_store.py versions   # 看场次的规则版本历史
 
 ## 文档
 
-完整的设计文档（界面几何、结算链、弹窗处理、anaconda CRT 坑等踩坑实录）见 **[PF_BOT.md](PF_BOT.md)**。
+开发者 / AI 从 [AGENTS.md](AGENTS.md) 的任务阅读表找到对应代码与文档章节。
+当前模块边界、界面几何、结算链、弹窗处理与运行约束统一维护在
+**[PF_BOT.md](PF_BOT.md)**；其中 §7–8 是历史实测与故障证据，按排障需要查阅。
+不必每次完整读取设计手册，也不为每次修改另建总结文件。
 
 ## 目录结构
 
 ```
 MAAskullgirls/
+├── AGENTS.md              # 开发约束与按任务查阅的阅读地图
 ├── PF_BOT.md              # 完整设计文档
 ├── config.example.json    # 本机参数模板（复制为 config.json 使用）
-├── tools/                 # 脚本主体（pf_bot / pf_env / pf_vision / pf_webui / pf_store）
+├── tools/                 # 脚本主体；模块边界见 PF_BOT.md §2.1
 ├── tools/data/            # 内置游戏数据（variants.json）
 ├── assets/                # MAA 资源：模板图、OCR 模型、pipeline
 └── docs/screenshots/      # 关键界面截图存档

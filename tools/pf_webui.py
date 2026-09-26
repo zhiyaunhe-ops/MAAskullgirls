@@ -46,7 +46,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from pf_env import (GAME_PKG, STATE, WEBUI_PORT, adb_connect, mumu_is_running,
                     mumu_launch_game, mumu_shutdown, mumu_start)
-from pf_store import STORE, UNSET, clean_rest, clean_target, clean_energy
+from pf_domain import UNSET, clean_rest, clean_target, clean_energy
+from pf_store import STORE
 from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
 
 SVC_ID = "sgm-pf-bot"    # 本服务的身份标签, 见 _gate 说明与 /api/state

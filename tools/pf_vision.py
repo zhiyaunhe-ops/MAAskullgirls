@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import re
 
+from pf_native import preload_msvcrt
+
+preload_msvcrt()
+
 import cv2
 import numpy as np
 

@@ -7,25 +7,11 @@
 探测不到时回退到显式配置的 MuMu adb 路径与端口。
 成功后保存一张截图到 debug/ 目录。
 """
-import ctypes
-import os
 import sys
 from pathlib import Path
 
 
-def _preload_msvcrt() -> None:
-    """先加载 System32 的新版 VC 运行库，再让 MAA 的 DLL 解析依赖。
-
-    anaconda 的 python.exe 所在目录带有 2020 年的旧版 msvcp140/vcruntime140，
-    Windows 加载器解析依赖时优先搜索 exe 目录，MAA 的 opencv_world4_maa.dll
-    绑到旧 CRT 后初始化失败（WinError 1114）。按模块名提前加载 System32 的
-    新版 CRT，后续同名依赖会直接命中已加载的新库。必须在 import cv2/maa 之前调用。
-    """
-    sys32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
-    for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
-        path = os.path.join(sys32, name)
-        if os.path.exists(path):
-            ctypes.WinDLL(path)
+from pf_native import preload_msvcrt as _preload_msvcrt
 
 
 _preload_msvcrt()

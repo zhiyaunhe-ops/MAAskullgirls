@@ -374,6 +374,24 @@ def act_explore(params: dict) -> None:
 ACTIONS = {"run_pf": act_run_pf, "stop_pf": act_stop_pf, "explore": act_explore,
            "run_new_pf": act_run_new_pf}
 
+# 只串行化本进程内的调度动作；跨进程设备所有权仍依赖现有 bot 停止/等待协议。
+_ACTION_LOCK = threading.Lock()
+
+
+def _execute_action(action: str, params: dict) -> None:
+    if not _ACTION_LOCK.acquire(blocking=False):
+        log(f"action「{action}」等待前一个调度动作完成", "warn")
+        _ACTION_LOCK.acquire()
+    try:
+        fn = ACTIONS.get(action)
+        if not fn:
+            raise RuntimeError(f"未知 action: {action!r}")
+        # bot_alive/restart 等实时检查留在锁内执行，不能使用排队前的设备状态。
+        fn(params)
+    finally:
+        _ACTION_LOCK.release()
+
+
 # ---------- 调度 ----------
 
 def load_jobs() -> list:
@@ -418,7 +436,7 @@ def job_due(job: dict, now: dt.datetime | None = None) -> bool:
     return load_fired().get(job.get("name", "")) != now.strftime("%Y-%m-%d")
 
 
-def fire(job: dict) -> None:
+def fire(job: dict) -> threading.Thread:
     name = job.get("name", "?")
     action = job.get("action", "")
     mark_fired(name)  # 先记账再执行, 长任务不会重复触发
@@ -426,15 +444,14 @@ def fire(job: dict) -> None:
 
     def run():
         try:
-            fn = ACTIONS.get(action)
-            if not fn:
-                raise RuntimeError(f"未知 action: {action!r}")
-            fn(job.get("params") or {})
+            _execute_action(action, job.get("params") or {})
             log(f"==== 任务「{name}」结束 ====")
         except Exception as e:  # noqa: BLE001
             log(f"任务「{name}」失败: {e}", "err")
 
-    threading.Thread(target=run, daemon=True).start()
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    return worker
 
 
 def scan_loop() -> None:
@@ -475,7 +492,7 @@ def main() -> int:
 
         def _run():
             try:
-                fn(params)
+                _execute_action(action, params)
                 log(f"==== action「{action}」结束 ====")
                 box["ok"] = True
             except Exception as e:  # noqa: BLE001
@@ -497,8 +514,9 @@ def main() -> int:
         if not job:
             print(f"任务不存在: {name}")
             return 1
-        fire(job)
-        time.sleep(5)  # 给线程起跑的机会; 长任务继续在后台
+        # 单次入口必须等动作完成；守护线程不会在主进程退出后继续运行。
+        # 常驻 scan_loop 仍异步触发任务，--action 保留自己的超时看门狗。
+        fire(job).join()
         return 0
     scan_loop()
     return 0

@@ -17,16 +17,19 @@ import subprocess
 import sys
 import time
 
-import cv2  # noqa: E402  (find_modal_x_cv 用; anaconda python 必备)
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
 
+from pf_env import (GAME_PKG, SUBPROC_TEXT, mumu_is_running, mumu_start,  # noqa: E402
+                    preload_msvcrt, resolve_adb)
+
+preload_msvcrt()  # 必须早于 cv2/MAA 导入，不能依赖 pf_bot 的间接预载。
+
+import cv2  # noqa: E402  (find_modal_x_cv 用; anaconda python 必备)
 from pf_bot import PROJECT_ROOT as ROOT  # noqa: F401,E402  (统一 sys.path 语义)
 from pf_bot import PfBot  # noqa: E402
-from pf_env import (GAME_PKG, SUBPROC_TEXT, mumu_is_running, mumu_start,  # noqa: E402
-                    resolve_adb)
 
 IMG = "pf/"
 TPL_HALL_PRIZE = IMG + "hall_prize_fights.png"  # 大厅 PRIZE FIGHTS 菱形
@@ -110,7 +113,7 @@ class PfScene:
     def __init__(self) -> None:
         self.bot = PfBot()
         self.bot.setup()  # adb 连接 + 资源 + tasker (setup 前需 MuMu 已启动)
-        adb_path, _ = resolve_adb()
+        adb_path, self.address = resolve_adb()
         self.adb = adb_path
         self.mgr = str(Path(adb_path).with_name("MuMuManager.exe"))
 
@@ -119,7 +122,7 @@ class PfScene:
     def adb_shell(self, cmd: str) -> str:
         # SUBPROC_TEXT: 见 pf_env 顶部说明 —— adb 输出可能含 UTF-8 中文设备名,
         # 而 bat 起进程时 locale 是 GBK, 不指定就会在 subprocess 读线程里炸且捕不住。
-        p = subprocess.run([self.adb, "-s", "127.0.0.1:16384", "shell", cmd],
+        p = subprocess.run([self.adb, "-s", self.address, "shell", cmd],
                            capture_output=True, text=True, timeout=30,
                            **SUBPROC_TEXT)
         return p.stdout.strip()

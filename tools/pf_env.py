@@ -1,5 +1,4 @@
 """PF bot 公共环境：CRT 预载、MuMu 连接参数、WebUI 共享状态。"""
-import ctypes
 import json
 import os
 import subprocess
@@ -8,6 +7,8 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+
+from pf_native import preload_msvcrt  # compatibility export for existing callers
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.json"
@@ -103,6 +104,7 @@ def resolve_adb():
     if MUMU_ADB_PATH:
         return MUMU_ADB_PATH, addr
     try:
+        preload_msvcrt()
         from maa.toolkit import Toolkit
 
         for d in Toolkit.find_adb_devices():
@@ -261,18 +263,6 @@ def adb_connect(adb_path: str = None, timeout: float = 30) -> bool:
         return False
     out = ((p.stdout or "") + (p.stderr or "")).lower()
     return "connected to" in out or "already connected" in out
-
-
-def preload_msvcrt() -> None:
-    """先加载 System32 新版 VC 运行库，避免 anaconda 旧 CRT 导致 MAA DLL 初始化失败。
-
-    必须在 import cv2/maa 之前调用，详见 connect_mumu.py。
-    """
-    sys32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
-    for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
-        path = os.path.join(sys32, name)
-        if os.path.exists(path):
-            ctypes.WinDLL(path)
 
 
 class BotState:

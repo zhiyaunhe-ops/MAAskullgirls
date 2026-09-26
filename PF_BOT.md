@@ -4,6 +4,9 @@ Skullgirls Mobile 的 Prize Fight（竞技场）自动刷本脚本。基于 MAAF
 的 Python 绑定（MaaFw）驱动 MuMu 模拟器，实现 **选对手 → 编队 → 自动战斗 → 结算领奖** 的无人循环，
 带 WebUI（实时日志 / 截图 / 交互图表 / 设置 / 起停控制）。
 
+文档职责：当前设计与运行参考；§7–8 保留历史实测和故障证据。
+开发任务先看 [AGENTS.md](AGENTS.md) 的阅读地图，按需查阅本手册章节。
+
 - 启动：`python tools/pf_bot.py`（进程常驻，WebUI 里点 **开始** 才开跑）
 - WebUI：http://127.0.0.1:8790 —— **运行**页签（日志+截图）、**图表**页签（总分/收益/连胜）
 - 分辨率约定：**1280x720 横屏**（所有坐标/ROI 都基于此）
@@ -24,14 +27,16 @@ Skullgirls Mobile 的 Prize Fight（竞技场）自动刷本脚本。基于 MAAF
 | 图表库 | Chart.js 4.4.3 本地托管 `tools/static/chart.umd.min.js`（不走 CDN） |
 | 推理设备 | `Resource.use_cpu()` 强制 CPU（双显卡机器 DirectML 有枚举坑，rec-only OCR 开销极低） |
 | WebUI 端口 | **8790**（唯一来源 `pf_env.WEBUI_PORT`；本机 `config.json` 加 `"webui_port"` 可覆盖）。此前是 8787，本机该段被别的服务抢占后迁走，见 §8-19 |
-| 游戏数据 | `tools/data/variants.json`（306 变体：element 0-5、base 角色，内置副本）；`sgm/` 为可选本地克隆（`github.com/Krazete/sgm`），存在时提供 WebUI 元素/角色图标并优先读取其数据 |
+| 游戏数据 | `tools/data/variants.json`（306 变体：element 0-5、base 角色，内置副本）；`sgm/` 为可选本地克隆（`github.com/Krazete/sgm`），存在时优先读取其变体数据；WebUI 图标已内置于 `tools/static/icons/sgm/` |
 
 ### ⚠️ 本机必踩的坑：anaconda 旧版 CRT
 
 anaconda 根目录带 2020 年的 `msvcp140/vcruntime140`（14.27），Windows 解析 DLL 依赖时
 **优先搜索 python.exe 所在目录**，MAA 的 `opencv_world4_maa.dll` 初始化失败
 （WinError 1114，仅 Python 进程内失败，PowerShell 宿主正常，极难排查）。
-修复：入口脚本在 `import cv2/maa` 前调用 `pf_env.preload_msvcrt()`（显式加载 System32 新版 CRT）。
+修复：入口脚本在 `import cv2/maa` 前调用 `pf_native.preload_msvcrt()`（显式加载 System32 新版 CRT）。
+该初始化在进程内幂等，非 Windows 环境直接返回；`pf_env.preload_msvcrt` 保留兼容导出。
+设备自动探测、场景导航与离线视觉模块也须遵守此导入顺序。
 
 ---
 
@@ -42,15 +47,18 @@ MAAskullgirls/
 ├── PF_BOT.md                      # 本文档
 ├── docs/screenshots/              # 关键界面截图存档（筛选面板/hub/错误弹窗等）
 ├── tools/
-│   ├── pf_env.py                  # CRT 预载 + 连接参数 + BotState(含设置与历史)
+│   ├── pf_native.py               # 无业务依赖的 Windows CRT 初始化
+│   ├── pf_domain.py               # 无副作用的配置规范化与计分采样规则
+│   ├── pf_env.py                  # 连接参数 + MuMu 操作 + BotState + debug 清理
 │   ├── pf_vision.py               # 纯 cv2 视觉分析（可离线测试）
 │   ├── pf_bot.py                  # 主程序：监督循环 + 状态机 + 规则/计分/拖拽
 │   ├── pf_webui.py                # WebUI（运行/图表页签、设置、起停）
-│   ├── pf_store.py                # 场次/计分数据层（sessions.json + score_log.csv）
+│   ├── pf_storage.py              # 显式依赖的场次/计分存储实现
+│   ├── pf_store.py                # 运行时装配 + STORE 单例 + 旧导入兼容
 │   ├── jjc_store.py               # JJC 日程数据层 + 场次×规则版本账本（见 §6.11）
 │   ├── pf_scene.py                # 场景导航：MuMu→游戏→大厅→PF hub / explore 扫分 / center 居中
 │   ├── pf_schedule.py             # 定时调度：按时间触发 run_pf/stop_pf/explore（实验版）
-│   ├── static/chart.umd.min.js    # Chart.js 本地副本
+│   ├── static/                    # WebUI HTML/CSS/JS、主题、原版图标与本地 Chart.js
 │   ├── connect_mumu.py / screencap.py   # 连通性/截图小工具
 ├── assets/
 │   ├── interface.json             # PI V2 骨架（后续接 MaaPiCli 用，当前未走此链路）
@@ -77,6 +85,58 @@ MAAskullgirls/
 线程。图片 `debug/pf/run` 总量 ≤150MB（按目录从旧到新整删、保护当前目录；仍超则删
 当前目录内最旧帧）；全部 .log ≤50MB（只删最旧的 maafw.bak.*，活动日志不碰）。
 ```
+
+---
+
+## 2.1 模块边界与演进方向
+
+```mermaid
+flowchart TD
+    Scheduler[pf_schedule / pf_tray] -->|生命周期与 HTTP 命令| Web[pf_webui]
+    Scheduler -->|导航阶段| Scene[pf_scene]
+    Scene --> Bot[pf_bot]
+    Bot --> Vision[pf_vision]
+    Bot --> Runtime[pf_store: runtime facade]
+    Web --> Runtime
+    Runtime --> Storage[pf_storage: ScoreStore]
+    Runtime --> Ledger[jjc_store: 快照与版本账本]
+    Storage --> Domain[pf_domain: 配置规则与 ScoreTracker]
+    Bot --> Env[pf_env: 状态与设备操作]
+    Web --> Env
+    Env --> Native[pf_native: CRT bootstrap]
+    Vision --> Native
+```
+
+- **领域逻辑**：`pf_domain.py` 只处理配置规范化与计分采样，不导入 MAA、cv2、
+  WebUI、运行时状态或存储，不读写文件。新增纯计算规则优先归入这一层。
+- **存储实现**：`pf_storage.ScoreStore` 通过 `data_dir`、`logger`、`version_ledger`、
+  `jjc_ref` 显式接收依赖。导入该实现不会初始化真实场次或写数据；实例化时仍会
+  加载/迁移指定目录，版本账本也必须传入对应的隔离实现，不能只替换目录。
+- **运行时兼容入口**：`pf_store.ScoreStore()` 装配原有默认依赖，`STORE` 继续在
+  导入时初始化，兼容现有机器人、WebUI 与调度调用。旧 `clean_*` / `ScoreTracker`
+  名称仍可从该入口导入，但纯工具应直接导入 `pf_domain`。
+- **设备初始化**：CRT 预载集中在 `pf_native`，各原生入口显式调用；配置地址来自
+  `resolve_adb()`，场景的 ADB shell 和 MAA 控制器使用相同配置地址。
+- **调度所有权**：同一调度器进程内，一个动作完成后才执行另一个；等待中的动作
+  在取得锁后重新检查机器人状态。`--fire` 等待该任务完成，`--action` 保留硬超时。
+  已被判定到期的任务仍按原逻辑先记触发记录；排队不保证 FIFO，也不会重算宽限期。
+- **对外兼容**：CLI 入口、HTTP 路由、JSON/CSV 格式、CPU OCR、识别阈值、
+  MuMuManager 关机、WMI 独立启动和访问门卫仍是需要保留的边界。
+
+### 尚未解决的边界（后续按独立任务推进）
+
+1. WebUI handler 仍直接协调 `STATE` / `STORE` 与模拟器操作。下一阶段可提取
+   `SessionService`，集中管理选择、开始、暂停和设置同步，再定义原子状态快照。
+2. `ScoreStore` 的字典仍可能被调用者直接持有；部分更新在加锁前发生，日程/版本
+   账本也有并发读写边界。提取文件并不等于完成事务隔离，需专门处理。
+3. 调度动作锁仅覆盖单进程。多个调度器或手动启动的 scene 仍可能竞争同一设备，
+   后续需要跨进程设备租约，并明确导航到机器人接管的交接过程。
+4. `PfScene` 仍复用整个 `PfBot`，每次 setup 会启动长期运行的清理线程。
+   后续可提取有明确关闭生命周期的 MAA 设备会话，避免重复清理器。
+5. 卡片分数与标题识别仍可能来自不同截图；后续应基于同一帧完成一次卡片观察，
+   并保留现有标题兜底与未知分数语义，避免对动画中的两张卡做混合判断。
+
+以上后续项是已识别的结构边界，不是已实现或已验证的能力。
 
 ---
 

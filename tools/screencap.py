@@ -3,23 +3,12 @@
 用法:
     python tools/screencap.py [输出路径]   # 默认 debug/pf/manual_当前时间.png
 """
-import ctypes
-import os
 import sys
 import time
 from pathlib import Path
 
 
-def _preload_msvcrt() -> None:
-    """先加载 System32 新版 VC 运行库，避免 anaconda 旧 CRT 导致 MAA DLL 初始化失败。
-
-    必须在 import cv2/maa 之前调用，详见 connect_mumu.py 同名函数。
-    """
-    sys32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
-    for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
-        path = os.path.join(sys32, name)
-        if os.path.exists(path):
-            ctypes.WinDLL(path)
+from pf_native import preload_msvcrt as _preload_msvcrt
 
 
 _preload_msvcrt()

@@ -40,7 +40,8 @@ from maa.toolkit import Toolkit  # noqa: E402
 from maa.tasker import Tasker  # noqa: E402
 
 import pf_vision as vis  # noqa: E402
-from pf_store import STORE, ScoreTracker  # noqa: E402
+from pf_domain import ScoreTracker  # noqa: E402
+from pf_store import STORE  # noqa: E402
 from pf_webui import start_webui  # noqa: E402
 
 RESOURCE_DIR = PROJECT_ROOT / "assets" / "resource" / "base"
