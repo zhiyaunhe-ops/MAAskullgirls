@@ -300,10 +300,15 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
   连接；bot 停在 IDLE 期间连接会因模拟器重启 / adb server 被回收而失效，
   此时点开始只会撞一串 `AdbControlUnitMgr::connect failed`。
   「关机」按钮加了二次确认 —— 关掉后 WebUI 什么都干不了，2026-09-22 早上被误点过一次
-- **达标自动关模拟器**（2026-09-21）：头部「达标关模拟器」开关
-  （`STATE.close_mumu_on_goal`，**默认关** —— 关模拟器是有副作用的外界动作）。
-  总分达 `score_target` 时照旧暂停，开关打开则再关 MuMu；每次运行只做一次
-  （`_goal_closed`），且只有「当前分 < 目标」才复位，避免恢复运行后立刻又关一次
+- **达标自动关模拟器**（2026-09-21，**默认改开** 2026-09-26 用户口径：凌晨无人值守
+  跑完就该关机，WebUI 可取消勾选）：头部「达标关模拟器」开关
+  （`STATE.close_mumu_on_goal`）。总分达 `score_target` 时照旧暂停，开关打开则再关
+  MuMu；每次运行只做一次（`_goal_closed`），且只有「当前分 < 目标」才复位，
+  避免恢复运行后立刻又关一次
+- **暂停态与「继续」按钮**（2026-09-26）：`/api/pause` 手动暂停原先被主循环写成
+  `STOPPED`（与进程真退出同状态，托盘/前端没法区分），现与达标自动暂停统一为
+  `PAUSED`；前端 PAUSED 时「开始」键文案变**「继续」**（点击即 `/api/start`
+  同场次恢复，计分/连胜不重置），「停止」键在 PAUSED 态也可见（暂停态可直接结束进程）
 - **界面主题**（2026-09-21）：6 套（午夜蓝 / 极光绿 / 熔岩橙 / 霓虹紫 / 樱花白 / 素纸米），
   头部「◑ 主题」切换，存 localStorage，首屏由 `<head>` 内脚本预置 `data-theme` 防闪。
   配色全部走 `[data-theme]` 的 CSS 变量（加主题 = 加一个变量块，不动选择器）；
@@ -352,8 +357,14 @@ Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延�
   Popen 起 pf_bot → /api/start → 验证 RUNNING）/ `stop_pf` / `explore`
 - 20s 扫描；错过窗口（宿主睡眠）`grace_minutes`（默认 90）内补跑；触发记录
   `schedule_state.json` 按天去重，**先记账再执行**防长任务重触发；日志 `schedule.log`
-- bot 子进程带 `CREATE_BREAKAWAY_FROM_JOB`：调度器被整树强杀时 bot 不陪葬
-  （job 不允许 breakaway 则降级普通启动并告警）
+- bot 子进程带 `CREATE_BREAKAWAY_FROM_JOB`：调度器被整树强杀时 bot 不陪葬。
+  **job 拒绝 breakaway 时不再降级普通 Popen**（2026-09-26 凌晨事故：workbuddy 自动化
+  宿主的作业对象禁止 breakaway，跑完 `run_new_pf` 收尾清树时，孤儿 pf_bot 在
+  01:07:14 被整树无声带走，MuMu 同殁）—— 改走 `pf_env.spawn_detached()`：
+  WMI `Win32_Process.Create` 由 WmiPrvSE 代生，进程天然在调用方作业对象之外；
+  stdout 经 cmd `>>` 追加进 bot_stdout.log，env 用 `set` 注入，就绪判定走 HTTP 轮询
+  （拿不到句柄，强杀按端口反查 pid）。`pf_env.mumu_start` 同步改走该通道
+  （该实例上还挂着用户另一个 MAA 自启，更不能陪葬），WMI 不可用时回退 Popen
 - 用法：`python tools/pf_schedule.py` 常驻 / `--fire 任务名` 立即触发测试 / `--list`
 - 现状：2026-09-06 05:00 一次性任务「早上5点停」准点触发成功（stop_pf 6s 进程干净退出，
   schedule.log），事后 jobs 已清空；调度器需常驻进程（anaconda python），

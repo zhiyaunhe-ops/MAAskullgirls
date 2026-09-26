@@ -160,21 +160,26 @@ def start_bot_process() -> None:
         log("pf_bot 已在运行, 复用该进程")
         return
     log("后台启动 pf_bot ...")
-    lf = open(BOT_LOG, "ab")
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     try:
-        # 脱离调度器的作业对象: 调度器被整树强杀时 bot 不陪葬 (需要 job 允许 breakaway)
+        # 首选: 脱离调度器的作业对象 (需要 job 允许 breakaway), 自己留句柄
         flags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
+        lf = open(BOT_LOG, "ab")
         bot = subprocess.Popen(
             [PY, "tools/pf_bot.py"], cwd=str(PROJECT_ROOT),
             stdout=lf, stderr=subprocess.STDOUT, close_fds=True, creationflags=flags)
+        bot  # noqa: B018 (留存引用, 进程随调度器常驻)
     except OSError:
-        log("breakaway 不被允许, 降级普通启动 (调度器被树杀时 bot 会连带)", "warn")
-        bot = subprocess.Popen(
-            [PY, "tools/pf_bot.py"], cwd=str(PROJECT_ROOT),
-            stdout=lf, stderr=subprocess.STDOUT, close_fds=True,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
-    bot  # noqa: B018 (留存引用, 进程随调度器常驻)
+        # breakaway 被宿主作业对象拒绝 (workbuddy/终端等 agent 宿主): 普通 Popen 会让
+        # bot 留在宿主作业对象里, 宿主收尾清树时被整树 TerminateProcess —— 2026-09-26
+        # 01:07 实锤: workbuddy 自动化跑完 run_new_pf 收尾, 孤儿 pf_bot 无声死亡。
+        # 改经 WMI 由 WmiPrvSE 代生, 彻底在调用方作业对象之外 (无句柄, 就绪靠 HTTP 轮询)。
+        from pf_env import spawn_detached
+        pid = spawn_detached(
+            '"%s" tools/pf_bot.py' % PY, str(PROJECT_ROOT), str(BOT_LOG),
+            env_lines=('set "PYTHONUTF8=1"', 'set "PYTHONIOENCODING=utf-8"',
+                       'set "PYTHONUNBUFFERED=1"'))
+        log(f"breakaway 不被允许, 已改用 WMI 独立进程拉起 pf_bot (pid={pid})")
     if not wait_bot(dead=False, timeout=60):
         raise RuntimeError(f"pf_bot 60s 未就绪 ({WEBUI_PORT} 无响应)")
 

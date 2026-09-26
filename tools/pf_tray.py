@@ -120,6 +120,7 @@ def _spawn_bot() -> None:
         env["PYTHONIOENCODING"] = "utf-8"  # stdout/stderr 强制 UTF-8
         env["PYTHONUNBUFFERED"] = "1"      # 日志实时落盘, 不卡在缓冲区
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        pid = None
         try:
             # 脱离托盘进程的作业对象: 托盘退出/被关时 bot 不陪葬
             flags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
@@ -127,15 +128,19 @@ def _spawn_bot() -> None:
             _bot_proc = subprocess.Popen([PY, "tools/pf_bot.py"], cwd=ROOT,
                                          env=env, stdout=lf, stderr=subprocess.STDOUT,
                                          close_fds=True, creationflags=flags)
+            pid = _bot_proc.pid
         except OSError as e:
-            _log("breakaway 不被允许 (%s), 降级普通启动" % e)
-            lf = open(BOT_LOG, "ab")
-            _bot_proc = subprocess.Popen(
-                [PY, "tools/pf_bot.py"], cwd=ROOT, env=env,
-                stdout=lf, stderr=subprocess.STDOUT, close_fds=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
-                | subprocess.CREATE_NEW_PROCESS_GROUP)
-        _log("已启动 pf_bot (pid=%s)" % _bot_proc.pid)
+            # breakaway 被宿主作业对象拒绝时, 普通 Popen 会让 bot 留在宿主作业对象里,
+            # 宿主收尾清树时被整树带走 (2026-09-26 workbuddy 事故同款死法)。改经 WMI
+            # 由 WmiPrvSE 代生, 彻底独立 —— 手上没句柄, 强杀走端口反查 (本就不依赖它)。
+            _log("breakaway 不被允许 (%s), 改用 WMI 独立进程拉起" % e)
+            from pf_env import spawn_detached
+            pid = spawn_detached(
+                '"%s" tools/pf_bot.py' % PY, ROOT, BOT_LOG,
+                env_lines=('set "PYTHONUTF8=1"', 'set "PYTHONIOENCODING=utf-8"',
+                           'set "PYTHONUNBUFFERED=1"'))
+            _bot_proc = None
+        _log("已启动 pf_bot (pid=%s)" % pid)
         for _ in range(60):
             if _bot_alive():
                 _log("pf_bot 就绪")

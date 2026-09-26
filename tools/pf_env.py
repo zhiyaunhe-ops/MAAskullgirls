@@ -30,6 +30,52 @@ GAME_PKG = "com.autumn.skullgirls"   # Skullgirls Mobile 包名 (adb monkey 拉�
 SUBPROC_TEXT = {"encoding": "utf-8", "errors": "replace"}
 
 
+# ---------- 独立进程拉起 (脱离调用方的作业对象) ----------
+
+def spawn_detached(cmdline: str, cwd: str, log_path: str = None,
+                   env_lines: tuple = (), timeout: float = 30) -> int:
+    """经 WMI `Win32_Process.Create` 拉起**完全脱离调用方作业对象**的进程, 返回 pid。
+
+    为什么必须走 WMI (2026-09-26 凌晨事故实锤): agent 宿主 (workbuddy 自动化/部分
+    终端) 用 Windows 作业对象管理进程树且**禁止 breakaway**
+    (`CREATE_BREAKAWAY_FROM_JOB` 报 WinError 5), 普通 Popen 的子进程会留在宿主
+    作业对象里 —— 宿主"任务结束"收尾清树时, 把孤儿 pf_bot 整树 TerminateProcess
+    (01:07:14 无声死亡, 无 traceback/WER/休眠事件)。WMI 的进程由 WmiPrvSE 服务
+    代生, 天然不在任何调用方的作业对象里, 宿主死活都与它无关。
+
+    实现: 命令行交给 `cmd.exe /c` 执行 —— env_lines 用 `set "K=V"` 注入环境
+    (不依赖调用方 env), log_path 用 `>>` 追加重定向 stdout+stderr; 窗口用
+    `Win32_ProcessStartup.ShowWindow=0` 隐藏。用 powershell 5.1 的 `[wmiclass]`
+    加速器 (pwsh 7 已移除该加速器, 别换)。就绪判定交给调用方轮询 (HTTP/状态),
+    这里只保证"创建成功", 拿不到进程句柄 —— 要强杀请按端口反查 pid。
+
+    失败抛 RuntimeError (带 WMI 返回码/PowerShell stderr), 由调用方决定回退策略。
+    """
+    parts = list(env_lines) + ['cd /d "%s"' % cwd, cmdline]
+    if log_path:
+        parts[-1] = "%s >> \"%s\" 2>&1" % (cmdline, log_path)
+    inner = " && ".join(parts)
+    ps = (
+        "$sw=([wmiclass]'Win32_ProcessStartup').CreateInstance();$sw.ShowWindow=0;"
+        "$cmd='%s';"
+        "$r=([wmiclass]'Win32_Process').Create($cmd, '%s', $sw);"
+        # ⚠️ [wmiclass] 旧式 API 的返回属性是 ReturnValue (不是 Invoke-CimMethod 的
+        # ReturnCode); 取不存在属性得 $null, $null -ne 0 恒真 → 假失败 (2026-09-26 实测)。
+        "if($r.ReturnValue -ne 0){Write-Error ('WMI Create failed: ' + $r.ReturnValue);"
+        " exit $r.ReturnValue};"
+        "Write-Output $r.ProcessId"
+        % (("cmd.exe /c " + inner).replace("'", "''"), cwd.replace("'", "''"))
+    )
+    p = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+        capture_output=True, timeout=timeout, **SUBPROC_TEXT)
+    out = (p.stdout or "").strip()
+    if p.returncode != 0 or not out.isdigit():
+        raise RuntimeError(
+            "WMI spawn 失败 (rc=%s): %s" % (p.returncode, (p.stderr or p.stdout or "").strip()[:200]))
+    return int(out)
+
+
 def _load_config() -> dict:
     """本机参数 (adb 路径/端口等), gitignored, 不随仓库分发。"""
     try:
@@ -143,7 +189,14 @@ def mumu_start(adb_path: str = None, timeout: float = 120) -> bool:
     _, nx, _ = mumu_paths(adb_path)
     if not nx:
         return False
-    subprocess.Popen([nx, "-v", "0"], cwd=str(Path(nx).parent))
+    # 模拟器必须脱离调用方的作业对象: 2026-09-26 凌晨 workbuddy 收尾清树把 MuMu
+    # 一起带走了, 而该实例上还挂着用户另一个 MAA(明日方舟) 自启, 被连带打断代价更大。
+    try:
+        spawn_detached('"%s" -v 0' % nx, str(Path(nx).parent))
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        # WMI 通道不可用 (powershell 被拦等) 才退回普通 Popen —— 行为等同旧版,
+        # 代价是调用方作业对象收尾时 MuMu 会陪葬。
+        subprocess.Popen([nx, "-v", "0"], cwd=str(Path(nx).parent))
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(2)
@@ -246,8 +299,9 @@ class BotState:
         self.running = False          # 暂停开关（WebUI 可置 False, 可恢复）
         self.quit = False             # 硬停止开关: 置 True 后主循环退出、进程结束
         # 达标收尾: 总分达到 score_target 时自动关闭 MuMu (省电/释放机器)。
-        # 默认 False —— 关模拟器是有副作用的外界动作, 必须用户显式打开。
-        self.close_mumu_on_goal = False
+        # 默认 True (用户 2026-09-26 改口径: 凌晨无人值守跑完就该关机, 别空烧;
+        # 不想关的场合在 WebUI 取消勾选「达标关模拟器」即可, /api/settings 可覆盖)。
+        self.close_mumu_on_goal = True
 
     def log(self, msg: str, level: str = "info") -> None:
         stamp = time.strftime("%H:%M:%S")

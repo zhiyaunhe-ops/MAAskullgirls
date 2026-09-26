@@ -24,7 +24,7 @@ POST /api/mumu/launch      启动 MuMu（后台线程, 等 start_finished）
 POST /api/mumu/game        启动 MuMu(如需) + adb monkey 拉起 Skullgirls
 POST /api/mumu/shutdown    关闭 MuMu（bot 运行中会先暂停; 只走 MuMuManager control）
 POST /api/settings         {filter_favorite, close_mumu_on_goal}
-                           close_mumu_on_goal: 总分达标时自动关闭 MuMu（默认关）
+                           close_mumu_on_goal: 总分达标时自动关闭 MuMu（默认开）
 
 访问安全（所有请求先过 _gate 门卫，不合法一律 40x 并写入运行日志）:
   - 来源 IP 限 本机回环 / 内网 (10/172.16/192.168) / Tailscale (100.64/10)，公网来源 403
@@ -897,8 +897,10 @@ async function pollState() {
     document.getElementById('step').textContent = d.step;
     const startBtn = document.getElementById('startbtn');
     startBtn.style.display = d.status === 'RUNNING' ? 'none' : 'inline-block';
+    startBtn.textContent = d.status === 'PAUSED' ? '继续' : '开始';
     document.getElementById('pausebtn').style.display = d.status === 'RUNNING' ? 'inline-block' : 'none';
-    document.getElementById('stopbtn').style.display = d.status === 'RUNNING' ? 'inline-block' : 'none';
+    document.getElementById('stopbtn').style.display =
+      (d.status === 'RUNNING' || d.status === 'PAUSED') ? 'inline-block' : 'none';
     const inT = document.getElementById('in-target'), inE = document.getElementById('in-energy');
     running = d.status === 'RUNNING';
     activeSess = d.session_id;

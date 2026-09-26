@@ -394,7 +394,8 @@ class PfBot:
         """达标收尾: 开关打开则关掉 MuMu。
 
         关模拟器是**有副作用的外界动作** (会连带打断同一实例上别的 MAA 自启),
-        所以只在用户显式打开「达标关模拟器」时执行, 且每次运行只做一次 ——
+        所以受「达标关模拟器」开关控制 (默认开, 用户 2026-09-26 口径: 凌晨无人
+        值守跑完就该关机; WebUI 可关), 且每次运行只做一次 ——
         否则达标后 bot 停在对手页, 每次循环都会再读一次总分、再关一次。
         """
         if not STATE.close_mumu_on_goal or self._goal_closed:
@@ -900,7 +901,9 @@ class PfBot:
                 return
             if not STATE.running:
                 if STATE.status == "RUNNING":
-                    STATE.status = "STOPPED"
+                    # 手动暂停与达标自动暂停同为 PAUSED: 前端据此把「开始」换成「继续」,
+                    # 也避免占用 STOPPED (那是进程真退出的状态, /api/pause 不该冒用)。
+                    STATE.status = "PAUSED"
                     STATE.log("==== PF Bot 已暂停 ====")
                 # 暂停期间仍清理阻塞弹窗 (服务器错误/X), 防止屏幕卡死
                 try:
