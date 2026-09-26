@@ -1,908 +1,282 @@
-# MAAskullgirls — SGM Prize Fight 自动化脚本（基于 MAAFramework）
+# MAAskullgirls：实现与排障索引
 
-Skullgirls Mobile 的 Prize Fight（竞技场）自动刷本脚本。基于 MAAFramework v5.12.3
-的 Python 绑定（MaaFw）驱动 MuMu 模拟器，实现 **选对手 → 编队 → 自动战斗 → 结算领奖** 的无人循环，
-带 WebUI（实时日志 / 截图 / 交互图表 / 设置 / 起停控制）。
-
-文档职责：当前设计与运行参考；§7–8 保留历史实测和故障证据。
-开发任务先看 [AGENTS.md](AGENTS.md) 的阅读地图，按需查阅本手册章节。
-
-- 启动：`python tools/pf_bot.py`（进程常驻，WebUI 里点 **开始** 才开跑）
-- WebUI：http://127.0.0.1:8790 —— **运行**页签（日志+截图）、**图表**页签（总分/收益/连胜）
-- 分辨率约定：**1280x720 横屏**（所有坐标/ROI 都基于此）
-- 关键界面截图存档：`docs/screenshots/`（filter_panel / pf_hub / server_error_* / options_menu 等）
-
----
+| 字段 | 值 |
+|---|---|
+| 当前行为 | §§1–6.11、6.13；实现定位见各表 |
+| 历史观察 | §6.12、§7；本次未重跑、不保证当前排期 |
+| 开发／使用 | [AGENTS.md](AGENTS.md)／[README.md](README.md) |
+| 历史全文 | git show 3689d56:PF_BOT.md |
+| debug证据 | 可能轮转、未入仓库；记录路径不代表本次已核验 |
 
 ## 1. 环境与依赖
 
-| 项 | 值 |
+| 项 | 值／约束 |
 |---|---|
-| 模拟器 | MuMu 12，ADB `127.0.0.1:16384`（实例1默认端口） |
-| MuMu 自带 adb | 安装目录下 `nx_main\adb.exe`（本机实际路径写在 `config.json`，该文件不入仓库，见 `config.example.json`） |
-| 设备信息 | NTH-AN00（MuMu 默认伪装型号），Android 12，1280x720 横屏运行 |
-| 游戏语言 | ⚠️ **必须英文界面（English）**：OCR 判据（SERVER ERROR/PLAY!/战力数字等）全部基于英文 UI，其他语言识别不到 |
-| 框架 | MAAFramework v5.12.3 官方包解压在 `vendor/`（参考文档与 sample；运行用 pip 包二进制） |
-| Python 绑定 | `pip install MaaFw==5.12.3`，另需 numpy / opencv-python |
-| 图表库 | Chart.js 4.4.3 本地托管 `tools/static/chart.umd.min.js`（不走 CDN） |
-| 推理设备 | `Resource.use_cpu()` 强制 CPU（双显卡机器 DirectML 有枚举坑，rec-only OCR 开销极低） |
-| WebUI 端口 | **8790**（唯一来源 `pf_env.WEBUI_PORT`；本机 `config.json` 加 `"webui_port"` 可覆盖）。此前是 8787，本机该段被别的服务抢占后迁走，见 §8-19 |
-| 游戏数据 | `tools/data/variants.json`（306 变体：element 0-5、base 角色，内置副本）；`sgm/` 为可选本地克隆（`github.com/Krazete/sgm`），存在时优先读取其变体数据；WebUI 图标已内置于 `tools/static/icons/sgm/` |
-
-### ⚠️ 本机必踩的坑：anaconda 旧版 CRT
-
-anaconda 根目录带 2020 年的 `msvcp140/vcruntime140`（14.27），Windows 解析 DLL 依赖时
-**优先搜索 python.exe 所在目录**，MAA 的 `opencv_world4_maa.dll` 初始化失败
-（WinError 1114，仅 Python 进程内失败，PowerShell 宿主正常，极难排查）。
-修复：入口脚本在 `import cv2/maa` 前调用 `pf_native.preload_msvcrt()`（显式加载 System32 新版 CRT）。
-该初始化在进程内幂等，非 Windows 环境直接返回；`pf_env.preload_msvcrt` 保留兼容导出。
-设备自动探测、场景导航与离线视觉模块也须遵守此导入顺序。
-
----
+| 运行 | Windows；MuMu 12；英文游戏界面；1280×720横屏 |
+| 依赖／安装 | [requirements.txt](requirements.txt)／[README.md](README.md#快速开始) |
+| ADB／端口 | config.json → pf_env.resolve_adb()／WEBUI_PORT；端口默认8790 |
+| OCR | CPU；det.onnx、rec.onnx、keys.txt均须保留 |
+| 原生导入 | pf_native.preload_msvcrt() → cv2／maa；非Windows直接返回 |
+| CRT风险 | Python目录旧CRT→可能WinError 1114；历史环境条件，非必现 |
 
 ## 2. 目录结构
 
-```
-MAAskullgirls/
-├── PF_BOT.md                      # 本文档
-├── docs/screenshots/              # 关键界面截图存档（筛选面板/hub/错误弹窗等）
-├── tools/
-│   ├── pf_native.py               # 无业务依赖的 Windows CRT 初始化
-│   ├── pf_domain.py               # 无副作用的配置规范化与计分采样规则
-│   ├── pf_env.py                  # 连接参数 + MuMu 操作 + BotState + debug 清理
-│   ├── pf_vision.py               # 纯 cv2 视觉分析（可离线测试）
-│   ├── pf_bot.py                  # 主程序：监督循环 + 状态机 + 规则/计分/拖拽
-│   ├── pf_webui.py                # WebUI（运行/图表页签、设置、起停）
-│   ├── pf_storage.py              # 显式依赖的场次/计分存储实现
-│   ├── pf_store.py                # 运行时装配 + STORE 单例 + 旧导入兼容
-│   ├── jjc_store.py               # JJC 日程数据层 + 场次×规则版本账本（见 §6.11）
-│   ├── pf_scene.py                # 场景导航：MuMu→游戏→大厅→PF hub / explore 扫分 / center 居中
-│   ├── pf_schedule.py             # 定时调度：按时间触发 run_pf/stop_pf/explore（实验版）
-│   ├── static/                    # WebUI HTML/CSS/JS、主题、原版图标与本地 Chart.js
-│   ├── connect_mumu.py / screencap.py   # 连通性/截图小工具
-├── assets/
-│   ├── interface.json             # PI V2 骨架（后续接 MaaPiCli 用，当前未走此链路）
-│   └── resource/base/
-│       ├── pipeline/sample.json
-│       ├── image/pf/*.png         # 模板 19 张（见 §5.4）
-│       └── model/ocr/             # det.onnx(v4 zh) + rec.onnx(v4 en_us) + keys.txt
-├── sgm/                           # SGM 图鉴数据（元素定义、变体→元素/角色映射）
-├── vendor/                        # MAAFramework 官方包
-└── debug/
-    ├── maa/debug/maafw.log        # MAA 框架日志（排障第一入口；自按 16MB 轮转 .bak）
-    ├── debug/maafw.bak.*.log      # 轮转备份（清理线程只删这些最旧的）
-    ├── pf/run/<时间戳>/           # 每次运行全程截图 NNNN_标签.jpg
-    ├── pf/score_log.csv           # 每场计分记录
-    ├── pf/sessions.json           # 场次配置（含分数上界/休息/总分）
-    ├── pf/jjc/                    # JJC 日程数据与版本账本（见 §6.11）
-    │   ├── snapshots/<YYYY-MM-DD>.json  # 每游戏日一份快照（含 raw 证据链）
-    │   ├── latest.json                  # 指向最近一次快照
-    │   └── versions.json                # 场次×规则版本账本
-    ├── pf/schedule.json           # 定时任务配置（jobs 空=未启用）
-    └── pf/schedule.log / schedule_state.json   # 调度日志 / 触发去重记录
+| 文件／目录 | 职责 |
+|---|---|
+| tools/pf_native.py／pf_env.py | CRT／配置、BotState、MuMu、进程、清理 |
+| tools/pf_domain.py／pf_storage.py／pf_store.py | 纯规则／显式依赖存储／运行时装配与兼容 |
+| tools/pf_vision.py／pf_bot.py | cv2识别与几何／监督循环、选人、编队、战斗 |
+| tools/pf_webui.py／static/ | HTTP、API／HTML、CSS、JS、主题、图标 |
+| tools/pf_scene.py／pf_schedule.py／pf_tray.py | 导航／调度／托盘 |
+| tools/jjc_store.py | 日程快照、配置版本 |
+| assets/resource/base/ | post_bundle资源根；pipeline、image、model |
+| [docs/screenshots/](docs/screenshots/) | 界面参考 |
 
-**体积控制**（pf_env.cleanup_debug，2026-09-03）：bot 启动即清一次 + 每 10 分钟守护
-线程。图片 `debug/pf/run` 总量 ≤150MB（按目录从旧到新整删、保护当前目录；仍超则删
-当前目录内最旧帧）；全部 .log ≤50MB（只删最旧的 maafw.bak.*，活动日志不碰）。
-```
-
----
+| 数据（debug/pf/相对路径） | 内容 |
+|---|---|
+| sessions.json／score_log.csv | 场次配置／逐场采样 |
+| jjc/snapshots/YYYY-MM-DD.json | 游戏日快照 |
+| jjc/latest.json／versions.json | 最近快照引用／配置账本 |
+| schedule.json／schedule_state.json／schedule.log | 任务／去重／日志 |
+| run/时间戳/／bot_stdout.log | 截图／输出 |
+| cleanup_debug() | 每10分钟；图片目标150MB、日志目标50MB；活动日志保留，容量非硬保证 |
 
 ## 2.1 模块边界与演进方向
 
-```mermaid
-flowchart TD
-    Scheduler[pf_schedule / pf_tray] -->|生命周期与 HTTP 命令| Web[pf_webui]
-    Scheduler -->|导航阶段| Scene[pf_scene]
-    Scene --> Bot[pf_bot]
-    Bot --> Vision[pf_vision]
-    Bot --> Runtime[pf_store: runtime facade]
-    Web --> Runtime
-    Runtime --> Storage[pf_storage: ScoreStore]
-    Runtime --> Ledger[jjc_store: 快照与版本账本]
-    Storage --> Domain[pf_domain: 配置规则与 ScoreTracker]
-    Bot --> Env[pf_env: 状态与设备操作]
-    Web --> Env
-    Env --> Native[pf_native: CRT bootstrap]
-    Vision --> Native
-```
+| 边界 | 约束 |
+|---|---|
+| Domain | 不依赖MAA、cv2、运行时、存储、HTTP；无I/O |
+| Storage | 显式data_dir、logger、version_ledger、jjc_ref；实例化会加载／迁移 |
+| Runtime | 导入pf_store初始化STORE；纯工具用pf_domain／pf_storage |
+| 隔离 | 换数据目录时同步隔离账本依赖 |
+| 兼容 | CLI、HTTP、JSON／CSV、旧领域名称导出 |
 
-- **领域逻辑**：`pf_domain.py` 只处理配置规范化与计分采样，不导入 MAA、cv2、
-  WebUI、运行时状态或存储，不读写文件。新增纯计算规则优先归入这一层。
-- **存储实现**：`pf_storage.ScoreStore` 通过 `data_dir`、`logger`、`version_ledger`、
-  `jjc_ref` 显式接收依赖。导入该实现不会初始化真实场次或写数据；实例化时仍会
-  加载/迁移指定目录，版本账本也必须传入对应的隔离实现，不能只替换目录。
-- **运行时兼容入口**：`pf_store.ScoreStore()` 装配原有默认依赖，`STORE` 继续在
-  导入时初始化，兼容现有机器人、WebUI 与调度调用。旧 `clean_*` / `ScoreTracker`
-  名称仍可从该入口导入，但纯工具应直接导入 `pf_domain`。
-- **设备初始化**：CRT 预载集中在 `pf_native`，各原生入口显式调用；配置地址来自
-  `resolve_adb()`，场景的 ADB shell 和 MAA 控制器使用相同配置地址。
-- **调度所有权**：同一调度器进程内，一个动作完成后才执行另一个；等待中的动作
-  在取得锁后重新检查机器人状态。`--fire` 等待该任务完成，`--action` 保留硬超时。
-  已被判定到期的任务仍按原逻辑先记触发记录；排队不保证 FIFO，也不会重算宽限期。
-- **对外兼容**：CLI 入口、HTTP 路由、JSON/CSV 格式、CPU OCR、识别阈值、
-  MuMuManager 关机、WMI 独立启动和访问门卫仍是需要保留的边界。
-
-### 尚未解决的边界（后续按独立任务推进）
-
-1. WebUI handler 仍直接协调 `STATE` / `STORE` 与模拟器操作。下一阶段可提取
-   `SessionService`，集中管理选择、开始、暂停和设置同步，再定义原子状态快照。
-2. `ScoreStore` 的字典仍可能被调用者直接持有；部分更新在加锁前发生，日程/版本
-   账本也有并发读写边界。提取文件并不等于完成事务隔离，需专门处理。
-3. 调度动作锁仅覆盖单进程。多个调度器或手动启动的 scene 仍可能竞争同一设备，
-   后续需要跨进程设备租约，并明确导航到机器人接管的交接过程。
-4. `PfScene` 仍复用整个 `PfBot`，每次 setup 会启动长期运行的清理线程。
-   后续可提取有明确关闭生命周期的 MAA 设备会话，避免重复清理器。
-5. 卡片分数与标题识别仍可能来自不同截图；后续应基于同一帧完成一次卡片观察，
-   并保留现有标题兜底与未知分数语义，避免对动画中的两张卡做混合判断。
-
-以上后续项是已识别的结构边界，不是已实现或已验证的能力。
-
----
+| 未解决项 | 风险／候选方向（未实现） |
+|---|---|
+| WebUI直接协调STATE／STORE／MuMu | 状态边界→SessionService、原子快照 |
+| Store字典外泄、部分更新先于锁 | 并发一致性→事务隔离 |
+| 调度锁仅进程内 | 多进程争设备→租约 |
+| PfScene复用PfBot.setup() | 重复清理线程→可关闭会话 |
+| 卡名／分数可能不同帧 | 动画混读→同帧观察 |
 
 ## 3. 游戏界面与坐标（1280x720）
 
-### 3.1 对手选择页（界面指纹：绿色 REFRESH 按钮）
-- 右侧竖排 3 张对手卡：战力左上（白字深底）、带火倍率框右上（红火焰徽章 x1.5/x2/x2.5）
-- 左面板：STREAK / MULTIPLIER / SCORE / NEXT REWARD
-  - 总分 ROI `SCORE_ROI=(132,336,275,370)`，连胜 ROI `STREAK_ROI=(280,200,352,238)`
-- 点击坐标：三张卡中心 `(1000, 235/412/590)`；点卡 → CONTINUE → **等对手页消失**（防重复选人）
+| 对象 | 指纹／定位 |
+|---|---|
+| 对手页 | REFRESH；pf_vision.OPPONENT_CARDS、SCORE_ROI、STREAK_ROI |
+| VS／编队 | FIGHT!／DRAG提示；pf_bot.fight_flow() |
+| 出战／候选几何 | pf_vision.SLOT_DROP_X、SLOT_PIP_CENTERS、ROSTER_CENTERS |
+| hub／筛选 | pf_scene.ROI_HUB_PLAY／pf_bot.FILTER_*、ELEMENT_CHIPS、CLASS_CHIPS |
 
-### 3.2 VS 页
-- 右上橙 **FIGHT!** 按钮 `(1075,38,155,54)`；中下 TEAM 菱形中心 `(637,555)`
-- 点 TEAM 进编队；队伍有人能量不足会先弹 ENERGY REFILL，关掉弹窗自动进编队页
-
-### 3.3 编队页（指纹："DRAG DESIRED FIGHTER TO A SLOT" 横幅 `(430,405,850,465)`）
-- 3 个出战槽：**卡面扇形**（铭牌中心 x≈[130,355,557]，拖拽落点，y=240）；
-  **能量钉条是独立等距层**（起点 x=65，层间距 192，钉距 13.5，行带 y 349-369）
-- 底部候选横列：卡距 **198px**，卡1钉条中心 x≈116，行带 y 679-701，按战力降序，不含槽内角色
-- **筛选按钮**：右侧中部蓝色六边形 `FILTER_BTN=(1215,395)`，详见 §6.4
-
-### 3.4 弹窗（多种，X/按钮尺寸位置各异，均有对应模板）
-| 弹窗 | 触发 | 处理 |
-|---|---|---|
-| ENERGY REFILL | 能量不足点 TEAM/FIGHT | 点 X（大号 54px） |
-| KEEP STREAK? | 战败后询问恢复连胜 | 点 X（小号 46px），**绝不点 CONFIRM/WATCH AD** |
-| 服务器错误（紫 OK） | "difficulty reaching our servers" | 点 OK |
-| 服务器错误（绿 RETRY） | 同上，CANCEL+RETRY 双按钮 | 点 **RETRY** |
-| SERVER ERROR（红 OK） | 服务器故障 | OCR 兜底检测 → 点标题下方 OK |
-| OPTIONS 菜单 | 误触左上齿轮 | 点右上 X（盲目按返回的后果，见 §8-10） |
-| 角色详情页 | 拖拽误触 | 按左上返回键（STATS 标签模板检测） |
-| 结算链 2-3 页 | 每场胜利 | 循环点紫色 CONTINUE |
-| 筛选面板 | 规则筛选/清除 | 驻留式点击 + X 模板验证重试（见 §8-13） |
-
-### 3.5 PF 主页面（hub，指纹：PLAY! 按钮 `(500,400,780,530)`）
-Fight 选择轮播页（每张卡 PLAY!/REWARDS/CLAIM! + 总分显示）。延迟导致误退出会落到这里，
-状态机检测到后**点中心 PLAY! 重新进入**。
-
----
+| 约束 | 原因／处理 |
+|---|---|
+| 项目ROI=(x0,y0,x1,y1) | MAA=(x,y,w,h)；PfBot.to_maa_roi()转换 |
+| 落点≠能量条中心 | 卡面扇形；能量条等距 |
+| X按弹窗分别定位 | 能量／连胜／OPTIONS／促销尺寸不同 |
+| 分辨率变化 | 重新标定坐标／模板 |
 
 ## 4. 能量规则（用户确认）
 
-- 卡底黄色闪电 = 当前能量；**≥ 出战门槛（默认 4，WebUI 可调）即可出战**
-- 红钉只是"不够下一场"的视觉标记，不参与判定；实测每场 -4（10 → 6 → 2）
-- VS 页烧瓶变暗 = 同状态的表现
-
----
+| 字段 | 值 |
+|---|---|
+| 出战 | 黄钉数≥STATE.energy_cost；默认4、随场次 |
+| 红钉 | 不计入能量 |
+| 历史消耗 | 2026-09-02：10→6→2；非所有模式保证 |
+| 池耗尽 | 失败停机；未实现自动等待回能 |
 
 ## 5. 视觉方案（pf_vision.py）
 
-### 5.1 对手页：火框 + 数字
-- 火框：红色像素占比 ≥0.04（实测有火 0.17-0.26 / 无火 0.03）
-- **倍率**：火框徽章**动态定位**（右上区最大红色连通域 + 角部约束，排除橙红头发/红心徽章）
-  → 裁下方 70%（去火焰尾巴）→ OCR `expected=["x1","x1.5","x2","x2.5",...]` → 正则取数
-- **战力**：固定 ROI OCR + 正则解析（`'34.C'→34`、`'41.2k 3N'→41200`、允许 "3.6 k" 带空格）
-
-### 5.2 编队页：能量钉
-- 严格高亮黄掩码 `R≥240 & G≥200 & B≤105`（金卡淡黄底 (231,231,132) 不通过，对底色免疫）
-- 列黄色占比 → 游程计数（阈值 0.08，游程 2-9px）；峰值 <0.12 判 0
-
-### 5.3 OCR 模型
-- `model/ocr/`：det.onnx **必须存在**（only_rec 也依赖），rec 用 ppocr_v4 en_us，det 用 v4 zh_cn
-
-### 5.4 模板清单（assets/resource/base/image/pf/）
-| 文件 | 用途 |
+| 对象 | 实现／限制 |
 |---|---|
-| pf_refresh_btn / pf_continue_btn | 对手页指纹 / 继续按钮 |
-| vs_fight_btn | VS 页指纹 + 点击 |
-| drag_hint | 编队页指纹 |
-| energy_x / streak_x / options_x | 三种弹窗关闭（尺寸各不同：54/46/48px） |
-| result_continue | 紫色结算 CONTINUE |
-| hub_play | PF 主页面 PLAY! |
-| detail_stats | 角色详情页 STATS 标签 |
-| srv_ok / srv_retry | 服务器错误两种按钮 |
-| pip_red / pip_yellow / pip_roster / pip_slot | 钉模板（调研产物，备查） |
-| hall_prize_fights | 大厅 PRIZE FIGHTS 菱形（pf_scene 全屏搜，吸附位不固定） |
-| scene_popup_x | 大厅限时促销弹窗 X @`(950,30,1240,180)`（options_x 不匹配促销款） |
-| battle_spd_1x / 2x / 3x | 战斗速度泡 @`(600,565,690,645)`，th=0.85（同位≥0.95、1x↔3x 串扰≤0.76、无泡≤0.14） |
-
----
+| 火框 | find_fire_badge()：红连通域＋角部约束；0.04的has_fire_box()非当前选人路径 |
+| 倍率 | 动态定位→裁图→候选OCR→parse_mult()；固定ROI可能截数字 |
+| 战力／总分 | OCR→parse_power()；仍可能错读 |
+| 能量 | 高亮黄掩码→列占比→游程；非任意底色保证 |
+| 元素复验 | pf_bot._candidate_is_element()；光／中性不按颜色区分 |
+| 模板定位（原§5.4） | assets/resource/base/image/pf/；引用以pf_bot／pf_scene的TPL_*为准 |
+| pip_*模板 | 历史调研；能量主路径用颜色计数 |
 
 ## 6. 机器人流程（pf_bot.py）
 
-### 6.0 进程模型
-`run()` 是**常驻监督循环**：WebUI 可随时 开始/暂停，进程不退出。
-- 暂停期间仍每 2s 清理阻塞弹窗（服务器错误 / X 类），防止屏幕卡死在错误弹窗
-- 状态机主体在 `step()`：截图一次 → 按优先级处理
-
-### 6.1 状态机（step，优先级从高到低）
-1. **弹窗 X**（能量/streak/OPTIONS；遮罩压暗背景但模板匹配对亮度不敏感，必须最先判）
-2. **服务器错误**（紫 OK / 绿 RETRY / 红 OK-OCR 兜底）
-3. 角色详情页 → 按返回键
-4. PF 主页面（hub）→ 点 PLAY!
-5. REFRESH → 对手选择页 → `track_score` 计分 → `pick_opponent`
-6. DRAG 提示 → 编队页 → `fight_flow`
-7. FIGHT! → VS 页 → `fight_flow`
-8. 紫色/橙色 CONTINUE → `handle_results`
-9. 未知界面 → 等 3s → **交替按 左上返回键 / 右上关闭 X**（某些界面左上是设置齿轮，单按返回会开 OPTIONS 卡死）；已知界面时恢复计数清零
-
-### 6.2 选对手
-有火框 → 火框组内倍率最大（倍率读不出排后按战力）；无火框 → 战力最低。全程 OCR 结果进日志。
-战力 OCR 值 < 100 时视为 k 后缀被丢，自动 ×1000（如 87 → 87,000）。
-
-### 6.3 编队修正（fix_team）
-1. **首次编队归位筛选**（2026-09-10）：每次开始运行后的首次 `fix_team` 按 WebUI
-   「喜爱筛选」开关 `set_filter`（开=点亮爱心芯片，关=清空），一并清掉上次运行
-   残留的游戏内筛选（游戏内筛选状态跨运行持久）；**规则有无均执行**（此前只在
-   无规则时清空，规则模式下首次筛选既不清残留也不吃喜爱设置）。每次(重)开始
-   运行时复位该标记——出错/暂停后再开始会重新归位，中途改设置下一局生效
-2. 归零滚动（右滑 ×4）
-3. **规则判定**（见 §6.4；`_rule_done_fight` 锚定场次号，每场只判/替换一次）
-4. 能量替换循环：**规则槽(1号)能量不足 → 直接优先补合规角色**（`refill_rule_slot`，
-   不等能量弹窗，也先于普通槽——2026-09-03 按用户要求改；此前绕道"点 FIGHT 等弹窗
-   再补"多花 ~15s 且让非规则槽插队）。随后槽位 <门槛 → 候选区从左（战力优先）找
-   达标者拖入 → 复读验证；未生效 → 归零候选列重试 + 按失败次数微调落点（4 档偏移）；
-   翻页上限 30
-5. 全翻完仍无 → 停止报错（能量随时间恢复，重启/等待后继续）
-6. 能量弹窗分支保留为兜底：正常流程全 slots ≥门槛后点 FIGHT 不应再弹窗
-
-### 6.4 PF 规则筛选系统（仅配置了规则才运行，未配置零开销）
-- **规则与 PF 场次绑定**（见 §6.5a）：WebUI **PF规则 按钮组**（nav 行右侧）编辑的是
-  当前选中场次绑定的规则，未选场次/运行中时整组禁用；点选即生效、再点当前规则取消。
-  按钮组：关 / 六元素按钮（sgm 元素图标）/ 12 角色金圈徽记按钮（= 类别 c1-c12，
-  sgm MasteryIcon）。素材由 `/sgm/...` 路由直接托管 `sgm/image/official/`
-- **合规判定 = FIGHT 按钮颜色**（2026-09-03 实测定稿）：游戏自身以 FIGHT 置灰提示
-  不满足——按钮中心 ±(65,18) 区域高饱和亮色(S≥100,V≥120)占比 ≥15% 判满足
-  （橙实测 ~55%/S中位251，灰 ~0%）。注意灰色同时covers"场上有人能量<门槛"，
-  因此能量弹窗的自愈也复用该信号（见 §6.3）。类别规则 sgm 无数据，恒走筛选替换
-  —— **而且游戏里压根没这条限制：PF 只限定元素，角色场/金币场/月场都不限定**
-  （2026-09-16 用户确认，见 §6.12.7）。填 `{"type":"class"}` 只会让 bot
-  每场都空转筛选替换循环，**自动路径已硬拦，别手工绑**。
-  ~~废弃方案~~：OCR 铭牌名查 variants.json **结构性不可行**（键是内部代号 `fTrap`
-  非显示名；显示名在条目 `fandom` 字段）；纯框色识别**不可靠**（钻石稀有度粉框
-  覆盖元素色，如实测 BELLARINA；光/中性图标同为白色）
-- 流程（用户定义）：
-  1. **判定** FIGHT 颜色 → 灰则进入替换；每场只判一次（`_rule_done_fight` 锚定场次号）
-  2. 不满足 → `refill_rule_slot`：筛选面板（清空 → 规则芯片 → 喜爱）→ 关闭(带验证) →
-     **拖最左达标者进槽1** → 再筛选(仅喜爱)还原 → 复验 FIGHT，仍灰则继续拖槽2、槽3。
-     **筛选结果用候选列复验**（2026-09-03）：关闭+归零后检查首张候选卡左缘框条的
-     元素色占比（ELEMENT_HUE，阈值 15%；light/neutral 不可分辨不验证）——不符=清空/
-     点亮被面板吃掉（芯片是开关，点亮会变切换），自动重开面板再筛一次。
-     ⚠️ 阈值别贴着实测值画：初版 30% 恰好卡在实测 537px（阈值 540）差 3px 误杀
-     满池风角色、误报"无能量停止"；实测绿 ~43%、错元素 0%，15% 两侧余量都足。
-     离线回归：火框首卡火命中 86%、风/水/暗 0%
-  3. **只有规则槽(1号)补合规角色，2/3 号槽做纯能量替换（元素不限，喜爱筛选、战力
-     优先）**——2026-09-03 用户纠正：此前弹窗自愈对所有缺槽都补风，队伍慢慢变成
-     三个风，加速耗干"风∩喜爱"小池子。fix_team 直补路径见 §6.3-4；
-     FIGHT 后弹窗分支兜底时同样只对槽1走 refill_rule_slot
-  4. fight 前、点 FIGHT 前各复验一次 FIGHT 颜色；能量替换破坏规则则重做（限 3 次）
-- 筛选面板芯片坐标（见 docs/screenshots/filter_panel.png）：
-  `FILTER_BTN=(1215,395)` 清空`(272,126)` 关闭`(1228,85)` 爱心`(616,237)`；
-  元素芯片 x=[197,302,407,512,616,721] y=370（火/水/风/光/暗/中性）；
-  类别芯片 12 个 = 同 x 列 × y 505（类别1-6）/ y 594（类别7-12）
-  （c1-c12 按游戏面板顺序：Annie/Beowulf/BigBand/BlackDahlia/Cerebella/Double/
-   Eliza/Filia/Fukua/Marie/MsFortune/Painwheel，与 sgm MasteryIcon 一一对应）
-
-### 6.5 计分与连胜
-- 每次回到对手页：读总分 + 连胜；**采样锚定场次号**（fight_no 变了必采样，
-  **失败场收益 0 也照记**——连胜终结表现为 0 收益柱 + 连胜阶梯跌落）
-- 达到 **目标总分**（WebUI 设置）→ 自动暂停（状态 PAUSED，可再点开始恢复）
-- 每场追加 `debug/pf/score_log.csv`（time, fight_no, score, delta, streak, session）；
-  启动时按列位置预载（旧文件表头缺 streak 列/旧行缺 session 列也能正确解析）
-
-### 6.5a PF 场次系统（tools/pf_store.py，数据层与操作逻辑解耦）
-- 点 WebUI **开始**：已选场次则**直接以当前场次开始**；未选过才弹场次弹窗
-  （选既有场次 / 新建：名称+规则+分数上界+每N场休M分 / 重命名 / 两段式删除，
-  Default 不可删）。弹窗另有**仅选择**：只绑定不开始，回主页改规则/上界/休息后再开
-- 顶栏 **目标总分 / 每N场休息** 随场次（编辑即写入当前选中场次并同步运行状态）；
-  未选场次或运行中禁改；**能量门槛随场次**（同上界/休息），喜爱为全局设置
-- **子场次**：周期性分类的每一期建一个子场次——弹窗选中父场次 → **建子场次** →
-  自动命名"父名 MM-DD"（重名加 -N 后缀），继承父场次规则/上界/能量/休息；
-  采样/CSV 归子场次；弹窗列表中**子场次紧跟父场次**（缩进+左侧蓝线），父场次带「N期」徽章；删父不删子（子变顶级场次）
-- 场次持久化于 `debug/pf/sessions.json`（id/名称/绑定规则/休息配置 rest_every·rest_minutes/
-  **总分 score**）；总分随每次采样滚动更新，老场次启动时从各自最后一个采样**倒推**回填；
-  **历史数据全部归
-  id=default 的场次（无规则）**，该场次可改名不可删
-- **运行中锁定**：不允许切换/修改/删除当前场次，规则按钮组禁用；暂停（同一场次）
-  再续跑不重置基线，换场次开局则 fight_no/采样基线/规则替换标记全部重置
-- 计分按场次分流：`ScoreTracker` 管采样基线（换场次自动重置），`ScoreStore.record`
-  按场次入内存历史（每场次上限 3000 点），CSV 追加 session 列
-- 图表页：顶部场次 chips，点名称=只看该场次（默认当前场次），点＋/－=加入/移出对比；
-  **对比模式**下总分图变各场次收益累计曲线（以各自首个采样为 0 起点）+ 指标对比表，
-  单场收益柱状图隐藏
-- 已知取舍：删除场次后其内存曲线移除，CSV 原始行保留（重建同名 id 不可恢复，属预期）
-
-### 6.6 拖拽与滚动
-- 拖拽用触点原语：按下 → 分段移动 → **落点停顿 350ms** → 抬起
-  （`post_swipe` 连续滑动+立即释放会在窄判定槽位脱靶）
-- 拖后复读槽位验证：未生效 → 归零候选列（失败拖拽会滚动列表）+ 落点微调重试
-- 候选列滚动：分 5 步移动 + 末段停顿再抬起（防惯性甩动过冲）
-
-### 6.7 WebUI
-- **运行页签**：实时日志 + 最新截图 + 状态徽章 + 总分/连胜 + 开始/停止按钮 + 设置项
-- **图表页签**（Chart.js 本地托管）：
-  - 总分曲线（渐变面积+平滑）、单场收益柱（绿/红）、连胜阶梯；全部可悬浮查看采样点详情
-  - 统计卡：结算场次 / 胜率 / 总收益 / 场均收益 / **每分钟收益** / 当前连胜 / 最高连胜 / 平均连胜
-  - 每分钟收益口径：只累计相邻采样间隔 ≤3 分钟的**活跃时段**（排除停机空档），秒→分 ÷60
-- 设置项：目标总分（达到自动暂停）、能量门槛、喜爱筛选开关（全局；每次开始运行
-  后的首次编队据此在游戏内勾选/清除喜爱筛选，见 §6.3-1）；
-  **休息配置（每 N 场休 M 分钟）跟随场次**（2026-09-03）：设置条的
-  "每 N 场休 M 分钟"输入框编辑的是当前选中场次（与 PF 规则同模式，运行中禁改），
-  开始时载入，换场次重置休息计数与倒计时；场次弹窗列表每行显示"休N场×M分"。
-  注意：**休息计数在进程重启时归零**（fights_since_rest 是内存态），频繁重启则
-  一直数不满 N 场
-- 接口：`/api/state`、`/api/history`、`/api/start`、`/api/stop`、`/api/settings`、`/static/*`
-- **模拟器控制**（2026-09-21）：头部「启动 MuMu / 启动游戏 / 关机」+ 状态灯
-  - `GET /api/mumu`、`POST /api/mumu/launch|game|shutdown`；启停都是秒级动作，
-    后端一律丢后台线程（幂等锁 `_MUMU_BUSY`），进度只回写到运行日志，不卡 HTTP
-  - 唯一实现在 `pf_env.py` 的 `mumu_*`，`pf_scene.ensure_mumu` 也转发过去 ——
-    **关模拟器只能走 `MuMuManager control -v 0 shutdown`**（强杀 MuMuNxMain.exe
-    会被 MuMuNxService 以 --from-oem 拉回；该实例还挂着用户另一个 MAA 的自启）
-  - 状态判据要兼容两种字段集：MuMu 12.0 未启动时 `info -v 0` 只有
-    `is_android_started` 布尔位，没有 `player_state`（见 `mumu_state`）
-  - ⚠️ **`subprocess.run(capture_output=True, timeout=)` 自己超时时 `p.stdout` 是
-    `None`**，`json.loads(None)` 抛的是 `TypeError`（不在常规捕获列表里），
-    会冒到 HTTP 线程刷一屏 traceback。`/api/mumu` 是 4 秒轮询接口，
-    MuMuManager 卡一次就刷屏 —— 见 `mumu_info` 的两道防线（2026-09-22）
-- **「开始」自足化**（2026-09-22）：`/api/start` 现在是「模拟器没开就先拉起 +
-  补一次 `adb connect`」再置 RUNNING，返回 `starting_mumu` 供前端出进度文案。
-  为什么必须补 connect：MAA 的 `post_connection()` 只是**内部**重连，不自建 TCP
-  连接；bot 停在 IDLE 期间连接会因模拟器重启 / adb server 被回收而失效，
-  此时点开始只会撞一串 `AdbControlUnitMgr::connect failed`。
-  「关机」按钮加了二次确认 —— 关掉后 WebUI 什么都干不了，2026-09-22 早上被误点过一次
-- **达标自动关模拟器**（2026-09-21，**默认改开** 2026-09-26 用户口径：凌晨无人值守
-  跑完就该关机，WebUI 可取消勾选）：头部「达标关模拟器」开关
-  （`STATE.close_mumu_on_goal`）。总分达 `score_target` 时照旧暂停，开关打开则再关
-  MuMu；每次运行只做一次（`_goal_closed`），且只有「当前分 < 目标」才复位，
-  避免恢复运行后立刻又关一次
-- **暂停态与「继续」按钮**（2026-09-26）：`/api/pause` 手动暂停原先被主循环写成
-  `STOPPED`（与进程真退出同状态，托盘/前端没法区分），现与达标自动暂停统一为
-  `PAUSED`；前端 PAUSED 时「开始」键文案变**「继续」**（点击即 `/api/start`
-  同场次恢复，计分/连胜不重置），「停止」键在 PAUSED 态也可见（暂停态可直接结束进程）
-- **界面主题**（2026-09-21）：6 套（午夜蓝 / 极光绿 / 熔岩橙 / 霓虹紫 / 樱花白 / 素纸米），
-  头部「◑ 主题」切换，存 localStorage，首屏由 `<head>` 内脚本预置 `data-theme` 防闪。
-  配色全部走 `[data-theme]` 的 CSS 变量（加主题 = 加一个变量块，不动选择器）；
-  **canvas 不吃 CSS 变量**，Chart.js 由 `applyChartTheme()` 读变量后 `update()`
-
-### 6.8 首场战斗 AUTO/3x 自检（ensure_battle_auto，2026-09-06）
-
-用户指路：战斗界面底部中间有**脑子图标**，点一下=自动战斗；开启后上方出现**速度泡**，
-点一下升一档（1x→2x→3x）。两项设置游戏内**跨场持久**，故每进程只在首场检查一次
-（`_battle_auto_checked`，fight_flow 点 FIGHT 后、wait_battle_end 前触发）。
-
-- 时机：点 FIGHT 后 `sleep 1.8s`——开场介绍画面 ~2.5s 人物不动，是唯一安全点击窗口
-- 脑子亮灭：`(620,670)-(660,710)` HSV V 均值，亮 ~101 / 灭 ~49，阈值 75；灭则先点脑子
-- 速度泡：三模板匹配 @`(600,565,690,645)` th=0.85，非 3x 则点 `(640,605)` 升档并复验
-- 失败只告警不停跑；识别不到泡但脑子亮 → 记"跳过提速"
-
-### 6.9 场景导航（tools/pf_scene.py，2026-09-06）
-
-把"MuMu→游戏→大厅→PF hub"冷启动链脚本化，复用 PfBot 的 controller/tasker/match_tpl/ocr：
-
-- `goto`：ensure_mumu（MuMuManager 轮询 `player_state=start_finished`，**必须先于
-  PfScene 构建**，否则 adb 连接先炸）→ monkey 起 `com.autumn.skullgirls` → wait_hall → hub
-- `explore`：左滑逐卡读居中场地的（名称，SCORE），报告 **score=0 = 新开的场**，
-  结束恢复初始居中卡
-- `center <关键词>`：按名把场地转到居中——**bot 只点居中卡的 PLAY!，居中错=跑错场**
-- wait_hall 逃逸链：促销弹窗 X（scene_popup_x）→ 结算残局（result_continue /
-  pf_continue_btn）→ 房子 `(115,37)` 回大厅 → 全屏搜 hall_prize_fights（吸附位不固定）
-- 场地名 OCR 噪声大（EYE→"E OF IH"）：difflib 对 `KNOWN_TITLES` 模糊匹配（cutoff 0.55）
-- 每日例行：`python tools/pf_scene.py explore --skip-mumu` → center 目标场 → 开跑
-
-### 6.10 定时调度（tools/pf_schedule.py，实验版）
-
-场次绑定"怎么跑"（sessions.json），schedule 绑定"什么时候跑"（`debug/pf/schedule.json`）：
-
-```json
-{"jobs": [{"name": "凌晨跑元素场", "time": "01:00", "days": "daily",
-   "action": "run_pf",
-   "params": {"arena": "EYE", "parent_session": "s1788366023203", "restart": true}},
-  {"name": "早上5点停(仅09-06)", "time": "05:00", "date": "2026-09-06",
-   "action": "stop_pf"}]}
-```
-
-- 一次性任务：加 `"date": "YYYY-MM-DD"` 仅该日触发，过后自然失效（job 条目留存不用删）
-- action：`run_pf`（全链：restart=true 时先停旧 bot → MuMu → 导航 → center →
-  parent_session 经 pf_store 建子场（bot 停着时独占写安全；session_id 直用亦可）→
-  Popen 起 pf_bot → /api/start → 验证 RUNNING）/ `stop_pf` / `explore`
-- 20s 扫描；错过窗口（宿主睡眠）`grace_minutes`（默认 90）内补跑；触发记录
-  `schedule_state.json` 按天去重，**先记账再执行**防长任务重触发；日志 `schedule.log`
-- bot 子进程带 `CREATE_BREAKAWAY_FROM_JOB`：调度器被整树强杀时 bot 不陪葬。
-  **job 拒绝 breakaway 时不再降级普通 Popen**（2026-09-26 凌晨事故：workbuddy 自动化
-  宿主的作业对象禁止 breakaway，跑完 `run_new_pf` 收尾清树时，孤儿 pf_bot 在
-  01:07:14 被整树无声带走，MuMu 同殁）—— 改走 `pf_env.spawn_detached()`：
-  WMI `Win32_Process.Create` 由 WmiPrvSE 代生，进程天然在调用方作业对象之外；
-  stdout 经 cmd `>>` 追加进 bot_stdout.log，env 用 `set` 注入，就绪判定走 HTTP 轮询
-  （拿不到句柄，强杀按端口反查 pid）。`pf_env.mumu_start` 同步改走该通道
-  （该实例上还挂着用户另一个 MAA 自启，更不能陪葬），WMI 不可用时回退 Popen
-- 用法：`python tools/pf_schedule.py` 常驻 / `--fire 任务名` 立即触发测试 / `--list`
-- 现状：2026-09-06 05:00 一次性任务「早上5点停」准点触发成功（stop_pf 6s 进程干净退出，
-  schedule.log），事后 jobs 已清空；调度器需常驻进程（anaconda python），
-  **不会开机自启**，重启后手动拉起
-
----
-
-## 6.11 JJC 日程数据层 + 场次×规则版本管理（tools/jjc_store.py，2026-09-15）
-
-把 sgmnow 的「当天台上开的到底是谁」拉进来，并给「场次配置」建立可追溯的版本链。
-两件事都在同一个模块里，但职责是分开的。
-
-### 6.11.1 数据源
-
-[Krazete/sgmnow](https://krazete.github.io/sgmnow/) 只是个导航页，真数据在它背后的
-**SGM Score Cutoffs 表** 的 `now` 页 A 列，走 gviz CSV 导出即可公开读取：
-
-```
-https://docs.google.com/spreadsheets/d/<SHEET_ID>/gviz/tq?sheet=now&tqx=out:csv&range=A1:A90
-```
-
-A 列是一个紧凑的「当前活动」快照，八个段落按顺序排列：
-
-| 标签（段落首行） | 下一行=名字 | 再下一行=开放旗标 |
+| ID | 条件／对象 | 动作／边界 |
 |---|---|---|
-| `Current Daily Events:` | `Filia;Marie;Squigly`（分号分隔） | — |
-| `Current Rift Element:` | `Dark` | `1` |
-| `Current Character PF:` | `Eliza` | `1` |
-| `Last Elemental PF:` | `Light` | `0` |
-| `Last Medici PF:` | `Shakedown - Hemofilia` | `0` |
-| `SMYM PF:` | `Inactive` | `0` |
-| `Seeing Stars PF:` | `Inactive` | `0` |
-| `Current Monthly PF:` | `A Class of Ones Own` | `1` |
+| 6.0 | 进程启动／api/start | IDLE等待／开始或同场恢复；必要时起MuMu＋adb connect |
+| 6.0 | api/pause／api/stop | PAUSED保进程／quit=True退出、WebUI关闭 |
+| 6.0 | 达标／ERROR | PAUSED、可关MuMu／running=False、人工检查后可重开 |
+| 6.0 | IDLE／暂停 | 仍约每2s清弹窗；不代表设备无动作 |
+| 6.1 | step优先级 | 弹窗X→服务器错误→详情→hub→防守队→REFRESH→编队→VS→结算→未知 |
+| 6.1 | KEEP STREAK? | 关X；不点CONFIRM／WATCH AD |
+| 6.1 | 未知界面 | 等待→交替返回／右上X；单按左上可能开OPTIONS |
+| 6.1 | 防守队失败 | 本轮不重复处理；检查截图 |
+| 6.2 | 有火框／无火框 | 倍率降序、未知倍率排后／战力升序 |
+| 6.2 | OCR战力<100 | 启发式×1000；可能误判真实低值 |
+| 6.3 | 首次编队 | 清残留筛选、按喜爱归位；候选列归零 |
+| 6.3 | 规则不满足 | FIGHT复验、逐槽补人，最多三个槽 |
+| 6.3 | 已保障规则后缺能量 | 槽1先补规则角色；槽2／3纯能量替换 |
+| 6.3 | 拖拽失败／池空 | 复读、归零＋微调、最多30页／返回失败 |
+| 6.4 | 规则格式 | null或{"type":"element","value":"wind"}；pf_domain规范化 |
+| 6.4 | 自动规则／人工class | resolve_arena()仅收element／WebUI可配class，但judge_rule()恒False |
+| 6.4 | FIGHT亮色≥15% | 当前合规代理信号；灰色也可能缺能量，非元素违规的独立证据 |
+| 6.4 | 筛选 | 清空→规则＋喜爱→关闭验证→元素复验→拖入→恢复喜爱 |
+| 6.4 | 无规则 | 跳过规则判断；首次筛选归位仍执行 |
+| 6.5 | 采样 | 对手页、fight_no锚定；零收益保留；同场续跑保留基线 |
+| 6.5 | CSV | time,fight_no,score,delta,streak,session；兼容解析：pf_storage |
+| 6.5 | 活跃收益率 | 相邻采样间隔≤3分钟；tools/static/webui.js |
+| 6.5a | 场次／全局配置 | 名称、规则、目标分、能量、休息／喜爱开关 |
+| 6.5a | 子场／删除父场 | 继承配置、独立采样／子场保留转顶级 |
+| 6.5a | 运行中／default | 限制切换、编辑、删除／default不可删 |
+| 6.5a | 删除场次 | 内存曲线移除；CSV、账本保留；历史每场内存最多3000点 |
+| 6.6 | 拖拽／滚动／筛选 | 落点驻留350ms／分段停顿／驻留点击＋关闭复验 |
+| 6.7 | 前端／API | tools/static/webui.*、themes.*／pf_webui._Handler |
+| 6.7 | MuMu动作／关机 | 后台线程＋锁、HTTP返回非完成信号／MuMuManager shutdown |
+| 6.7 | 状态探测 | player_state／state／is_android_started；失败unknown |
+| 6.7 | 达标关机 | 默认开、可取消；_goal_closed防重复 |
+| 6.7 | 每日任务 | 保存编排；未接入执行 |
+| 6.8 | AUTO／3x | 每实例首战检查；亮度阈值75、速度模板0.85；失败告警继续 |
+| 6.9 | goto／explore／center | 冷启动导航／扫卡并恢复居中／目标居中；bot只点居中PLAY! |
+| 6.9 | 标题／无SCORE行 | 常规＋备用ROI、候选择优／已知标题命中可判0 |
+| 6.9 | score=0／外部导航 | 新场候选，非确证／先停bot；暂停仍清弹窗 |
+| 6.10 | schedule.json／ACTIONS | 配置与完整动作列表：pf_schedule.py |
+| 6.10 | 扫描／去重 | 20s、默认宽限90分钟／按日先记触发再执行；失败不保证重试 |
+| 6.10 | 串行 | _ACTION_LOCK仅单进程；取锁后重查状态；不保证FIFO |
+| 6.10 | --fire／--action | 等完成／硬超时；_timeout默认480s |
+| 6.10 | bot启动 | breakaway被拒→WMI；HTTP核验svc；占端口报错、不自动换端口 |
+| 6.10 | MuMu启动 | 优先WMI；普通Popen回退仍有宿主连带终止风险 |
 
-### 6.11.2 三个必须知道的数据坑
+## 6.11 JJC 日程与配置版本
 
-1. **行号不固定。** gviz `range=a:a` 会跳过空单元格，Krazete 又随时改版，实测两次解析
-   行号能对得上，但**下一版不一定**。所以一律用标签正则定位（`re.search`），绝不写死
-   行号 —— 线上 sgmnow/index.js 也是这么干的。找不到某个条目就报 SourceError，
-   **不返回半成品**（宁可给不出，也不给一条看起来合理的名字）。
-2. **`Loading...` 和 `Inactive` 是两种东西，别混为一谈。** `Inactive` 是「本类 PF 现在
-   没开」的正常回答。而 `Loading...` 是公式没算完，**但它可能长期驻留在表里**：实测它
-   常驻在裂缝旗标下方那个杂单元格里，永远不动。所以 volatile 判定只针对**名字位**，
-   不能全局扫。(第一版就是全局扫的，结果每次抓取都判定"仍在计算"，直接废掉。)
-3. **游戏日 ≠ 本机日期。** SGM 每日 reset 在 Pacific 10:00（sgmnow 的 resetOffset：
-   夏令时 61200000ms / 标准时 64800000ms），折合北京时间凌晨 1-2 点。本机日历日往前
-   推不得 —— 你凌晨一点开跑，本机已经 15 号，但游戏日还是 14 号。`sgm_day()` 把 Pacific
-   墙上时间往前推 10h 再取日期。
-   Windows 常缺 `tzdata`，`zoneinfo` 会失败，代码里有**手算美国夏令时**的兜底
-   （2007 年后规则：3 月第二个周日 02:00 起，11 月第一个周日 02:00 止）。
-
-### 6.11.3 每日快照
-
-`debug/pf/jjc/snapshots/<YYYY-MM-DD>.json`，一个游戏日一份：
-
-- **携带 raw 证据**：`raw_rows` 存原始 A 列，任何 parse 结论都能回查到原始单元格，
-  不必信我写的解析器。
-- **内容指纹 fp**：`daily_events + entries` 的 sha1 前 12 位。
-- **`revision` vs `fetches`（别搞混）**：`revision` 只在**内容变化**时递增，`fetches`
-  记录抓取次数。同一天重复抓十次，revision 仍是 1 —— 否则版本号就退化成计数器，
-  失去"这天变过"的信号意义。
-- 每次抓取追加一条 `revisions[]`（ts/fp/last_edit），构成当日变更审计线索。
-
-### 6.11.4 场次 × 规则 版本账本
-
-`debug/pf/jjc/versions.json`。回答的是：**某一天把某一场的配置改成了什么、当天台上
-是谁**。所以每条版本记录都带上当时的 JJC 快照引用 `{day, fp, char, elem, ...}`。
-
-记账规则（pf_store.create / create_child / update / delete 四处挂钩）：
-
-- 只记**配置**：`name / rule / parent / energy_cost / score_target / rest_every /
-  rest_minutes`。**`score` 是运行状态，不是配置** —— 每场采样都变的东西不进版本，
-  否则账本会被扫成废纸。
-- **只有指纹真的变了才写记录**。已验证：连续两次保存同一个 `wind` 规则 → 第二次返回
-  None，不产生版本（WebUI 拖一次滑块就得一条版本的账本没人会看）。
-- 历史场次在启动时补 v1 基线（`op=import`），老数据同样可追溯，不是"新功能之后才有版本"。
-- 删除场次**保留**账本并追加 `op=delete` 条目 —— 删了配置不代表那次改动没发生过。
-- 记账失败只告警不阻断主流程（拖滑块写文件失败不该让 bot 停摆）。
-
-### 6.11.5 用法
-
-```bash
-python tools/jjc_store.py fetch              # 立即抓一次并落盘
-python tools/jjc_store.py show               # 显示当天快照（没有就抓）
-python tools/jjc_store.py days               # 列出已有快照日
-python tools/jjc_store.py diff 2026-09-14    # 某天 -> 最新，看变了什么
-python tools/jjc_store.py versions [sid]     # 场次的规则版本历史
-```
-
-WebUI **JJC 日程** 页签：今日 daily 名单 chips + 各类 PF 卡片（名字/开放徽章/元素与
-角色图标走 `/sgm/` 路由）+ 版本账本时间线（版本号/变更字段/指纹/当日 JJC）。
-
-- **`GET /api/jjc` 不触网**（`peek()` 读本地快照）—— 切页签发外部请求是坏设计，那样
-  断网时页面会卡住。只有显式点「刷新快照」才走 `POST /api/jjc/refresh`。
-- 快照不是当天时前端标 **stale**，明说是历史数据，不冒充今日实况。
-
----
-
-## 6.12 PF 轮换规律（网上查证，2026-09-16）
-
-凌晨路线原本靠「扫 hub 找 score=0」判断新场，是视觉盲扫。**PF 排期其实是周期性的、
-可离线推算的**，盲扫应该降级为「定向确认」。
-
-### 6.12.1 各类别的周期（A 级 —— 我自己用日期算术核验）
-
-核验方法：从 SGM Score Cutoffs 表 `now` 页各区块取**第 2 列日期**（那是历史场次日期），
-看星期几与相邻间隔。**下表不依赖任何人的说法，是算出来的**：
-
-| 类别 | 星期 | 间隔 | 近 10 个数据点 |
-|---|---|---|---|
-| 角色 PF (Character) | 周一 | **63 天**（9 周）回到同一角色 | 24-12-23 → 23-06-15 |
-| 元素 PF (Elemental) | 周六 | **35 天**（5 周） | 24-12-21 → 24-02-10 |
-| Medici PF (金币) | 周三 | **14 天**（2 周） | 25-01-15 → 24-08-21 |
-| SMYM PF (招式) | 周六 | **14 天**（2 周） | 25-01-18 → 24-09-14 |
-| Seeing Stars (星) | 周五 | **7 天**（每周） | 25-01-17 → 24-11-22 |
-| 月常 PF (Monthly) | — | 每月 1 号 | 24-09-01, 23-09-01 … |
-
-注：2023 年那两个角色 PF 日期（23-06-15 / 23-10-12）是**周四**，间隔 59/60 天 ——
-说明 Mon–Wed 这套排法在当时还没成型，只有 2024 年起的点才是整齐的 63 天。
-另外官方 5.4.1 补丁**取消了周末的 Medici 场**，只保留周三的（官方论坛公告）。
-
-### 6.12.2 角色 PF 的九对循环（B 级 —— 社区来源）
-
-来源：官方论坛帖 [Prize Fight Calendar](https://forum.skullgirlsmobile.com/threads/prize-fight-calendar.22233)
-（BallotBoxer 2024-06-06 首发；Lunix Vandal 做的周表）。
-
-18 个角色固定成 **9 对**，每周换一对，一周内两个角色各占半周：
-
-```
-Double/Squigly → Valentine/Fukua → Eliza/Marie → Annie/Big Band
-→ Cerebella/Robo-Fortune → Ms. Fortune/Umbrella → Filia/Parasoul
-→ Beowulf/Peacock → Painwheel/Black Dahlia → (回到第一对)
-```
-
-一对之内：**周一–周三 = 前一个，周四–周六 = 后一个**。
-
-**这是唯一一处社区说法被我方数据独立证实的地方**：2026-09-14 是周一，
-距 2024-12-23（社区表记 Eliza/Marie 那一周）正好 **630 天 = 63×10 周**；
-而 09-15 快照的 `Current Character PF` 正是 **Eliza**。两条独立线索对上。
-
-**2026-09-18 二次实证（A 级）**：游戏日 09-17（周四）快照 char 由 Eliza → Marie，
-实机轮播新出现 `DEATH METTLE`（BRONZE，无 SCORE 行，剩余 02D:23H），
-卡面立绘女仆 Marie ⇒ **「周四–周六 = 后一个」成立，且 Marie 的角色场名 = DEATH METTLE**
-（截图 `debug/pf/run/0918_010435/0019_scene.jpg`；已入 arena_rules.json，rule=null）。
-半周切换这条从 B 级升为「B 级 + 两次独立实测」。
-
-**2026-09-22 三次实证（游戏日 09-21 周一）**：上周（09-14）= Eliza/Marie 对，
-按 9 对循环本周应为 **Annie/Big Band**、周一-三 = 前一个 = Annie ——
-快照 `Current Character PF` 当日由 Marie(收) → **Annie(开)**，命中。
-实机同步扫到新场 `INFINITY AND BEYOND`（BRONZE，无 SCORE 行，剩 02D:23H:55M，
-立绘绿发星饰 = Annie）⇒ **Annie 的角色场名 = INFINITY AND BEYOND**，
-已入 arena_rules.json（rule=null，parent=角色周场，A 级）。
-按口径只做记录对齐，9 对循环本身维持 B 级不升级。
-
-### 6.12.3 元素 PF 顺序（B 级）
-
-社区表：**Water → Fire → Wind → Light → Dark**，5 周一轮。与快照
-`Last Elemental PF: Light`（24-12-21）一致（社区的这张表在 24-12-16 那周标的正是 Light）。
-
-### 6.12.4 四条限制 —— 比上面的规律更重要
-
-1. **靠「每天重新对锚」，不要靠死算。** 所有周期都锚在 2024 年的数据上；
-   官方**只要加一个新角色，9 对循环的长度就变了**。唯一可靠的锚是快照里的
-   `Current Character PF` / `Current Monthly PF`（A 级）—— 每天 fetch 一次自动对齐。
-2. **月场有两个，别只认一张（2026-09-16 用户确认，两者都是最近才更新的）**：
-   **角色月场 = `A CLASS OF ONE'S OWN`**（parent `default`）、
-   **元素月场 = `AGAINST THE WIND`**（parent `s1788366023203`，本月 wind）。
-   09-15 实测两张卡剩余都是 `14D:23H` → 同为月量级。
-   ⚠️ 快照只把前者记为 `Current Monthly PF`；**元素月场不在快照的 6 类里** ——
-   它的近亲是 `Last Elemental PF`，但那是**周末两日场**，不是月场，别混。
-   另外 8.7 / 8.8 补丁还加了**季节性 PF**（Hot Mess、Sink or Swim），
-   官方原话「和常规排期并行、额外存在」，同样不在快照覆盖内。
-3. **「名字 → 类别」的映射仍未建立（C 级）。** `arena_rules.json` 里
-   `NIGHT'S GHOUL` / `SEEING STARS` / `ROSHAMBOH` / `BELLE OF THE BRAWL` /
-   `TRIAL BY FIRE` / `THE BIG THAW` / `GOLD RUSH` 至今只是猜的。
-   轮换规律只能告诉你**某天该有哪些类别在台上**，
-   把具体名字绑到类别上仍然只能靠实机看着确认 —— 别拿 6.12.2 的表去反推名字。
-4. **09-15「3 张卡 vs 快照 2 类开放」的疑点已结清 —— 而且我原来的判断是错的。**
-   三张卡 = 角色场 `BLOOD SPORT`（艳后 Eliza，角色场无规则）+ 月场两张（见 6.12.4.2）。
-   我上一版把它当成「对不上快照的季节性 PF」，属**误判**：真相是
-   `DIAMOND` 是难度层级而不是名字的一部分，我把标题看错了（见 6.12.6）。
-
-### 6.12.5 建议的判据顺序
-
-判「今天有没有新 PF」应当：
-
-1. `jjc_store.py fetch` → 看 `Current Character PF` / `Current Monthly PF` 变了没（A 级）；
-2. 变了 → 进 hub **定向**确认那个类别，再建子场次；
-3. 没变 → 大概率不用扫全轮播；
-4. hub 上出现快照里没有的类别 → 先排掉 6.12.4.2 的那两个月场，
-   再按季节性 PF 处理，并如实记「未映射」。
-
-### 6.12.6 命名约定：DIAMOND 是难度层级，不是名字（A 级，裁图实证）
-
-卡片的名字框 `ROI_CARD_TITLE=(500,290,780,378)` 会**同时框到难度层级的小字和
-场地名的大字**。用 `debug/pf/hub_scan/02.png` 裁出来看得很清楚：一张卡上是
-小字 `DIAMOND` + 大字 `BLOOD SPORT`。所以 OCR 会吐出 `DIAMOND BLOOD SPORT`
-这种串；历史条目 `DIAMOND NIGHT'S GHOUL` 就是这么来的 —— **DIAMOND 是层级**，
-`BLOOD SPORT` 才是艳后 Eliza 的角色场名（用户 2026-09-16 确认；注意名字里的
-角色**不构成约束**，角色场无规则 —— 见 §6.12.7）。
-
-**不能靠改 ROI 来躲**：`A CLASS OF ONE'S OWN` 是两行名、占满整个框，
-把 y 起点往下抬会把它切掉。所以在**代码**里解：
-
-- `pf_scene.read_center_card()` 现在把「原串 / 去层级前缀串」都当候选，
-  谁跟 `KNOWN_TITLES` 更接近用谁；
-- **不能无脑删前缀** —— `GOLD RUSH` 本身就以 `GOLD` 开头。择优法对它安全
-  （离线自测：`GOLDRUSH` → `GOLD RUSH`，没有变成 `RUSH`）；
-- 命中去前缀候选时会打一条 warn 记录 OCR 原文，便于回查。
-
-
-### 6.12.7 限定只有「元素」一类 —— 角色场不限定角色（A 级，用户 2026-09-16 确认）
-
-**游戏侧只有元素 PF 限定队伍元素。** 角色 PF、金币 PF、星助手 PF、月场
-**都不限定任何角色或类别** —— 带什么队都能打。
-
-佐证不需要外部资料，看自己的 `debug/pf/sessions.json` 就够：全场次里只有
-**两个**非 null 规则，且都是 `element`
-
-| 场次 | rule |
+| 入口 | 触网／缓存行为 |
 |---|---|
-| `202609元素月场` (s1788366023203) | `{"element":"wind"}` |
-| `光元素场` (s1789262584700) | `{"element":"light"}` |
-| `202609角色月场` (default) | `null` |
-| `角色周场` (s1788423741550) **及全部 09-03/04/08/11/15 子场次** | `null` |
-| `金币场` (s1788423643718) **及全部子场次** | `null` |
+| GET /api/jjc、peek()、配置记账 | 不触网；可引用旧快照，核对day／stale |
+| POST /api/jjc/refresh、CLI fetch | 显式触网 |
+| CLI show、today() | 缺当天缓存时抓取；失败可返回旧快照＋stale |
 
-**这就推翻了我之前的一个提法**：我在 `arena_rules.json` 里把 `BLOOD SPORT`
-写成 kind `角色·艳后 Eliza`，读起来像「该场限定 Eliza」。事实上「艳后 Eliza」
-只是**这个名字的由来**，不构成任何约束 —— 已改成 `角色周场(艳后 Eliza)`。
+| 数据规则 | 实现／限制 |
+|---|---|
+| 来源／定位 | Score Cutoffs的now页；SOURCE_URL；按标签正则；必需PF标签缺失报错 |
+| Loading／Inactive | 名字位计算中／正常未活动；严格重试后可留空＋volatile |
+| 游戏日 | Pacific 10:00；sgm_day()；tzdata缺失用DST算法兜底 |
+| raw_rows／revisions[] | 当前抓取原行／各次ts、fp、last_edit；非完整旧原文归档 |
+| revision／fetches | 内容变化次数／抓取次数 |
+| 配置账本 | CFG_FIELDS变化才记；运行分数不入账 |
+| 导入／删除／失败 | import基线／delete保留历史／告警不阻断主流程 |
 
-**两个直接推论：**
+## 6.12 PF 轮换规律（历史观察，2026-09-16起）
 
-1. **名字绑错的代价是不对称的。** 绑错角色名 → 零后果（角色场无规则，
-   只是日志难读、父场次可能挑错）。但把元素场误判成非元素场（或反过来）→
-   该过滤的没过滤 / 不该过滤的瞎过滤，**直接影响能源消耗与队伍构成**。
-   ⇒ 所以 `arena_rules.json` 里 `依据` 的分量要按这个不对称来读：
-   `TRIAL BY FIRE` / `THE BIG THAW` / `EYE OF THE STORM` 那几条是 B 级语义猜的，
-   **它们才是真正要实机确认的**；而 7 个 C 级名字里只要不是元素场，猜错无所谓。
-2. **`{"type":"class"}` 不但没数据，连游戏依据都没有。** `pf_bot.judge_rule()`
-   第 438 行对 class 是 `return False` 的**桩**（恒判不满足），WebUI 那 12 个
-   金圈按钮点下去会让 bot **每场战斗都进筛选替换循环**，空烧能量且永远满足不了。
-   文档 §6.4 里「类别规则 sgm 无数据」这句现在要再加半句：**不只是没数据，
-   是游戏里压根没这条限制。别自动绑。**
-
-**因此代码里加了一道硬约束**（`pf_schedule.resolve_arena`）：
-自动绑定路径**只接受 element 规则**，其它类型一律丢弃 + 打 warn；
-人工在 WebUI 上设的规则走 `sessions.json`，**不经过这个校验、不受限制**。
-离线验证过：临时注入 `{"type":"class","value":"c7"}` 会被拦成 `rule=None`，
-`element/wind` 正常通过。
-
-### 6.12.8 金币场（Medici PF）排期：每周三，Jinx / Hemofilia 交替（A 级 —— 2026-09-16 实测命中）
-
-`now` 页只能看到「最近一次」，但同一份表的 **`medici` 页**是**预填到未来**的
-（实测拉到 2027-11），而且带 `Type` 列 = 场地名。2026 年 8–10 月窗口：
-
-```
-2026-08-05 Wed  Shakedown - Jinx        2026-09-16 Wed  Shakedown - Jinx
-2026-08-12 Wed  Shakedown - Hemofilia   2026-09-23 Wed  Shakedown - Hemofilia
-2026-08-19 Wed  Shakedown - Jinx        2026-09-30 Wed  Shakedown - Jinx
-2026-08-26 Wed  Shakedown - Hemofilia
-2026-09-02 Wed  Shakedown - Jinx
-2026-09-09 Wed  Shakedown - Hemofilia
-```
-
-**全部落在周三，无一例外**，且 Jinx / Hemofilia 严格交替。
-
-与本地实测兼容：本地 `sessions.json` 的金币子场次是 09-05 / 09-10 / 09-12 / 09-13
-（本机日期，凌晨跑 → 游戏日各减一天）。它们不是四场，而是**两场各自跨了几天**
-（09-02 那场 → 09-05；09-09 那场 → 09-10/12/13），和「每周三开一场、持续数天」吻合。
-
-**2026-09-16 实测命中，A 级。** Pacific 10:00 reset 后 fetch：游戏日 `2026-09-16`、
-`action=new`、`entries.medi = {active: true, name: "Shakedown - Jinx", title: "Current Medici PF:"}`，
-且与 09-15 的 diff 为 `Shakedown - Hemofilia (未开) → Shakedown - Jinx (开放)`（源表确实刷新）。
-原判据「明早 fetch 后看 `Current Medici PF` 是不是 `Shakedown - Jinx`」成立，
-等级由 B 升 A。
-
-**2026-09-23 第二次实测命中（维持 A 级）。** 游戏日 `2026-09-23`（周三），fetch 一次命中
-（`source.last_edit = 2026-09-23T00:00:38`），`entries.medi = {active: true, name: "Shakedown - Hemofilia"}`，
-与 09-22 的 diff 为 `Shakedown - Jinx (未开) → Shakedown - Hemofilia (开放)`；
-`medici` 预填页 `09-23-26` 一行给出的正是 `Shakedown - Hemofilia`，三者一致 → 交替规律再次成立。
-下一步可验点：**2026-09-30 周三应为 `Shakedown - Jinx`**。
-
-⚠️ 另一处坑：`character2` / `element` 两页在同一窗口内**完全无数据**（最后条目停在
-2024 年底 / 2025 年初），角色场与元素场**不能**用这张表预知，只能靠 `now` 页 + 轮换规律。
-
-## 6.13 远程访问（Tailscale serve，2026-09-16 加）
-
-本机 tailnet 域名 `https://he-pc.tail016ba5.ts.net`，本机 tailnet IP `100.90.189.32`。
-一个 HTTPS 端口映射一个后端：
-
-| 对外 | 后端 | 服务 |
+| ID | 旧观察／来源 | 范围／限制 |
 |---|---|---|
-| `:443` | `127.0.0.1:8788` | TailShare 分享站 |
-| `:8443` | `127.0.0.1:8791` | Message-cli |
-| **`:8444`** | **`127.0.0.1:8790`** | **PF bot WebUI（本项目的）** |
+| 6.12.1 | 角色同名63天、周一换对；元素35天、周六 | 2024年后日期样本；2023角色样本不符 |
+| 6.12.1 | Medici周三、SMYM周六，同类型14天；Stars周五、Monthly每月1日 | 旧表观察；本次未抓取 |
+| 6.12.2 | 角色九对循环；前者周一–三、后者周四–六 | [社区日历](https://forum.skullgirlsmobile.com/threads/prize-fight-calendar.22233)；整轮未验证 |
+| 6.12.2 | 游戏日2026-09-17／21／24：Marie／Annie／BigBand | 对应日期支持；截图引用见arena_rules.json |
+| 6.12.3 | Water→Fire→Wind→Light→Dark | 社区候选；整轮未验证 |
+| 6.12.4 | 快照覆盖不完整；2026-09含角色月场＋元素月场 | 不能按快照数量推hub卡数 |
+| 6.12.4 | 名字≠类别／规则；旧A／B／C混用不同证据 | 查逐条依据；错父场可能继承错配置 |
+| 6.12.5 | 显式刷新→核对day／stale／volatile→比较→hub确认→核对配置→建子场 | 快照未变≠无新活动；未映射需确认 |
+| 6.12.6 | DIAMOND等混入标题；下移ROI截断两行名、硬删GOLD破坏GOLD RUSH | read_center_card()保留原串、候选择优 |
+| 6.12.7 | 用户约定2026-09-16／20：元素筛选、防守左1对应元素 | 角色名不生成class规则；元素月场可有element |
+| 6.12.8 | medici预填表2026-08–10：周三Jinx／Hemofilia交替 | 预填非开放保证；09-16／23两次快照支持 |
+| 6.12.8 | character2／element页当时停更 | 不推导当前仍未更新 |
 
-**别的机子怎么访问，有两条路**（2026-09-19 实测均 200）：
+~~~text
+角色旧候选循环：
+Double/Squigly → Valentine/Fukua → Eliza/Marie → Annie/Big Band
+→ Cerebella/Robo-Fortune → Ms.Fortune/Umbrella → Filia/Parasoul
+→ Beowulf/Peacock → Painwheel/BlackDahlia → 循环
+~~~
 
-| 路径 | 地址 | 说明 |
+| 证据入口 | 内容 |
+|---|---|
+| [arena_rules.json](tools/data/arena_rules.json) | 场名映射、规则、父场、逐条依据 |
+| git show 3689d56:PF_BOT.md | 原日期推算、用户口径、快照／截图路径 |
+
+## 6.13 远程访问
+
+| 路径／症状 | 检查 |
+|---|---|
+| HTTPS代理／HTTP直连 | tailnet主机名＋serve端口／设备IP＋WEBUI_PORT |
+| 502／403 | bot与后端端口／_gate()拒绝原因：IP、Host、POST Origin |
+| Host允许 | IP、localhost、无点主机名、.local／.lan／.ts.net；不等于身份认证 |
+| 本机配置 | 主机名、IP、端口以本机为准；下列默认后端为8790 |
+| 原§6.13.1 | 2026-09-17代理域名被拒：当前允许.ts.net；改校验后重启 |
+| 原§6.13.1 | 2026-09-19：IP＋serve端口400；区别于IP＋后端端口，非通则 |
+
+~~~bash
+tailscale serve --https=8444 --bg http://127.0.0.1:8790
+tailscale serve status
+tailscale serve --https=8444 off
+~~~
+
+## 7. 实测记录（历史；本次未重跑）
+
+| 日期 | 原记录结果 | 范围 |
 |---|---|---|
-| 域名（经 serve，HTTPS） | `https://he-pc.tail016ba5.ts.net:8444` | 推荐。走 MagicDNS，IP 变了也不用改 |
-| **IP 直连（绕过 serve，HTTP）** | `http://100.90.189.32:8790` | 8790 监听在 `0.0.0.0`，直连监听端口即可，**不走 serve**；pfwidget 默认就是这个 |
+| 2026-09-02 | 12场11胜；18次拖拽成功；倍率离线9/9 | 当时样本，非长期成功率 |
+| 2026-09-03（原§7.1） | 风规则32+场、连胜17+；筛选／阈值／规则槽修正 | 当时规则场 |
+| 2026-09-06（原§7.2） | explore五卡；热启动约35s；02:20调度触发 | 当时场景，非冷启动性能保证 |
+| 2026-09-06 05:00 | 一次stop_pf完成 | 不代表当前jobs为空 |
+| 2026-09-24 | WebUI转义修复 | [事故证据](docs/incident-2026-09-24-webui-js-dead.md) |
 
-两者都必须满足的前提：**对方设备在同一个 tailnet 且在线**（`serve status` 显示
-`tailnet only`，公网不可达 —— 那是 funnel 的事，没开）。设备离线时任何地址都连不上，
-先 `tailscale status` 看它是不是 online。
+## 8. 踩坑实录（按触发条件检索）
 
-加端口：
-
-```bash
-"C:/Program Files/Tailscale/tailscale.exe" serve --https=8444 --bg http://127.0.0.1:8790
-"C:/Program Files/Tailscale/tailscale.exe" serve status           # 核对
-"C:/Program Files/Tailscale/tailscale.exe" serve --https=8444 off # 撤销
-```
-
-⚠️ 8790 只有 bot 起来时才有后端；没起时访问 `:8444` 会返回 **502**（通道是通的），
-这不是配置坏了。
-
-### 6.13.1 域名访问返回 `403 Host 头不允许` —— 不是 tailscale 的锅
-
-**现象**：`:8444` 配好、后端也确认 RUNNING，浏览器打开却只回一行 `Host 头不允许`。
-
-**根因在本项目，不在 tailscale。** `tools/pf_webui.py` 的 `_host_ok()` 是一道
-**DNS-rebinding 防护**（见该文件头第 25 行）：白名单只放行
-`localhost` / IP 字面量 / 无点主机名 / `.local`·`.lan`；
-`he-pc.tail016ba5.ts.net` 带点、又不是那两个后缀 → 被当成公网域名拒绝。
-bot 日志里会同时出现形如 `已拒绝 GET / <- 127.0.0.1 (Host 头不允许)` 的行
-（源 IP 显示 `127.0.0.1`，因为 tailscale serve 就在本机转发）。
-
-**修法（2026-09-17 已改）**：把 `.ts.net` 并入 `_host_ok()` 的 `TAILNET_SUFFIXES`。
-理由：`.ts.net` 是 Tailscale MagicDNS 的固定后缀，**只有 tailnet 成员能解析、也只在
-tailnet 内可达**，威胁模型与 `.local` / `.lan` 同一档，不属于「公网域名」。
-离线验证：`he-pc.tail016ba5.ts.net:8444` 放行，`evil.com` 仍拒绝。
-
-三条**走不通**的绕路，别再试：
-- `tailscale serve --set-header` —— 本机 tailscale **1.102.3** 的 `serve` 不支持设置
-  请求头（只有 `--set-path`），改不了 Host。
-- 用 tailnet IP 访问 **serve 端口**（`100.x.y.z:8444`）—— 返回 **400**（curl 实测，
-  不是此前记的 `000`），TS 的 serve 只认域名 Host。注意这条**只针对 8444 这类 serve 端口**；
-  直连后端监听端口 `100.90.189.32:8790` 是完全可以的，见 §6.13 的路径表。
-- 改了 `_host_ok` 但**不重启 bot** —— 校验在进程内，无热加载，改完必须重启才生效。
-
----
-
-## 7. 实测记录（2026-09-02）
-
-- 全流程循环实机跑通：选对手(火框倍率) → 编队(能量/规则) → 战斗 → 结算链 → 循环
-- 单次会话 12 场 11 胜、18 次拖拽全中；修复后拖拽 0 失败；倍率识别离线回归 9/9
-- 能量消耗验证 10→6→2（-4/场）；总分/连胜计分、CSV、图表联动验证
-- 服务器错误三种变体、OPTIONS 卡死、PF 主页面误退出均已实测恢复
-
-### 7.1 规则场实机联调（2026-09-03，风元素月场）
-
-- 连跑 32+ 场（连胜 17+），期间修复并验证：
-  1. 筛选面板吃零时长点击 → 驻留式点击 + 关闭验证重试（§8-13）
-  2. 规则判定改 FIGHT 按钮颜色（§6.4；OCR 查 variants.json 结构性不可行）
-  3. 复验阈值 30%→15%（差 3px 误杀，§6.4-2）
-  4. 弹窗自愈收窄为仅规则槽补风（§6.4-3）
-  5. 规则槽能量不足在 fix_team 内直补，不再绕道弹窗（§6.3-4）
-  6. run() ERROR 真停止（原翻回 RUNNING 死循环）
-- 已知遗留：风∩喜爱池能量偏低时规则补人可能失败停机（可加"等待回能"模式）；
-  休息计数在进程重启时归零（频繁重启则一直数不满 20 场）
-- 已知遗留：
-  1. 战力 OCR 偶有数字误读（只影响"无火框比战力"场景）
-  2. 类别规则无 sgm 数据支撑，判定恒走筛选替换（每场多 ~5s）
-     —— **2026-09-16 更正：不只是没数据，游戏里也没有「角色/类别限定」这条规则，
-     所以永远不该自动绑 class 规则。见 §6.12.7**
-  3. 能量全员耗尽即停止（可加"休眠等恢复"模式）
-  4. `wait_battle_end` 收到停止时会误报"超时 300s"（仅日志文案）
-  5. 当前直驱 `post_recognition/post_action` API；`interface.json + pipeline` 骨架已备，
-     后续可迁移为标准 pipeline 任务库接入 MaaPiCli/MFW-Pi
-
-### 7.2 冷启动链 / scene / 定时（2026-09-06，EYE OF THE STORM 两日风特场）
-
-- **全链手工→脚本化**：MuMu 启动→游戏→大厅点 PRIZE FIGHTS（单点直进，无需先居中）→
-  hub 轮播左滑 2 次到目标场居中（PLAY! 交由 bot 自点）→ 子场次「202609元素月场 09-06」
-  （父场已 150M 达默认上界，直接复用会秒触发达标暂停）→ /api/start。首场验证：
-  选火框倍率最大对手、槽位能量[10,10,10]、FIGHT 36% 满足风规则、AUTO/3x 自检通过
-- **pf_scene explore 全通**：5 张场地卡逐一扫分（CLASS 150.3M / WIND 150.6M /
-  STARS 25.7M / GHOUL 7.97M / EYE 7.77M），标题 difflib 全部命中，恢复初始居中卡 OK；
-  scene 读数与 bot 采样分一致（同源 OCR 交叉验证）
-- **pf_schedule 实验**：02:20 测试任务准点触发，restart 停旧 bot→导航→center→
-  起 bot→RUNNING 全链 ~35s（游戏已在前台热链路）；场次总分跨重启连续（CSV 预载）；
-  实验后 schedule.json 已清空（jobs 留空 + _example）
-- **AUTO/3x 验证手法**：盯「战斗已开始」日志 → sleep 2s → 动作 → 截图，单条 bash
-  闭环；3x+高战力下战斗 10s 内结束，观察战斗画面要在日志后 0.3-2s 截图
-- **能量经济实测**：~13 场+实验把全池打空（候选区 0 能量）；回填靠挂机自然回能，
-  池空时新 bot 会卡在编队等能量（或报"无可用能量角色"停机），等几分钟重启即可
-
----
-
-## 8. 踩坑实录（重要度排序）
-
-1. **anaconda 旧 CRT** → 见 §1，入口先 `preload_msvcrt()`
-2. **MAA roi 是 (x,y,w,h)** 不是 (x0,y0,x1,y1) —— 统一 `to_maa_roi()`
-3. **`post_bundle` 指向 `resource/base`**：框架只认给定路径直接子级的 pipeline/model/image
-4. **OCR det.onnx 必须存在**（only_rec 也依赖）
-5. **cv2.imwrite/imread 非 ASCII 路径静默失败** → `imencode`+`write_bytes`、`np.fromfile`+`imdecode`
-6. **模板匹配对遮罩压暗不敏感**（TM_CCOEFF 亮度不变性）→ 弹窗检测必须最优先
-7. **弹窗按钮尺寸/位置随弹窗不同**（能量 54px X / streak 46px X / OPTIONS 48px X @右上角）
-8. **VS 页站位是入场动画**，判断队伍以烧瓶/钉条为准，别对比站位
-9. **双显卡 DirectML 枚举坑** → 统一 `use_cpu()`
-10. **延迟导致动作落到已切换界面**：未知界面恢复必须交替按 返回键/右上X，并专门识别 hub
-11. **游戏内筛选状态持久**：跨运行残留会悄悄收窄候选列——每次开始运行后的首次
-    编队按 WebUI 喜爱筛选开关归位（清残留+按需点亮爱心，见 §6.3-1）
-12. **残留进程双实例**：旧 bot 没死透会抢 WebUI 端口、同时操作模拟器——启动前确认单实例
-13. **筛选面板吃零时长点击**（2026-09-03）：MAA maatouch 的 post_click 是瞬点，面板上
-    爱心/关闭 X 大概率不响应（风力芯片响应了，行为不一致）。统一用驻留式点击
-    （down → 0.18s → up）+ 关闭后 X 模板验证（pf_filter_x.png，关闭/打开相关度
-    0.44/1.00）失败自动重试。**面板不关 = 底部候选列被压暗 = 能量全读 0**，
-    曾借此死循环（选人30页→未知界面→重进→再筛选），run() 现遇 ERROR 真停止
-14. **variants.json 键是内部代号**：`fTrap`/`pThread`，显示名在条目 `fandom` 字段；
-    拿 OCR 文本直接查键永远 miss。卡框颜色≠元素真源（钻石稀有度粉色覆盖）
-15. **bot 运行中严禁向模拟器注入任何点击/滑动**（2026-09-06 事故）：战斗中途"想一下
-    点一下"点歪到对手身上→弹角色详情→返回键打乱 bot 节奏→筛选面板被吃→能量耗尽停机。
-    要动先 /api/pause|stop；确需战斗中注入用确定性延时脚本（盯日志→sleep→动作→截图，
-    单条 bash 闭环），模型往返延迟 3-10s 必错过 3s 开场窗口
-16. **MAA post_swipe 会被吸附轮播弹回原卡**（2026-09-06）：PF 场地轮播要用 adb
-    `input swipe 900 400 560 400 600`（340px+600ms）一次进 1 张；520px+450ms 惯性
-    跳 2 张，中间场地被漏扫
-17. **大厅限时促销弹窗吃点击**（2026-09-06）：回大厅自动弹（BACK TO SCHOOL 等），
-    其 X 不在 bot 弹窗 ROI 且 options_x 不匹配（相关度 0.295）——scene_popup_x.png
-    专模板 @(950,30,1240,180)，pf_scene 已内置处理
-18. **后台任务 Stop 是整树杀**（2026-09-06）：强杀调度器时其 Popen 的 bot 连带死亡
-    （WebUI 端口无响应）——pf_schedule 起 bot 加 CREATE_BREAKAWAY_FROM_JOB 脱离作业对象；
-    反过来也说明 bot 必须在 scene 导航**之后**启动（IDLE bot 的弹窗清理会抢点击）
-19. **端口有响应 ≠ bot 在跑**（2026-09-15）：本机 87xx 段挤了一堆别的服务，实测
-    8787 上跑的是一个银企直连需求服务，`/api/state` 照样返回 200 —— 旧版
-    `bot_alive()` 只判"端口通不通"，于是把别人的服务认成 bot：`run_pf` 以为
-    "bot 已在运行"直接拒绝启动，或向别的服务发 `/api/start`。两处修：
-    ① WebUI 端口从 8787 挪到 **8790**，唯一来源 `pf_env.WEBUI_PORT`
-    （config.json 加 `"webui_port"` 可覆盖），本机消费方（pf_bot / pf_schedule /
-    启动PF.bat / 文档）都取这一个值。
-    ⚠️ **唯一例外是 pfwidget**：它是 Android 工程（Java），
-    `PfWidgetProvider.DEFAULT_URL` 与 `PfSettingsActivity` 里**硬编码**
-    `http://100.90.189.32:8790`，读不到 `pf_env`。改端口那一刻说的"所有消费方同步"
-    对它不成立 —— 端口再变必须手改这两处再重新打包 APK（2026-09-19 核）；
-    ② `/api/state` 带 `svc` 身份标签，`bot_alive()` 必须校验它。
-    端口被占时 `start_webui` **直接抛错**，不偷偷换端口 —— 换了等于骗过所有写死 URL 的调用方
-20. **🔴 `_HTML` 里的 JS 字符串出现裸换行 ⇒ 整页脚本全废**（2026-09-24，详见
-    `docs/incident-2026-09-24-webui-js-dead.md`）：`onMumuOffClick()` 的 `confirm`
-    写成单引号字面量却内含三个真实换行（`\n` 只写在注释里），`_HTML` 是普通 `"""`
-    三引号 → 裸换行原样进 `<script>` → 浏览器 `Invalid or unexpected token`。
-    **症状是「页面能开、样式正常、所有按钮点了毫无反应」**，不是只坏那一个键 ——
-    浏览器对 `<script>` 块是**原子解析**，语法错误在块内首行执行前就抛，
-    其后所有 `addEventListener`/`setInterval` 一并作废。
-    ⚠️ **服务端零告警**：HTTP 200、日志干净、后端 API 手工 curl 全通，
-    唯一信号在浏览器 console。日志里的「未知请求 GET /api/settings」是**下游后果不是原因**。
-    ⇒ **判据：界面能开但按钮全死 = 先怀疑页面 JS 整体没跑，别逐个按钮排查。**
-    ⇒ **护栏：改 `_HTML` 里的 JS，提交前必须导出页面跑 `node --check`**
-    （`python -c "import pf_webui;print(pf_webui._HTML)"` → 抽 `<script>` → `node --check`）；
-    `ast.parse` 通过**不能**说明问题（修前也通过）。根治方向见事故文档 §7.2
-    （容器内 JS 统一改模板字面量，或内联 JS 拆成 `/static/*.js`）
-
----
+| ID | 触发／失败 | 规避／定位 |
+|---|---|---|
+| 1 | Python目录旧CRT→初始化失败 | 原生导入前preload_msvcrt；§1 |
+| 2 | 端点ROI直接传MAA | to_maa_roi；§3 |
+| 3 | post_bundle根错误 | resource/base；§2 |
+| 4 | only_rec缺det.onnx | det／rec／keys；§1 |
+| 5 | 非ASCII路径cv2 I/O失败 | imencode＋write_bytes／fromfile＋imdecode |
+| 6 | 遮罩下背景仍命中 | 弹窗优先；§6.1 |
+| 7 | 共用X尺寸／ROI | 按弹窗模板；§3 |
+| 8 | VS入场站位变化 | 按能量条；§4 |
+| 9 | 多显卡DirectML旧故障 | CPU OCR；§1 |
+| 10 | 延迟动作落入新界面 | 交替返回／X；§6.1 |
+| 11 | 跨运行筛选残留 | 首次编队归位；§6.3 |
+| 12 | 双实例争端口／设备 | svc校验、占端口报错；§6.10 |
+| 13 | 瞬点未生效／遮罩未关→能量0 | 驻留＋关闭／元素复验；§6.4 |
+| 14 | 显示名查内部键；框色误作元素 | variants字段映射；FIGHT／筛选复验 |
+| 15 | bot与外部点击竞争 | 导航前停进程；暂停仍清弹窗 |
+| 16 | hub滑动吸附／跨卡 | 场景ADB滑动；pf_scene |
+| 17 | 促销X≠OPTIONS X | scene_popup_x；pf_scene |
+| 18 | 宿主整树结束→bot／MuMu退出 | breakaway被拒用WMI；普通回退仍有风险 |
+| 19 | /api/state 200属于其它服务 | svc=sgm-pf-bot身份校验 |
+| 20 | Python吞JS转义→全页按钮无响应 | 独立JS＋语法检查；[事故](docs/incident-2026-09-24-webui-js-dead.md) |
 
 ## 9. 常用操作
 
-双击 `启动PF.bat` 一键启动（自动用 anaconda python，端口就绪后自动打开 WebUI 页面）。
-或手动：
+| 任务 | 命令／定位 |
+|---|---|
+| 安装／启动 | [README快速开始](README.md#快速开始)；启动PF.bat |
+| 导航 | python tools/pf_scene.py goto |
+| 扫描／居中 | python tools/pf_scene.py explore；python tools/pf_scene.py center EYE |
+| 调度 | python tools/pf_schedule.py；--list；--fire 任务名 |
+| 截图 | python tools/screencap.py |
+| 日程 | python tools/jjc_store.py fetch；show；days；versions（子命令分别执行） |
+| 排障 | debug/maa/debug/maafw.log；debug/pf/bot_stdout.log；debug/pf/run/ |
 
-```bash
-python tools/setup_env.py         # 一键配置环境（依赖/OCR模型/Chart.js/自检，已存在自动跳过）
-python tools/pf_bot.py            # 启动（WebUI 点"开始"开跑；停止=暂停，可恢复）
-python tools/pf_scene.py goto|explore|center X   # 场景导航 / 扫分找 score=0 / 场地居中（见 §6.9）
-python tools/pf_schedule.py       # 定时任务常驻（--fire 任务名 / --list，见 §6.10）
-python tools/screencap.py [out]   # 手动截图
-python tools/jjc_store.py show    # JJC 今日日程快照（见 §6.11）
-```
+## 10. 文档与Agent记忆维护
 
-setup_env.py 可选参数：`--with-vendor`（下载 MAAFramework 官方包到 vendor/，运行非必需）、
-`--mirror <前缀>`（GitHub 下载加速，如 https://ghproxy.net/ ）。项目迁移到新机器时
-拷贝 `assets/ tools/ sgm/ requirements.txt` 后执行一次即可。
+| 结论 | 项目采用方式 | 依据／边界 |
+|---|---|---|
+| 常驻上下文最小化 | AGENTS只保必要约束与任务索引；手册按需读取 | [AGENTS.md评测](https://arxiv.org/html/2602.11988v1)：自动生成说明平均增成本20%–23%；未直接比较文档格式 |
+| 条目化、增量更新 | 固定ID；修改对应条目、去重；保留触发条件和证据 | [ACE](https://arxiv.org/html/2510.04618v1)：公开任务评测；降低适配成本，非证明越短越好 |
+| 引用先于全文 | 先定位主题／代码／提交，需要核实时读原文／diff | [OpenViking](https://github.com/volcengine/OpenViking)：分层读取已有实现及自报评测；本项目未安装／复现 |
+| 按需检索可降低读取量 | 不默认加载全部历史；提取／更新成本计入总账 | [Mem0](https://arxiv.org/html/2504.19413v1)：对话评测查询上下文省token；非编程任务总成本保证 |
+| 结构化不自动省token | 表格用于字段明确；节省来自删重复与选择读取 | 上述研究未证明JSON／表格格式天然更省token |
+| VCS与MD配合 | 提交／diff留代码证据；MD留约束、结论、索引 | 本仓库仍使用Git；未部署jj；[jj操作日志](https://github.com/jj-vcs/jj/blob/main/docs/operation-log.md)不随普通Git推送共享 |
 
-- WebUI 设置：场次（开始=当前场次直开，未选才弹窗；运行中锁定）/ 分数上界·休息（随场次，
-  顶栏编辑当前场次）/ 能量门槛（随场次）/ PF规则按钮组（关|元素|角色徽记，绑定场次；
-  **运行中折叠为已生效徽章**）/ 喜爱筛选
-- 出战能量门槛默认 4；类别芯片对照 `docs/screenshots/filter_panel.png`
-- 调试：`debug/maa/debug/maafw.log`（框架）、`debug/pf/bot_stdout.log`（脚本）、
-  `debug/pf/run/<ts>/`（全程截图）
+| 记录字段 | 约定 |
+|---|---|
+| 条件 | 环境／版本／触发分支；避免无条件“必现”“零后果” |
+| 结果 | 当前行为／历史观察／用户约定／未验证；分别标识 |
+| 规避 | 明确动作与适用范围；不抄整段操作流水 |
+| 证据 | 代码符号、提交ID、原始日志／截图；缺证据标注 |
+| 校正 | 代码／diff优先于旧提交说明；WebUI事故见对应复盘 |
+
+| 压缩核查（2026-09-26） | 结果／限制 |
+|---|---|
+| 基线 | 3689d56；历史全文可用git show读取 |
+| PF_BOT正文（§§1–9） | 908→255行；o200k_base参考计数20,368→4,937，减少75.8% |
+| 计数范围 | 不含本节；仅静态文本，非实际任务总成本或当前模型精确计费 |
+| 实际检查 | 本地文档链接、git diff --check、代码符号与事故引入／修复diff |
+| 未执行 | 实机／浏览器回归；上述研究的本地复现 |
