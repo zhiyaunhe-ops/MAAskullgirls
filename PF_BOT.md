@@ -254,29 +254,9 @@ tailscale serve --https=8444 off
 | 日程 | python tools/jjc_store.py fetch；show；days；versions（子命令分别执行） |
 | 排障 | debug/maa/debug/maafw.log；debug/pf/bot_stdout.log；debug/pf/run/ |
 
-## 10. 文档与Agent记忆维护
+## 10. 文档维护
 
-| 结论 | 项目采用方式 | 依据／边界 |
-|---|---|---|
-| 常驻上下文最小化 | AGENTS只保必要约束与任务索引；手册按需读取 | [AGENTS.md评测](https://arxiv.org/html/2602.11988v1)：自动生成说明平均增成本20%–23%；未直接比较文档格式 |
-| 条目化、增量更新 | 固定ID；修改对应条目、去重；保留触发条件和证据 | [ACE](https://arxiv.org/html/2510.04618v1)：公开任务评测；降低适配成本，非证明越短越好 |
-| 引用先于全文 | 先定位主题／代码／提交，需要核实时读原文／diff | [OpenViking](https://github.com/volcengine/OpenViking)：分层读取已有实现及自报评测；本项目未安装／复现 |
-| 按需检索可降低读取量 | 不默认加载全部历史；提取／更新成本计入总账 | [Mem0](https://arxiv.org/html/2504.19413v1)：对话评测查询上下文省token；非编程任务总成本保证 |
-| 结构化不自动省token | 表格用于字段明确；节省来自删重复与选择读取 | 上述研究未证明JSON／表格格式天然更省token |
-| VCS与MD配合 | 提交／diff留代码证据；MD留约束、结论、索引 | 本仓库仍使用Git；未部署jj；[jj操作日志](https://github.com/jj-vcs/jj/blob/main/docs/operation-log.md)不随普通Git推送共享 |
-
-| 记录字段 | 约定 |
+| 主题 | 唯一维护入口 |
 |---|---|
-| 条件 | 环境／版本／触发分支；避免无条件“必现”“零后果” |
-| 结果 | 当前行为／历史观察／用户约定／未验证；分别标识 |
-| 规避 | 明确动作与适用范围；不抄整段操作流水 |
-| 证据 | 代码符号、提交ID、原始日志／截图；缺证据标注 |
-| 校正 | 代码／diff优先于旧提交说明；WebUI事故见对应复盘 |
-
-| 压缩核查（2026-09-26） | 结果／限制 |
-|---|---|
-| 基线 | 3689d56；历史全文可用git show读取 |
-| PF_BOT正文（§§1–9） | 908→255行；o200k_base参考计数20,368→4,937，减少75.8% |
-| 计数范围 | 不含本节；仅静态文本，非实际任务总成本或当前模型精确计费 |
-| 实际检查 | 本地文档链接、git diff --check、代码符号与事故引入／修复diff |
-| 未执行 | 实机／浏览器回归；上述研究的本地复现 |
+| 通用规则、提示词模板、研究依据、语言token计数 | [agent-context-guidelines](https://github.com/zhiyaunhe-ops/agent-context-guidelines) |
+| 本项目压缩与事实校正记录 | [f24de46](https://github.com/zhiyaunhe-ops/MAAskullgirls/commit/f24de4636785f85fdec29264912c7905e31b74bf)；实机／浏览器未重跑 |
