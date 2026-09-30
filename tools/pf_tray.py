@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from pathlib import Path
 import sys
 import threading
 import time
@@ -314,20 +315,37 @@ def act_quit(icon=None, item=None) -> None:
 
 # ---------------- 图标 ----------------
 
-def _make_icon(color=(63, 127, 224, 255), busy=False) -> Image.Image:
-    """状态色圆角方块 + 中间一个「场」字形的简笔标记。
+_ICON_IMG_PATH = Path(__file__).resolve().parent / "static" / "icons" / "tray_icon.png"
+_BASE_ICON: Image.Image | None = None
 
-    颜色即状态: 蓝=运行中, 灰=空闲, 橙=忙碌, 红=错误, 深灰=服务未启动。
+
+def _base_icon() -> Image.Image:
+    """Skullgirls Filia 头像 (tools/static/icons/tray_icon.png, 64x64)。
+
+    文件缺失时回退旧的圆角方块 (资源损坏不该带崩托盘)。"""
+    global _BASE_ICON
+    if _BASE_ICON is None:
+        try:
+            _BASE_ICON = Image.open(_ICON_IMG_PATH).convert("RGBA")
+        except (OSError, ValueError):
+            _BASE_ICON = None
+    return _BASE_ICON
+
+
+def _make_icon(color=(63, 127, 224, 255), busy=False) -> Image.Image:
+    """Filia 头像做底 + 右下角状态点。
+
+    点色即状态: 蓝=运行中, 灰=空闲, 橙=忙碌, 红=错误, 深灰=服务未启动。
     """
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    base = _base_icon()
+    if base is not None:
+        img = base.copy()
+    else:
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((2, 2, 62, 62), radius=14, fill=color)
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle((2, 2, 62, 62), radius=14, fill=color)
-    # 中性标记 (避免依赖字体渲染中文)
-    d.line([(20, 22), (44, 22)], fill="white", width=6)     # 顶横
-    d.line([(32, 22), (32, 44)], fill="white", width=6)     # 中竖
-    d.line([(22, 44), (42, 44)], fill="white", width=6)     # 底横
-    if busy:
-        d.ellipse((46, 2, 62, 18), fill=(255, 176, 32, 255), outline="white", width=2)
+    d.ellipse((46, 46, 62, 62), fill=color, outline="white", width=2)
     return img
 
 

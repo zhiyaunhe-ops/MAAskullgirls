@@ -145,7 +145,7 @@
 | 6.7 | 状态探测 | player_state／state／is_android_started；失败unknown |
 | 6.7 | 达标关机 | 默认开、可取消；_goal_closed防重复 |
 | 6.7 | ADB连接设置 | GET/POST /api/adb_config 读写 config.json 四件套(adb_path/address/adb_server_port/mumu_dir)；校验+告警；pf_env是import期读→**重启生效**；前端「模拟器 & ADB」面板 |
-| 6.7 | 托盘启动≠开跑 | 「启动服务」只起进程(2026-09-30用户口径)；开跑=托盘「开跑当前场次」或WebUI「开始」；托盘自启即默认启动服务+Windows气泡(_notify→icon.notify)；启动器=启动托盘.vbs(ASCII-only：wscript按ANSI解析, UTF-8中文注释静默失败；pythonw需全路径, cscript PATH无anaconda)；重生auto-resume不受此限(接管死前场次) |
+| 6.7 | 托盘启动≠开跑 | 「启动服务」只起进程(2026-09-30用户口径)；开跑=托盘「开跑当前场次」或WebUI「开始」；托盘自启即默认启动服务+Windows气泡(_notify→icon.notify)；图标=tools/static/icons/tray_icon.png(Filia头像裁剪, 缺文件回退圆角方块)+右下角状态点；启动器=启动托盘.vbs(ASCII-only：wscript按ANSI解析, UTF-8中文注释静默失败；pythonw需全路径, cscript PATH无anaconda)；重生auto-resume不受此限(接管死前场次) |
 | 6.7 | 每日任务 | 保存编排；未接入执行 |
 | 6.7 | 目标ETA | 速率=本场记分点活跃段(相邻≤180s)增量÷时长；ETA=(目标−当前)÷速率；未设目标只显速率；页面前端现算, /api/summary只供速率 |
 | 6.8 | AUTO／3x | 每实例首战检查；亮度阈值75、速度模板0.85；失败告警继续 |
