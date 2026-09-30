@@ -28,6 +28,9 @@ POST /api/mumu/game        启动 MuMu(如需) + adb monkey 拉起 Skullgirls
 POST /api/mumu/shutdown    关闭 MuMu（bot 运行中会先结束场次; 只走 MuMuManager control）
 POST /api/settings         {filter_favorite, close_mumu_on_goal}
                            close_mumu_on_goal: 总分达标时自动关闭 MuMu（默认开）
+GET  /api/adb_config       {adb_path, address, adb_server_port, mumu_dir} 现读 config.json
+POST /api/adb_config       校验后写回 config.json 四件套; 返回 restart_required
+                           (pf_env 是 import 期读, 重启服务才生效)
 
 访问安全（所有请求先过 _gate 门卫，不合法一律 40x 并写入运行日志）:
   - 来源 IP 限 本机回环 / 内网 (10/172.16/192.168) / Tailscale (100.64/10)，公网来源 403
@@ -47,8 +50,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from pf_env import (GAME_PKG, STATE, WEBUI_PORT, adb_connect, mumu_is_running,
-                    mumu_launch_game, mumu_shutdown, mumu_start)
+from pf_env import (ADB_SERVER_PORT, CONFIG_PATH, GAME_PKG, MUMU_ADDRESS,
+                    MUMU_ADB_PATH, MUMU_DIR, STATE, WEBUI_PORT, adb_connect,
+                    mumu_is_running, mumu_launch_game, mumu_shutdown, mumu_start)
 from pf_domain import UNSET, clean_rest, clean_target, clean_energy
 from pf_store import STORE
 from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
@@ -58,6 +62,21 @@ SVC_ID = "sgm-pf-bot"    # 本服务的身份标签, 见 _gate 说明与 /api/st
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SGM_DIR = Path(__file__).resolve().parent.parent / "sgm"
 DAILY_PATH = Path(__file__).resolve().parent.parent / "debug" / "pf" / "daily.json"
+
+
+def _read_adb_config() -> dict:
+    """现读 config.json 的 ADB 连接四件套 (不取 pf_env 的 import 期快照 ——
+    用户可能手改过文件; /api/adb_config GET/POST 都走这里)。"""
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    return {
+        "adb_path": str(cfg.get("adb_path") or ""),
+        "address": str(cfg.get("address") or MUMU_ADDRESS),
+        "adb_server_port": int(cfg.get("adb_server_port") or 0),
+        "mumu_dir": str(cfg.get("mumu_dir") or ""),
+    }
 
 
 def _load_daily() -> dict:
@@ -370,7 +389,16 @@ class _Handler(BaseHTTPRequestHandler):
                 "busy": _MUMU_BUSY["op"],
                 "close_on_goal": bool(STATE.close_mumu_on_goal),
                 "game_pkg": GAME_PKG,
+                "address": MUMU_ADDRESS,
+                "adb_server_port": ADB_SERVER_PORT,
             }, ensure_ascii=False).encode("utf-8")
+            self._send(200, "application/json", body)
+        elif path == "/api/adb_config":
+            # ADB 连接设置 (config.json 四件套), 前端「模拟器 & ADB」面板用。
+            # 只读现值 + 校验后写回, 改动 import 期才生效 → 返回 restart_required,
+            # 前端提示"重启服务后生效"。
+            cfg = _read_adb_config()
+            body = json.dumps(cfg, ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
         elif path == "/api/sessions":
             body = json.dumps(
@@ -615,6 +643,56 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json", b'{"ok":true}')
             except (ValueError, json.JSONDecodeError) as e:
                 self._json_err(400, str(e))
+        elif self.path == "/api/adb_config":
+            # 写 config.json 的 ADB 连接四件套。运行中改也不崩 (pf_env 是 import 期
+            # 读), 但要重启服务才生效 —— 返回 restart_required 让前端明说。
+            try:
+                data = self._read_json()
+            except json.JSONDecodeError as e:
+                self._json_err(400, str(e))
+                return
+            cur = _read_adb_config()
+            warns = []
+            if "adb_path" in data:
+                p = str(data["adb_path"]).strip()
+                if p and not Path(p).is_file():
+                    warns.append("adb_path 文件不存在, 启动时会回退 MAA 自动探测")
+                cur["adb_path"] = p
+            if "address" in data:
+                a = str(data["address"]).strip()
+                import re as _re
+                if not (_re.fullmatch(r"[^:\s]+:\d+", a) or _re.fullmatch(r"emulator-\d+", a)):
+                    self._json_err(400, "address 需为 host:port 或 emulator-N")
+                    return
+                cur["address"] = a
+            if "adb_server_port" in data:
+                try:
+                    port = int(data["adb_server_port"] or 0)
+                except (TypeError, ValueError):
+                    self._json_err(400, "adb_server_port 需为整数")
+                    return
+                if not 0 <= port <= 65535:
+                    self._json_err(400, "adb_server_port 超出 0-65535")
+                    return
+                cur["adb_server_port"] = port
+            if "mumu_dir" in data:
+                cur["mumu_dir"] = str(data["mumu_dir"]).strip()
+            try:
+                old = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.is_file() else {}
+            except (OSError, json.JSONDecodeError):
+                old = {}
+            old.update(cur)
+            try:
+                CONFIG_PATH.write_text(json.dumps(old, ensure_ascii=False, indent=2) + "\n",
+                                       encoding="utf-8")
+            except OSError as e:
+                self._json_err(500, "config.json 写入失败: %s" % e)
+                return
+            STATE.log("ADB 连接设置已保存 (address=%s, adb_server_port=%s) —— 重启服务后生效"
+                      % (cur["address"], cur["adb_server_port"] or "默认5037"), "warn")
+            self._send(200, "application/json",
+                       json.dumps({"ok": True, "restart_required": True, "warnings": warns},
+                                  ensure_ascii=False).encode("utf-8"))
         elif self.path == "/api/jjc/refresh":
             # 唯一允许触网的 JJC 入口 —— 用户显式点「刷新快照」才走
             try:

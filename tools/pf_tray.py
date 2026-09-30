@@ -217,17 +217,42 @@ def _bg(fn, name: str):
 
 
 def act_start(icon=None, item=None) -> None:
-    """启动服务 = 起进程 + 就绪后 /api/start 开跑当前选中场次。"""
+    """启动服务 = **只起进程不开跑** (用户 2026-09-30 口径: 启动≠开跑)。
+
+    起进程 + 等就绪 + 把初始化失败的真实原因翻出来 (HTTP 应答 ≠ 初始化成功:
+    MAA 连不上模拟器时 bot 会在 setup 阶段退出, 2026-09-27 实测"就绪→无可用
+    场次"误导)。开跑走 act_run 或 WebUI「开始」。
+    """
     if not _bot_alive():
         _spawn_bot()
     if not _bot_alive():
         _log("启动失败: bot 未就绪")
         return
     cur = _http("/api/state", timeout=3.0) or {}
-    # HTTP 应答 ≠ 初始化成功: MAA 连不上模拟器时 bot 会在 setup 阶段退出 (2026-09-27
-    # 实测"就绪→无可用场次"误导), 这里把真实原因翻出来。
     if cur.get("status") == "ERROR":
         _log("bot 初始化失败: %s" % (cur.get("step") or "未知原因, 看 bot_stdout.log"))
+        return
+    sid = cur.get("session_id") or ""
+    if not sid:
+        s = _http("/api/sessions", timeout=3.0) or {}
+        sid = (s.get("active") or "")
+    _log("服务已启动, 未开跑 (当前场次: %s); 开跑用「开跑当前场次」或 WebUI「开始」"
+         % (sid or "未选"))
+
+
+def act_run(icon=None, item=None) -> None:
+    """开跑当前选中场次 (服务没起就先起; 已在跑则只报告)。"""
+    if not _bot_alive():
+        _spawn_bot()
+        if not _bot_alive():
+            _log("启动失败: bot 未就绪")
+            return
+    cur = _http("/api/state", timeout=3.0) or {}
+    if cur.get("status") == "ERROR":
+        _log("bot 初始化失败: %s" % (cur.get("step") or "未知原因, 看 bot_stdout.log"))
+        return
+    if cur.get("status") == "RUNNING":
+        _log("已在跑 (fight=%s), 不重复开跑" % cur.get("fight_no"))
         return
     sid = cur.get("session_id") or ""
     if not sid:
@@ -237,7 +262,7 @@ def act_start(icon=None, item=None) -> None:
         _http("/api/start", {"session_id": sid}, timeout=20)
         _log("已 /api/start (session=%s)" % sid)
     else:
-        _log("无可用场次, 仅启动了服务 (去 WebUI 选场次)")
+        _log("无可用场次, 去 WebUI 选")
 
 
 def act_stop(icon=None, item=None) -> None:
@@ -383,7 +408,8 @@ def main() -> int:
         Menu.SEPARATOR,
         MenuItem("打开 WebUI", _bg(act_open, "打开页面"), default=True),
         Menu.SEPARATOR,
-        MenuItem("启动服务", _bg(act_start, "启动中")),
+        MenuItem("启动服务 (不开跑)", _bg(act_start, "启动中")),
+        MenuItem("开跑当前场次", _bg(act_run, "开跑")),
         MenuItem("重启服务", _bg(act_restart, "重启中")),
         MenuItem("结束服务", _bg(act_stop, "停止中")),
         Menu.SEPARATOR,

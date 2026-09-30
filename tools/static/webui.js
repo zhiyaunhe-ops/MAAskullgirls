@@ -43,6 +43,36 @@ async function pollMumu() {
     document.getElementById('btn-mumu').disabled = !!d.busy;
     document.getElementById('btn-game').disabled = !!d.busy;
     document.getElementById('btn-mumu-off').disabled = !!d.busy || !d.running;
+    const es = document.getElementById('emu-status');
+    if (es) {
+      es.textContent = d.busy ? '操作中' : (d.running ? '已就绪' : '离线');
+      es.className = 'pill ' + (d.running || d.busy ? 'RUNNING' : 'IDLE');
+    }
+  } catch (e) {}
+}
+/* ================= ADB 连接设置 (config.json 四件套, 重启生效) =================
+   后端 GET/POST /api/adb_config: 现读现写 config.json, pf_env 是 import 期读,
+   所以保存后必须重启服务才生效 —— 前端提示里明说。 */
+async function loadAdbConfig() {
+  try {
+    const d = await (await uiFetch('/api/adb_config')).json();
+    document.getElementById('in-adb-path').value = d.adb_path || '';
+    document.getElementById('in-adb-addr').value = d.address || '';
+    document.getElementById('in-adb-port').value = d.adb_server_port || 0;
+    document.getElementById('in-mumu-dir').value = d.mumu_dir || '';
+  } catch (e) {}
+}
+async function saveAdbConfig() {
+  const body = {
+    adb_path: document.getElementById('in-adb-path').value.trim(),
+    address: document.getElementById('in-adb-addr').value.trim(),
+    adb_server_port: parseInt(document.getElementById('in-adb-port').value, 10) || 0,
+    mumu_dir: document.getElementById('in-mumu-dir').value.trim(),
+  };
+  try {
+    const r = await api('/api/adb_config', body);
+    const warns = ((r && r.warnings) || []).join('；');
+    showNotice('连接设置已保存' + (warns ? '（注意：' + warns + '）' : '') + '，重启服务后生效。');
   } catch (e) {}
 }
 let pfSub = 'run';
@@ -1187,3 +1217,4 @@ setInterval(() => { if (pfSub === 'chart' && document.getElementById('page-pf').
 applyTheme(document.documentElement.dataset.theme || 'midnight');
 pollState();
 pollMumu();
+loadAdbConfig();
