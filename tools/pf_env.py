@@ -89,6 +89,21 @@ def _load_config() -> dict:
 CONFIG = _load_config()
 MUMU_ADB_PATH = CONFIG.get("adb_path") or ""
 MUMU_ADDRESS = CONFIG.get("address") or "127.0.0.1:16384"
+# MuMuManager/MuMuNxMain 所在目录 (模拟器启停/达标关机用)。2026-09-29 加: adb_path 指向
+# 别处的 platform-tools 副本后, mumu_paths 的"adb 同目录"假设失效, 见该函数注释。
+MUMU_DIR = CONFIG.get("mumu_dir") or ""
+
+# adb server 分端口 (2026-09-30): config.json 配了 adb_server_port 就在 import 时把
+# ANDROID_ADB_SERVER_PORT 写进本进程环境 —— 之后所有 adb 客户端调用和 MAA 起的 adb
+# 子进程全部继承, 整条链改用独立 adb server。为什么必须分 (09-28/09-29 掉线实锤):
+# 后台 TailShare K70 巡检 (session 0 服务) 在默认 5037 上跑 kill-server, 共用 server
+# 时模拟器连接被一起踢掉; MAA 自己在连接丢失时也会 kill-server (pf_bot §6.0), 反向
+# 波及巡检。分端口后两边互不可见。缺省 0 = 不注入, 行为同旧版 (默认 5037)。所有
+# 进程都经 import pf_env 自取 config (WMI 脱离进程的下一代 pf_bot 也会重读),
+# 不需要在 spawn 点逐个传 env。
+ADB_SERVER_PORT = int(CONFIG.get("adb_server_port") or 0)
+if ADB_SERVER_PORT:
+    os.environ["ANDROID_ADB_SERVER_PORT"] = str(ADB_SERVER_PORT)
 
 # WebUI 端口的唯一来源。本机同网段被别的服务大量占用 (实测 8787/8788/8791 都被抢),
 # 所以 8787 让位给它们, 本服务锁定 8790; 再撞可在 config.json 里用 "webui_port" 覆盖。
@@ -102,7 +117,13 @@ def resolve_adb():
     """
     addr = MUMU_ADDRESS
     if MUMU_ADB_PATH:
-        return MUMU_ADB_PATH, addr
+        # 配了路径也得文件真在。2026-09-28 起 config 指向别的项目的 platform-tools 副本
+        # (和 K70 巡检同一份 adb, 免得两个版本在 5037 上互踢 server) —— 那份副本住在
+        # 别的会话目录里, 目录被清理时旧写法会把不存在的路径直接交给 MAA: 启动即失败,
+        # 而日志里只看得到 adb 子进程报错。这里回退到自动探测, 并把原因写进日志。
+        if Path(MUMU_ADB_PATH).is_file():
+            return MUMU_ADB_PATH, addr
+        STATE.log(f"config.json 的 adb_path 不存在 ({MUMU_ADB_PATH}), 回退 MAA 自动探测", "warn")
     try:
         preload_msvcrt()
         from maa.toolkit import Toolkit
@@ -122,16 +143,24 @@ def resolve_adb():
 #   且该实例上还挂着用户另一个 MAA(明日方舟) 的自启, 强杀会连带打断。
 
 def mumu_paths(adb_path: str = None) -> tuple[str | None, str | None, str]:
-    """(MuMuManager.exe, MuMuNxMain.exe, address)。adb_path 为空则回落到 resolve_adb()。"""
+    """(MuMuManager.exe, MuMuNxMain.exe, address)。adb_path 为空则回落到 resolve_adb()。
+
+    候选目录: adb 同目录 (历史布局) -> config.json 的 mumu_dir。后者是 2026-09-29 加的:
+    adb_path 换成别项目的 platform-tools 副本后, "adb 同目录"必然落空 —— 表现是
+    「达标关机失败: MuMuManager 不可用」(09-28 23:54 日志) 和「MuMu 未运行」假报
+    (09-29 01:17 / 06:04, 连带冷启动失效), 而模拟器其实好好开着。
+    """
     adb, addr = (adb_path, MUMU_ADDRESS) if adb_path else resolve_adb()
     if not adb:
         return None, None, addr
-    base = Path(adb)
-    mgr = base.with_name("MuMuManager.exe")
-    nx = base.with_name("MuMuNxMain.exe")
-    return (str(mgr) if mgr.is_file() else None,
-            str(nx) if nx.is_file() else None,
-            addr)
+    dirs = [Path(adb).parent] + ([Path(MUMU_DIR)] if MUMU_DIR else [])
+    for d in dirs:
+        mgr, nx = d / "MuMuManager.exe", d / "MuMuNxMain.exe"
+        if mgr.is_file() or nx.is_file():
+            return (str(mgr) if mgr.is_file() else None,
+                    str(nx) if nx.is_file() else None,
+                    addr)
+    return None, None, addr
 
 
 def mumu_info(adb_path: str = None, timeout: float = 15) -> dict:
@@ -251,12 +280,23 @@ def adb_connect(adb_path: str = None, timeout: float = 30) -> bool:
     adb server 被回收而失效; 此时点「开始」只会撞一串
     `AdbControlUnitMgr::connect failed`(实测 08:39 那屏), 而用户看到的只是"没反应"。
     所以 /api/start 之前先补一次 connect —— 幂等, 已连上就秒回。
+
+    2026-09-27: address 换成 emulator-5554 —— MuMu 的 16384 TCP 桥间歇假死
+    (TCP 能连、adbd 协议不应答, maafw.log 12:54 现场), 而标准模拟器通道全程健在。
+    emulator-N 不是可 connect 的目标 (由 adb server 自动发现, server 重启也会自动
+    找回), 所以补连目标自动映射到底层 adbd 端口 127.0.0.1:N+1。
     """
     adb, addr = (adb_path, MUMU_ADDRESS) if adb_path else resolve_adb()
     if not adb:
         return False
+    target = addr
+    if addr.startswith("emulator-"):
+        try:
+            target = "127.0.0.1:%d" % (int(addr.rsplit("-", 1)[1]) + 1)
+        except ValueError:
+            return False
     try:
-        p = subprocess.run([adb, "connect", addr],
+        p = subprocess.run([adb, "connect", target],
                            capture_output=True, text=True, timeout=timeout,
                            **SUBPROC_TEXT)
     except Exception:  # noqa: BLE001
@@ -286,7 +326,7 @@ class BotState:
         self.rest_until = 0           # 休息截止时间戳
         self.shot_ver = 0             # 截图版本号（前端据此刷新图片）
         self.shot_path = None
-        self.running = False          # 暂停开关（WebUI 可置 False, 可恢复）
+        self.running = False          # 运行开关: 结束/达标后置 False, 主循环回 IDLE (无暂停态)
         self.quit = False             # 硬停止开关: 置 True 后主循环退出、进程结束
         # 达标收尾: 总分达到 score_target 时自动关闭 MuMu (省电/释放机器)。
         # 默认 True (用户 2026-09-26 改口径: 凌晨无人值守跑完就该关机, 别空烧;
@@ -327,11 +367,17 @@ STATE = BotState()
 IMG_CAP_MB = 150   # debug/pf/run 全部截图总量上限
 LOG_CAP_MB = 50    # 全部 .log 总量上限 (maafw + bot_stdout)
 CLEAN_INTERVAL_S = 600
+# "还在写"窗口: 目录内最新帧的 mtime 落在这个窗口内, 就认为有活着的进程在用。
+# 2026-09-29 实测: bot 进程待命中(未跑场次)时跑 pf_scene, scene 自己起的清理器把
+# **活着那代 bot 的 run_dir 整删** (protected 只保护调用者自己的目录), bot 恢复
+# 运行后写帧 FileNotFoundError 直接 ERROR 停摆。窗口按最长一次截图/战斗间隔取 30min。
+LIVE_WINDOW_S = 1800
 
 
 def cleanup_debug(protected_dir: Path = None) -> str:
     """超限则删旧: 图片按运行目录从旧到新整删(保护当前目录, 仍超则删目录内最旧帧);
-    日志只删最旧的 maafw.bak.* (活动中的 maafw.log/stdout 由 MAA 自轮转接手)。
+    日志只删最旧的 maafw.bak.* 与旧世代 bot_stdout_*.log (活动中的 maafw.log/
+    bot_stdout.log 由 MAA 自轮转接手, 最新一代 bot_stdout_*.log 受保护)。
     一次遍历建索引、删除时递减, 不做全量重扫。返回摘要文本。"""
     summary = ""
     img_root = PROJECT_ROOT / "debug" / "pf" / "run"
@@ -340,26 +386,33 @@ def cleanup_debug(protected_dir: Path = None) -> str:
         protected = protected_dir.resolve() if protected_dir else (
             dirs[-1] if dirs else None)
         sizes = {}   # dir -> {file: size} (一次遍历)
+        mtimes = {}  # dir -> 目录内最新帧 mtime (判"还在写")
         for d in dirs:
             files = {}
+            newest = 0.0
             try:
                 for f in d.iterdir():
                     try:
                         if f.is_file():
-                            files[f] = f.stat().st_size
+                            st = f.stat()
+                            files[f] = st.st_size
+                            newest = max(newest, st.st_mtime)
                     except OSError:
                         pass
             except OSError:
                 pass
             sizes[d] = files
+            mtimes[d] = newest
         total = sum(sum(v.values()) for v in sizes.values())
         limit = IMG_CAP_MB * 1024 * 1024
+        now = time.time()
+        fresh = {d for d, m in mtimes.items() if now - m < LIVE_WINDOW_S}
         removed_dirs = removed_frames = 0
         while total > limit and len(sizes) > 1:
-            victim = dirs.pop(0)
-            if victim == protected:
-                dirs.append(victim)   # 环形保护: 只剩自己时停
-                break
+            victim = next((d for d in dirs if d != protected and d not in fresh), None)
+            if victim is None:
+                break                  # 剩下的都是受保护/在用目录: 停 (环形保护)
+            dirs.remove(victim)
             total -= sum(sizes.pop(victim).values())
             _rmtree(victim)
             removed_dirs += 1
@@ -389,10 +442,14 @@ def cleanup_debug(protected_dir: Path = None) -> str:
             total += f.stat().st_size
         except OSError:
             pass
-    for f in logs:   # 名称序 = maafw.bak 时间序, 最旧在前; 跳过活动日志(maafw.log/stdout)
+    # 名称序 = 时间序, 最旧在前。活动日志不能删: 当前进程的 maafw.log/bot_stdout.log,
+    # 以及**最新一代** bot_stdout_<时间戳>.log —— 后者可能正被重生出来的进程写着
+    # (它被 cmd `>>` 持有时 unlink 本来也会失败, 这里显式保护, 不靠文件锁兜底)。
+    newest_gen = next((f for f in reversed(logs) if f.name.startswith("bot_stdout_")), None)
+    for f in logs:
         if total <= limit:
             break
-        if f.name == "maafw.log" or f.name == "bot_stdout.log":
+        if f.name in ("maafw.log", "bot_stdout.log") or f is newest_gen:
             continue
         try:
             size = f.stat().st_size

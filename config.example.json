@@ -1,4 +1,5 @@
 {
   "adb_path": "C:\\Program Files\\Netease\\MuMuPlayer-12.0\\nx_main\\adb.exe",
-  "address": "127.0.0.1:16384"
+  "address": "127.0.0.1:16384",
+  "adb_server_port": 0
 }

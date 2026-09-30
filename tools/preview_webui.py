@@ -22,7 +22,7 @@ SESSIONS = [
      "count": 12, "last_ts": NOW - 3600, "score_target": 5000000, "energy_cost": 4},
 ]
 STATE = {
-    "svc": "sgm-pf-bot-preview", "demo": True, "status": "PAUSED",
+    "svc": "sgm-pf-bot-preview", "demo": True, "status": "IDLE",
     "step": "演示数据 · 操作仅影响本次预览", "fight_no": 24, "score": 6842500, "streak": 18,
     "score_target": 10000000, "energy_cost": 4, "pf_rule": None,
     "filter_favorite": True, "close_on_goal": True, "rest_every": 10, "rest_minutes": 5,
@@ -66,6 +66,12 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                                    "running": STATE["status"] == "RUNNING"})
             if path == "/api/daily":
                 return self.reply({"data": DAILY, "saved": True})
+            if path == "/api/summary":
+                # 与真实服务端同构 (真实 eta_sec 由记分点速率算出; 前端自行用 target/score 复算)
+                return self.reply({"per_min": 96500.0, "last_delta": 425000,
+                                   "score": STATE["score"],
+                                   "target": STATE.get("score_target") or 150_000_000,
+                                   "eta_sec": None})
             if path == "/api/history":
                 ids = parse_qs(parts.query).get("sessions", [STATE["session_id"]])[0].split(",")
                 return self.reply({"series": [{"id": s["id"], "name": s["name"], "rule": s["rule"],
@@ -87,8 +93,10 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return self.send_error(404)
             self.path = "/tools" + path
         elif path == "/shot.jpg":
-            self.path = "/docs/screenshots/opponent_select.png"
-        elif path != "/docs/themes-preview.html":
+            # 净化帧: 顶栏玩家名/等级/货币已抹平 (tools/static/mock_shot.jpg)。
+            # 原 docs/screenshots/explore 截图 2026-09-30 起不入库 (gitignore)。
+            self.path = "/tools/static/mock_shot.jpg"
+        elif path != "/static/themes-preview.html":
             return self.send_error(404)
         return super().do_GET()
 
@@ -122,8 +130,10 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                              rest_minutes=session.get("rest_minutes", 0))
                 if path == "/api/start":
                     STATE["status"] = "RUNNING"
-            elif path in ("/api/pause", "/api/stop"):
-                STATE["status"] = "PAUSED" if path == "/api/pause" else "STOPPED"
+            elif path == "/api/end":
+                STATE["status"] = "IDLE"
+            elif path == "/api/stop":
+                STATE["status"] = "STOPPED"
             elif path == "/api/sessions/update":
                 session = next((s for s in SESSIONS if s["id"] == body.get("id")), None)
                 if session:
