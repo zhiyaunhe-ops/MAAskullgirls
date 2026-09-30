@@ -178,7 +178,8 @@ def step_templates() -> None:
     tpl_dir = PROJECT_ROOT / "assets" / "resource" / "base" / "image" / "pf"
     need = {"pf_continue_btn", "vs_fight_btn", "drag_hint", "energy_x", "streak_x",
             "options_x", "result_continue", "hub_play", "detail_stats",
-            "srv_ok", "srv_retry", "pf_refresh_btn"}
+            "srv_ok", "srv_retry", "pf_refresh_btn",
+            "defense_confirm"}   # 防守队编辑器右上确认 (2026-09-29 起 bot 流程依赖)
     have = {p.stem for p in tpl_dir.glob("*.png")}
     missing = need - have
     if missing:

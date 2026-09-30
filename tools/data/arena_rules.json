@@ -161,6 +161,13 @@
    "parent_id": "s1788423741550",
    "kind": "角色场(Big Band)",
    "依据": "A 2026-09-25 01:02 实机实证: 游戏日 09-24(周四) hub 截图 debug/pf/run/0925_010210/0038_scene.jpg 卡面 BRONZE + BIG BEN'S BEATDOWN, 无 SCORE 行(=新场), 剩余 02D:23H:56M(半周量级, 周四开/周六收), 立绘礼帽+耳机+喇叭手臂 = Big Band 特征; 同日快照 Current Character PF 由 Annie(09-21 周一开)→Big Band, 与 PF_BOT.md §6.12.2 九对循环「该周=Annie/Big Band, 周四-六=后一个」吻合。角色场不限定角色 → rule=null(§6.12.7 铁律)。parent=角色周场(同 BLOOD SPORT/DEATH METTLE/INFINITY AND BEYOND)。⚠️ OCR 丢首字母 B: IG BENS BEATDOWN, 已入 pf_scene.KNOWN_TITLES 靠 difflib 归一。⚠️ 该卡 SCORE ROI (y138-185) 框到顶部装饰区, 读数是随机噪声('ROgO0'/'900') —— read_center_card 已加「SCORE 区不含 SCORE 字样→按无 SCORE 行判 0」判据②(2026-09-25)。子场次 score_target 沿用角色周场父级 8kw 口径(用户 2026-09-19)。"
+  },
+  "HIGH WIRE HIJINKS": {
+   "rule": null,
+   "parent_id": "s1788423741550",
+   "kind": "角色场(Cerebella)",
+   "defense_char": "Cerebella",
+   "依据": "A 2026-09-29 01:0x 实机实证: 游戏日 09-28(周一) 开的角色周场, hub 最右侧卡 (该卡: BRONZE 层级行+右箭头+PLAY!/REWARDS, 无 SCORE 行, 剩 02D:23H:47M), 立绘 = Cerebella 特征(青绿短发/橙红巨臂/尖角帽), 与 §6.12.2 九对循环「该周=Annie/Big Band 之后 = Cerebella/Robo-Fortune, 周一-三=Cerebella」吻合。== 新增口径 (用户 2026-09-29): 角色场的**防守阵容必须包含该期角色** —— 防守队编辑器右上角红禁止标 + CONFIRM 灰(点不动) 就是不合规; 把 Cerebella 放进左1 后 CONFIRM 转亮、可继续。出战队仍不受限(实测左1 是 Annie 也能打)。defense_char 是本表新字段, 供角色场建子场次时设 rule={\"type\":\"class\",\"value\":<角色>}; 攻击规则仍是 rule=null。"
   }
  },
  "_补充": [
@@ -172,8 +179,8 @@
   "轮换规律 (PF_BOT.md §6.12) 只能告诉你'某天该有哪些类别在台上', 不能反推名字。",
   "",
   "绑名字的目的只有两个: ①选对父场次(角色周场/角色月场/金币场/元素场) ②日志可读。",
-  "**绑错角色名不会造成任何后果**(角色场无规则); 但把元素场误判成非元素场,",
-  "或者反过来, 会直接导致该过滤的没过滤 / 不该过滤的瞎过滤 —— 所以元素的依据等级",
-  "才真正要紧。"
+  "**绑错角色名对出战队没有后果**(出战队不按角色筛); 但角色场的**防守队**要含该期角色",
+  "(2026-09-29 用户口径, 见 HIGH WIRE HIJINKS 的 defense_char), 且把元素场误判成非元素场,",
+  "或者反过来, 会直接导致该过滤的没过滤 / 不该过滤的瞎过滤 —— 所以元素的依据等级才真正要紧。"
  ]
 }

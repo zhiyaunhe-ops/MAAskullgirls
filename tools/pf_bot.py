@@ -9,15 +9,20 @@ WebUI: http://127.0.0.1:<pf_env.WEBUI_PORT>  (本机 config.json 可覆盖)
 """
 from __future__ import annotations
 
+import difflib
 import json
+import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
 from pf_env import (
+    adb_connect,
     mumu_shutdown,
     resolve_adb,
+    spawn_detached,
     PROJECT_ROOT,
     STATE,
     WEBUI_PORT,
@@ -40,7 +45,7 @@ from maa.toolkit import Toolkit  # noqa: E402
 from maa.tasker import Tasker  # noqa: E402
 
 import pf_vision as vis  # noqa: E402
-from pf_domain import ScoreTracker  # noqa: E402
+from pf_domain import ScoreTracker, clean_energy, clean_rest, clean_target  # noqa: E402
 from pf_store import STORE  # noqa: E402
 from pf_webui import start_webui  # noqa: E402
 
@@ -52,6 +57,11 @@ TPL_CONTINUE = IMG + "pf_continue_btn.png"
 TPL_FIGHT = IMG + "vs_fight_btn.png"
 TPL_FILTER_X = IMG + "pf_filter_x.png"
 TPL_DRAGHINT = IMG + "drag_hint.png"
+# 防守队编辑器的右上确认按钮 (2026-09-29 实机裁图: assets/.../pf/defense_confirm.png,
+# 源帧 debug/pf/web_latest.jpg)。它**不是** vs_fight_btn —— 防守队编辑器右上写的是
+# CONFIRM, 老代码只认 FIGHT/CONTINUE 所以确认不了 (见 setup_defense_team 注释)。
+# 反向验证: 本帧 1.0; 促销/VS/选对手/层级卡等帧最高 0.494 (阈值 0.7 分离干净)。
+TPL_DEFENSE_CONFIRM = IMG + "defense_confirm.png"
 TPL_ENERGY_X = IMG + "energy_x.png"
 TPL_REFRESH = IMG + "pf_refresh_btn.png"
 TPL_RESULT_CONTINUE = IMG + "result_continue.png"
@@ -76,6 +86,26 @@ FILTER_COLS = [197, 302, 407, 512, 616, 721]
 ELEMENT_CHIPS = {"fire": (197, 370), "water": (302, 370), "wind": (407, 370),
                  "light": (512, 370), "dark": (616, 370), "neutral": (721, 370)}
 CLASS_CHIPS = {f"c{i+1}": (FILTER_COLS[i % 6], 505 if i < 6 else 594) for i in range(12)}
+# 角色场防守队限定: 筛选面板第 3/4 行是**角色图标** (6 列 x 2 行, 坐标即 CLASS_CHIPS)。
+# 用户口径 2026-09-29: 角色场的防守阵容必须包含该期角色 —— 不满足时编辑器右上红
+# 禁止标 + CONFIRM 变灰点不动 (实测帧 debug/pf/_def_now.png)。名单顺序与 webui.js 的
+# RULE_CLASSES (c1..c12) 同一份; c5=菱形图标=Cerebella 已实机印证 (筛选后候选整排变
+# Cerebella, CONFIRM 转亮)。
+CHARACTER_CHIPS = {
+    "Annie": CLASS_CHIPS["c1"], "Beowulf": CLASS_CHIPS["c2"],
+    "Big Band": CLASS_CHIPS["c3"], "Black Dahlia": CLASS_CHIPS["c4"],
+    "Cerebella": CLASS_CHIPS["c5"], "Double": CLASS_CHIPS["c6"],
+    "Eliza": CLASS_CHIPS["c7"], "Filia": CLASS_CHIPS["c8"],
+    "Fukua": CLASS_CHIPS["c9"], "Marie": CLASS_CHIPS["c10"],
+    "Ms. Fortune": CLASS_CHIPS["c11"], "Painwheel": CLASS_CHIPS["c12"],
+}
+# 防守队编辑器是**另一套版式** (2026-09-29 实测): 三槽居中 (y≈190), 候选列在 y≈555,
+# 且**没有能量黄钉** (黄钉是出战队概念) —— 不能复用 pf_vision 的出战队几何与能量判定。
+# 拖拽源取候选列正中一张 (640,555): 只要筛选生效, 整排都是目标角色, 无需精确标定。
+DEF_SLOT_DROP = [(440, 190), (640, 190), (840, 190)]
+DEF_DROP_SRC = (640, 555)
+# 槽位卡的**角色名** band (卡面下方彩色条, 如 'CEREBELLA'): 放人后的复验 ROI。
+DEF_SLOT_NAME_ROI = [(cx - 95, 292, cx + 95, 350) for cx, _ in DEF_SLOT_DROP]
 
 ROI_RESULT = (400, 570, 980, 700)     # 结算页底部 CONTINUE 行
 ROI_FILTER_X = (1150, 30, 1280, 140)  # 筛选面板关闭 X 搜索区
@@ -96,8 +126,63 @@ DEFENSE_BANDS = [(250, y, 1030, y + 50) for y in range(180, 470, 50)]
 # 依据 A 级 (坐标与标签同源)。离线复验: 正样本命中, 18 张非弹窗帧零误报。
 DEFENSE_OK_BTN = (751, 541)
 
+# ---- 角色场「难度锁定」确认弹窗 (PLAY!→编队→FIGHT! 后一次性, 2026-09-29) ----
+# 正文: "You are about to enter the Diamond <场地> PRIZE FIGHT. ... you will be
+# locked into the Diamond difficulty and will no longer be able to enter other
+# difficulties for this Prize Fight."  按钮 CANCEL/CONTINUE, **无 X**。
+# 取证帧: 用户截图 MuMu-20260929-055627-979.png -> debug/pf/_lock_popup.png。
+# 分带 OCR 实测 (同 find_defense_popup 思路): 两探针任一命中即认定;
+# CONTINUE 面心取 HSV 绿掩码质心 (748,575)。点 CONTINUE = 锁定难度, 正是所要;
+# 点 CANCEL 会退回, 绝不能点。
+LOCK_BANDS = [(390, y, 895, y + 50) for y in range(170, 490, 50)]
+LOCK_PROBES = ("LOCKEDINTO", "OTHERDIFFICULT")
+LOCK_CONTINUE_BTN = (748, 576)
+
+
+class LinkDead(RuntimeError):
+    """自愈后仍拿不到截图 —— MAA 内部作业已僵死 (kill-server 死等), 只能换进程重生。"""
+
+
+def _hard_exit(code: int) -> None:
+    """立即结束进程, 不走 MAA 销毁 —— 僵死的 MAA 等不起。
+
+    2026-09-28 现场: 重生后老进程 `run()` 返回 → 解释器收尾 → 主线程卡死在
+    `MaaControllerDestroy` (maafw.log 停在 `AsyncRunner::release` 之后不再动), 进程
+    当了 10 分钟+ 的僵尸: 8790 端口不放、bot_stdout.log 句柄也不放 —— 于是新进程
+    既绑不上端口 (start_webui 探到 'self' 直接拒绝) 也写不了日志 (cmd `>>` 报"另一个
+    程序正在使用此文件", python 根本没被启动), 重生成了空枪, 最后页面彻底失联。
+    正常退出该让 MAA 自己清 (会收掉它起的 adb 子进程), 但僵死时只能硬退: os._exit
+    跳过解释器收尾与所有线程 join, 端口与句柄立刻释放。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001  关流失败也得退
+            pass
+    os._exit(code)
+
+
+def _arm_exit_watchdog(seconds: float = 25.0) -> None:
+    """正常退出路径的保险丝: N 秒还没退完, 由守护线程 `_hard_exit` 强制收尾。
+
+    2026-09-27 01:02 现场: 点「停止」后主循环确实退出了, 但进程停在 MAA 销毁里不出来
+    —— 页面还在、端口还占着, 用户点「开始」毫无反应。挂在这条路径上的还有场次结束、
+    达标与调度 stop_pf。僵死的 MAA 销毁会 join 卡在 adb 死等里的工作线程, 等它没有意义。
+    """
+    def _bomb() -> None:
+        time.sleep(seconds)
+        STATE.log(f"退出超时 {seconds:.0f}s (MAA 销毁卡住), 强制结束进程", "warn")
+        _hard_exit(0)
+
+    threading.Thread(target=_bomb, daemon=True, name="exit-watchdog").start()
+
 
 class PfBot:
+    _RESPAWN_MARKER = Path(PROJECT_ROOT) / "debug" / "pf" / "respawn.json"
+    _RESPAWN_LOG_DIR = Path(PROJECT_ROOT) / "debug" / "pf"
+    _RESPAWN_MAX = 20          # 每自然日重生上限, 用尽即彻底退出等人工 (2026-09-28 用户口径)
+    _RESPAWN_GAP = 300.0       # 两次重生最小间隔 (秒)
+
     def __init__(self) -> None:
         self.controller: AdbController | None = None
         self.tasker = Tasker()
@@ -112,6 +197,7 @@ class PfBot:
         self._goal_closed = False     # 本次运行是否已因达标关过模拟器 (只做一次)
         self._stuck_shot = None       # 卡住未完成的截图作业 (见 _screencap_bounded)
         self._stuck_shot_warned = 0.0  # 上次提醒"截图卡住"的时间戳
+        self._shot_fails = 0          # 连续截图失败计数 (断链自愈用)
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
 
     # ---------- 基础设施 ----------
@@ -130,9 +216,18 @@ class PfBot:
             screencap_methods=int(MaaAdbScreencapMethodEnum.Default),
             input_methods=int(MaaAdbInputMethodEnum.Default),
         )
-        self.controller.post_connection().wait()
+        # 先补连 (幂等): 注册设备/预热 adb server —— 2026-09-27 实测 MuMu 桥假死窗口期
+        # MAA 首连会失败即退, 托盘"启动服务"表现为秒退假象; 重试 3 次跨过窗口。
+        adb_connect()
+        for attempt in (1, 2, 3):
+            self.controller.post_connection().wait()
+            if self.controller.connected:
+                break
+            STATE.log(f"MAA 连接失败 (第{attempt}/3次), 5s 后补连重试", "warn")
+            time.sleep(5)
+            adb_connect()
         if not self.controller.connected:
-            raise RuntimeError("连接 MuMu 失败")
+            raise RuntimeError("连接 MuMu 失败 (已重试3次; 确认模拟器已启动)")
         STATE.log(f"[ok] 已连接 {adb_path} @ {address}")
 
         resource = Resource()
@@ -149,21 +244,34 @@ class PfBot:
             raise RuntimeError("Tasker 初始化失败")
 
     def snap(self, tag: str = ""):
-        """截图: 存档 + 推送 WebUI, 返回图像。"""
-        img = self.controller.post_screencap().wait().get()
+        """截图: 存档 + 推送 WebUI, 返回图像。走自愈层, 拿不到图抛 LinkDead。"""
+        img = self._screencap_resilient()
         if img is None:
-            raise RuntimeError("截图失败")
+            raise LinkDead("截图失败 (连接不稳, 已自动补连仍拿不到图 —— MAA 内部作业僵死)")
         self.shot_seq += 1
         name = f"{self.shot_seq:04d}_{tag}.jpg"
         path = self.run_dir / name
+        # 存档是调试产物, 不许带崩主循环: 2026-09-29 实测 pf_scene(待命 bot 期间) 的
+        # 清理器把本进程 run_dir 整删, 恢复运行后第一次 write_bytes 抛
+        # FileNotFoundError -> "运行异常" ERROR 停摆 (帧没了, 战斗本身没事)。
+        try:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         # cv2.imwrite 对非 ASCII 路径会静默失败, 用 imencode + write_bytes
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if ok:
-            path.write_bytes(buf.tobytes())
+            try:
+                path.write_bytes(buf.tobytes())
+            except OSError as e:
+                STATE.log(f"帧存档失败 (不影响运行): {e}", "warn")
         latest = PROJECT_ROOT / "debug" / "pf" / "web_latest.jpg"
         ok2, buf2 = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if ok2:
-            latest.write_bytes(buf2.tobytes())
+            try:
+                latest.write_bytes(buf2.tobytes())
+            except OSError as e:
+                STATE.log(f"预览帧写入失败 (不影响运行): {e}", "warn")
         STATE.push_shot(latest)
         return img
 
@@ -209,28 +317,48 @@ class PfBot:
         norm = "".join(ch for ch in " ".join(parts).upper() if ch.isalpha())
         return "DEFENSETEAM" in norm
 
-    def setup_defense_team(self) -> bool:
-        """防守队弹窗: OK → 编队页 → 按元素规则左1放合规角色 → FIGHT 确认。
+    def find_lock_popup(self, img) -> bool:
+        """角色场「锁定难度」确认弹窗是否在前台 (正文文字判定, 同上)。
 
-        元素通用规定 (用户 2026-09-20): 元素场把**对应元素的角色放在左1**。
-        非元素场 (rule 为 None) 不动左1, 交给常规编队 —— 按项目铁律, 只有元素
-        PF 限定队伍, 角色/金币/星/月场一律无规则。
+        探针取两处独有措辞; 与防守队弹窗文本互不包含 (离线互验过),
+        两个弹窗的先后 (锁定→防守队) 不会互相误判。
+        """
+        parts = [self.ocr_text(img, roi) for roi in LOCK_BANDS]
+        norm = "".join(ch for ch in " ".join(parts).upper() if ch.isalpha())
+        return any(p in norm for p in LOCK_PROBES)
+
+    def setup_defense_team(self) -> bool:
+        """防守队弹窗/编辑器: (弹窗时) 点 OK → 左1 放合规角色 → CONFIRM 确认。
+
+        左1 放谁 (两条规则, 都只作用于**防守队**):
+          - element 规则: 放对应元素的角色 (用户 2026-09-20 元素通用规定);
+          - class 规则:   放该角色 (用户 2026-09-29 角色场防守要求, 见 CHARACTER_CHIPS)。
+        rule 为 None 不动左1, 交给常规编队。
+
+        2026-09-29 起两个入口共用本方法 (实机取证, 之前只有弹窗入口):
+          ①「先设防守队」弹窗 (点 OK 进编辑器);
+          ②主循环直接落在**编辑器**上 —— 右上角是 CONFIRM 而不是 FIGHT!/CONTINUE。
+        编辑器里没有 OK 按钮, 对 (751,541) 乱点会碰名册, 所以先判 CONFIRM,
+        命中就跳过 OK。两个入口的后续完全一致 (规则替换 + 确认)。
         """
         STATE.set_step("设防守队")
-        STATE.log("防守队弹窗: 点 OK 进编队", "warn")
-        img = None
-        for attempt in range(3):
-            self._tap(*DEFENSE_OK_BTN)      # 驻留式点击: 面板会吃掉零时长 post_click
-            time.sleep(2.5)
-            img = self.snap(f"防守队OK后{attempt + 1}")
-            if self.match_tpl(img, TPL_DRAGHINT, (430, 405, 850, 465), th=0.6):
-                break
-            STATE.log(f"OK 后没进编队页 (第{attempt + 1}次) —— 可能是按钮坐标偏了, "
-                      f"见 DEFENSE_OK_BTN 注释", "warn")
+        img = self.snap("防守队入口")
+        if self.match_tpl(img, TPL_DEFENSE_CONFIRM, ROI_TOPRIGHT):
+            STATE.log("已在防守队编辑器 (右上 CONFIRM), 跳过 OK", "warn")
         else:
-            STATE.log("防守队弹窗: 连点 3 次 OK 都没进编队页, 交回主循环 (不无限重试)",
-                      "err")
-            return False
+            STATE.log("防守队弹窗: 点 OK 进编队", "warn")
+            for attempt in range(3):
+                self._tap(*DEFENSE_OK_BTN)  # 驻留式点击: 面板会吃掉零时长 post_click
+                time.sleep(2.5)
+                img = self.snap(f"防守队OK后{attempt + 1}")
+                if self.match_tpl(img, TPL_DRAGHINT, (430, 405, 850, 465), th=0.6):
+                    break
+                STATE.log(f"OK 后没进编队页 (第{attempt + 1}次) —— 可能是按钮坐标偏了, "
+                          f"见 DEFENSE_OK_BTN 注释", "warn")
+            else:
+                STATE.log("防守队弹窗: 连点 3 次 OK 都没进编队页, 交回主循环 "
+                          "(不无限重试)", "err")
+                return False
 
         rule = STATE.pf_rule or {}
         fav_chips = [FILTER_HEART] if STATE.filter_favorite else []
@@ -244,23 +372,36 @@ class PfBot:
                     return False
             else:
                 STATE.log(f"防守队: 规则元素 {rule.get('value')!r} 没有筛选芯片, 跳过", "err")
+        elif rule.get("type") == "class":
+            # 角色场: 防守阵容必须含该期角色 (用户 2026-09-29 口径)。出战队不受限,
+            # 所以这条只在这里生效, 不进 judge_rule。
+            chip = CHARACTER_CHIPS.get(rule.get("value"))
+            if chip:
+                STATE.log(f"防守队: 左1 放一个 {rule['value']} (角色场防守要求)", "warn")
+                if not self.put_char_in_defense(0, chip, rule["value"]):
+                    STATE.log("防守队: 左1 放不进目标角色 (筛选没生效/拖拽没落位), "
+                              "交回主循环", "err")
+                    return False
+            else:
+                STATE.log(f"防守队: 角色 {rule.get('value')!r} 没有筛选芯片, 跳过", "err")
         else:
-            STATE.log("防守队: 本场无元素规则, 左1 不强制换人 (交给常规编队)", "warn")
+            STATE.log("防守队: 本场无元素/角色规则, 左1 不强制换人 (交给常规编队)", "warn")
 
-        # 确认按钮: 防守队编辑器里它**未必还是 FIGHT** (2026-09-18 人工记录里提到
-        # 一个 CONFIRM 按钮)。先找 FIGHT, 找不到再找结算款 CONTINUE —— 两者都不在
-        # 就老实报错退出, 不猜坐标。⚠️ 这一段本次没实机跑过 (弹窗已被消费),
-        # 下次新 PF 触发时看有没有「防守队确认」日志来判断。
+        # 确认按钮: 编辑器里是 CONFIRM (2026-09-29 实机: 老代码只找 FIGHT/CONTINUE,
+        # 结果报「都找不到」交回主循环, 主循环又把编辑器当常规编队页 —— 那页没有
+        # 能量黄钉, 黄钉全读 0, 空烧到「无可用能量角色」停摆)。FIGHT/CONTINUE 兜底
+        # 保留, 覆盖历史上出现过的其它确认款。
         img2 = self.snap("防守队确认前")
-        btn = (self.match_tpl(img2, TPL_FIGHT, ROI_TOPRIGHT)
+        btn = (self.match_tpl(img2, TPL_DEFENSE_CONFIRM, ROI_TOPRIGHT)
+               or self.match_tpl(img2, TPL_FIGHT, ROI_TOPRIGHT)
                or self.match_tpl(img2, TPL_CONTINUE, ROI_TOPRIGHT))
         if not btn:
-            STATE.log("防守队确认: FIGHT/CONTINUE 都找不到, 交回主循环 "
+            STATE.log("防守队确认: CONFIRM/FIGHT/CONTINUE 都找不到, 交回主循环 "
                       f"(截图 {self.run_dir.name}/防守队确认前)", "err")
             return False
         self.controller.post_click(*btn).wait()
         time.sleep(2.5)
-        STATE.log("防守队已确认 (点 FIGHT), 接着等本场打完")
+        STATE.log("防守队已确认 (点 CONFIRM/FIGHT), 接着等本场打完")
         if not self._battle_auto_checked:
             self._battle_auto_checked = True
             self.ensure_battle_auto()
@@ -373,8 +514,8 @@ class PfBot:
         STATE.score = val
         streak_txt = f"，连胜 {STATE.streak}" if STATE.streak is not None else ""
         if STATE.score_target is not None and val >= STATE.score_target:
-            STATE.log(f"总分 {val:,} 已达上限 {STATE.score_target:,}, 自动暂停", "warn")
-            STATE.status = "PAUSED"
+            # 无暂停态 (2026-09-27 用户口径): 达标 = 场次结束, 主循环随即回 IDLE 待命
+            STATE.log(f"总分 {val:,} 已达上限 {STATE.score_target:,}, 结束场次", "warn")
             STATE.running = False
             self.on_goal_reached(val)
             return
@@ -531,19 +672,49 @@ class PfBot:
             time.sleep(0.5)
         return ok
 
+    def _slot_fighter_name(self, img, slot_i: int) -> str:
+        """OCR 防守队槽位卡的**角色名** band (卡面下方彩色条, 如 'CEREBELLA')。"""
+        raw = self.ocr_text(img, DEF_SLOT_NAME_ROI[slot_i])
+        return re.sub(r"[^A-Z]", "", raw.upper())
+
+    def put_char_in_defense(self, slot_i: int, chip, want: str) -> bool:
+        """筛选指定角色芯片 -> 拖候选卡进防守队槽位 -> 还原筛选 -> 按槽位角色名复验。
+
+        与出战队选人 (refill_rule_slot) 同款思路, 但两处必须不同:
+          ①防守队编辑器**没有能量黄钉**, 不能做能量判定 (做了就是全 0 空烧);
+          ②版式不同 (三槽居中), 拖拽落点用 DEF_SLOT_DROP, 源点取候选列正中一张。
+        返回 False = 筛选/拖拽/复验任一环节没成, 由调用方交回主循环。
+        """
+        fav = [FILTER_HEART] if STATE.filter_favorite else []
+        self.set_filter([chip] + fav)
+        self.drag_card(*DEF_DROP_SRC, *DEF_SLOT_DROP[slot_i])
+        time.sleep(1.5)
+        self.set_filter(fav)                     # 还原筛选, 别把面板留给后面的常规编队
+        img = self.snap("防守队放人后")
+        got = self._slot_fighter_name(img, slot_i)
+        want_norm = re.sub(r"[^A-Z]", "", want.upper())
+        if want_norm and (want_norm in got
+                          or difflib.SequenceMatcher(None, want_norm, got).ratio() >= 0.7):
+            STATE.log(f"防守队: 槽位{slot_i + 1} 已放入 {want} (OCR {got!r})")
+            return True
+        STATE.log(f"防守队: 槽位{slot_i + 1} 角色名复验不过 (OCR {got!r}, 期望 "
+                  f"{want!r}) —— 筛选或拖拽没生效", "err")
+        return False
+
     def judge_rule(self, img) -> bool:
-        """判定当前队伍是否满足规则。
+        """判定当前**出战队**是否满足规则。
 
         游戏自身以 FIGHT 按钮颜色提示合规性: 满足=橙色(高饱和), 不满足=灰色。
         实测橙按钮高饱和亮色占比 ~55% (S中位251), 灰按钮接近 0%, 阈值取 15%。
-        类别规则 sgm 无数据, 维持不满足 -> 走筛选替换流程。
+        角色(class)规则只约束**防守队**, 出战队不受限 (用户 2026-09-29 口径) ——
+        旧实现返回 False 是桩, 会让出战队每场都进"筛选替换"空烧, 已废弃。
         找不到 FIGHT 按钮 (不在编队页) 时返回 True, 不触发筛选。
         """
         rule = STATE.pf_rule
         if not rule:
             return True
         if rule["type"] == "class":
-            return False
+            return True
         fight = self.match_tpl(img, TPL_FIGHT, ROI_TOPRIGHT)
         if not fight:
             return True
@@ -743,6 +914,13 @@ class PfBot:
             self.controller.post_click(*fight).wait()
             time.sleep(2.5)
             img = self.snap("fight点击后")
+            if self.find_lock_popup(img):
+                # 角色场首入: FIGHT! 后弹「锁定难度」确认 (无 X)。点 CONTINUE 后
+                # 游戏回选对手页 —— 交回主循环, 别再留在编队逻辑里。
+                STATE.log("难度锁定弹窗: 点 CONTINUE 锁定, 交回主循环", "warn")
+                self.controller.post_click(*LOCK_CONTINUE_BTN).wait()
+                time.sleep(3.0)
+                return
             ex = self.find_popup_x(img)
             if ex:
                 rotations += 1
@@ -940,6 +1118,74 @@ class PfBot:
         STATE.log("截图调用卡住未返回 (MAA 内部重连 / adb kill-server 死等), 本轮已跳过; "
                   "停止·开始仍可响应, 持续不恢复请重启 bot", "warn")
 
+    def _screencap_resilient(self, attempts: int = 3, gap: float = 4.0):
+        """snap() 的自愈层: 拿不到图不立刻判死 —— 2026-09-27 13:00 实测 MuMu 的 adbd
+        会把 TCP 设备从 adb 表里掉线 (设备表只剩 emulator-5554), MAA 自带重连又会
+        撞 kill-server 死等。这里连续失败时补一次 adb connect (幂等, 独立客户端进程,
+        与 MAA 的僵死管道无关) 再试; 三次都失败才把异常抛回主循环走 ERROR 干净停机。
+        """
+        for i in range(attempts):
+            img = self._screencap_bounded()
+            if img is not None:
+                self._shot_fails = 0
+                return img
+            self._shot_fails += 1
+            if self._screencap_stuck():
+                self._warn_stuck_screencap()
+            if i < attempts - 1:
+                if self._shot_fails >= 2:
+                    ok = adb_connect()
+                    STATE.log(f"截图连续失败 ({self._shot_fails}次), 补 adb connect -> "
+                              f"{'成功' if ok else '失败'}", "warn")
+                time.sleep(gap)
+        return None
+
+    def _respawn_with_resume(self) -> bool:
+        """MAA 僵死后的自我重生: 拉起带 SGM_PF_RESUME=1 的新进程替自己续跑当前场次。
+
+        限流 (debug/pf/respawn.json): 两次间隔 ≥5 分钟, 每自然日 ≤`_RESPAWN_MAX` 次 ——
+        防 MuMu 真挂了时进入无限重生循环 (那种情况该触发的是人工检查, 不是转圈); 不限流
+        不通过只返回 False, 由调用方**彻底退出**(见 run 的 LinkDead 分支), 不留僵尸。
+        新进程 setup 成功后读环境变量自动 STATE.running=True; setup 失败则由它自己
+        的 ERROR 路径兜底, 不会再来一层重生 (RESUME 只影响续跑, 不叠加重生)。
+
+        新进程写**自己那一代的** stdout 日志 (bot_stdout_<时间戳>.log): 老进程的 cmd
+        `>>` 句柄要等进程真退出才放, 共用 bot_stdout.log 会让新进程的重定向直接失败
+        (cmd 报"另一个程序正在使用此文件" → python 没被启动 → 报错进隐藏控制台, 日志
+        里一个字都没有; 2026-09-28 实测复现)。这类 .log 由 cleanup_debug 按名称序修剪。
+        """
+        now = time.time()
+        today = time.strftime("%Y-%m-%d")
+        data = {"day": today, "count": 0, "last": 0.0}
+        try:
+            data.update(json.loads(self._RESPAWN_MARKER.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001  没有文件/坏了都从零计
+            pass
+        if data.get("day") != today:
+            data = {"day": today, "count": 0, "last": 0.0}
+        count = int(data.get("count") or 0)
+        if now - float(data.get("last") or 0) < self._RESPAWN_GAP:
+            STATE.log(f"重生受限: 距上次重生不足 {int(self._RESPAWN_GAP)}s, 不重复拉起", "err")
+            return False
+        if count >= self._RESPAWN_MAX:
+            STATE.log(f"重生已用尽 (今日 {count}/{self._RESPAWN_MAX} 次), 不再拉起", "err")
+            return False
+        log_path = self._RESPAWN_LOG_DIR / time.strftime("bot_stdout_%Y%m%d-%H%M%S.log")
+        data.update(count=count + 1, last=now)
+        try:
+            self._RESPAWN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            self._RESPAWN_MARKER.write_text(json.dumps(data), encoding="utf-8")
+            spawn_detached('"%s" tools\\pf_bot.py' % sys.executable, str(PROJECT_ROOT),
+                           log_path=str(log_path),
+                           env_lines=('set "PYTHONUTF8=1"', 'set "PYTHONIOENCODING=utf-8"',
+                                      'set "SGM_PF_RESUME=1"'))
+        except Exception as e:  # noqa: BLE001
+            STATE.log(f"重生拉起新进程失败: {e}", "err")
+            return False
+        STATE.log(f"自我重生 (今日第{data['count']}/{self._RESPAWN_MAX}次): "
+                  f"新进程将自动续跑当前场次, 日志 {log_path.name}", "warn")
+        return True
+
     def run(self) -> None:
         """常驻监督循环: WebUI 可随时 开始/暂停/停止 (停止则进程退出)。"""
         STATE.status = "IDLE"
@@ -951,11 +1197,11 @@ class PfBot:
                 return
             if not STATE.running:
                 if STATE.status == "RUNNING":
-                    # 手动暂停与达标自动暂停同为 PAUSED: 前端据此把「开始」换成「继续」,
-                    # 也避免占用 STOPPED (那是进程真退出的状态, /api/pause 不该冒用)。
-                    STATE.status = "PAUSED"
-                    STATE.log("==== PF Bot 已暂停 ====")
-                # 暂停期间仍清理阻塞弹窗 (服务器错误/X), 防止屏幕卡死。
+                    # 无暂停态: 结束/达标/关机前停跑都走这里 —— 场次结束, 回到待命。
+                    # STOPPED 仍保留给进程真退出 (/api/stop, 托盘/调度按"等进程退出"依赖它)。
+                    STATE.status = "IDLE"
+                    STATE.log("==== 场次结束, 回到待命 ====")
+                # 非运行态仍清理阻塞弹窗 (服务器错误/X), 防止屏幕卡死。
                 # 截图走带超时的封装: MAA 内部重连有可能死等 (见 _screencap_bounded),
                 # 不能让主循环陪着一起等 —— 那会让「停止」「开始」全部失效。
                 img = self._screencap_bounded()
@@ -1003,6 +1249,16 @@ class PfBot:
                 STATE.log("==== PF Bot 运行中 ====")
             try:
                 self.step()
+            except LinkDead as e:
+                # 自愈已尽力仍拿不到图 = MAA 内部作业僵死 (进程内无解): 换进程重生 (带续跑);
+                # 限流/拉起失败则彻底退出 —— MAA 已救不回, 留着只会当僵尸占端口、占日志。
+                STATE.status = "ERROR"
+                STATE.log(f"{e}", "err")
+                if self._respawn_with_resume():
+                    STATE.log("本进程退出, 由新进程接管", "warn")
+                    _hard_exit(0)
+                STATE.log("==== 连接僵死且无法重生, 彻底退出 (人工检查后重新启动) ====", "err")
+                _hard_exit(3)
             except Exception as e:  # noqa: BLE001
                 STATE.status = "ERROR"
                 STATE.log(f"运行异常: {e}", "err")
@@ -1020,8 +1276,10 @@ class PfBot:
             remain = int((STATE.rest_until - time.time()) / 60) + 1
             STATE.step = f"休息中 (剩 ~{remain} 分钟, 回能)"
             try:
-                img = self.controller.post_screencap().wait().get()
-                if img is not None:
+                img = self._screencap_bounded()
+                if self._screencap_stuck():
+                    self._warn_stuck_screencap()
+                elif img is not None:
                     srv = self.find_server_error(img)
                     if srv:
                         STATE.log("休息期间出现服务器错误弹窗, 点按钮", "warn")
@@ -1075,6 +1333,22 @@ class PfBot:
             self._defense_done = True
             if not self.setup_defense_team():
                 STATE.log("防守队处理未成功, 本场次不再重试 (需人工看截图)", "err")
+        elif self.match_tpl(img, TPL_DEFENSE_CONFIRM, ROI_TOPRIGHT):
+            # 防守队编辑器本体 (右上 CONFIRM): 这一页**没有能量黄钉**, 绝不能当常规
+            # 编队页处理 —— 2026-09-29 实测: 槽位/候选能量全读 0, 空烧到「无可用能量
+            # 角色」停摆。排在 DRAGHINT 判据前面 (编辑器同样显示 DRAG 提示)。
+            self.unknown_tries = 0
+            self._defense_done = True
+            if not self.setup_defense_team():
+                STATE.log("防守队编辑器处理未成功, 本场次不再重试 (需人工看截图)", "err")
+        elif self.find_lock_popup(img):
+            # 角色场「锁定难度」确认弹窗 (无 X, CANCEL/CONTINUE): 点 CONTINUE 锁定。
+            # 必须排在 REFRESH/FIGHT 判据前 —— 弹窗背后的 FIGHT! 仍可见, 否则会
+            # 反复走 fight_flow (2026-09-29 用户截图取证)。
+            self.unknown_tries = 0
+            STATE.log("难度锁定弹窗: 点 CONTINUE 锁定", "warn")
+            self.controller.post_click(*LOCK_CONTINUE_BTN).wait()
+            time.sleep(2.5)
         elif self.match_tpl(img, TPL_REFRESH, (700, 15, 960, 115), th=0.7):
             self.unknown_tries = 0
             self.track_score(img)
@@ -1122,14 +1396,30 @@ def main() -> int:
         bot.setup()
     except Exception as e:  # noqa: BLE001
         STATE.status = "ERROR"
+        STATE.step = str(e)[:100]        # 托盘读 /api/state 的 step 给出真实原因
         STATE.log(f"初始化失败: {e}", "err")
+        _arm_exit_watchdog()             # 退出前挂保险丝: MAA 销毁卡死也能退干净
         return 1
+    if os.environ.get("SGM_PF_RESUME") == "1" and STORE.session_id:
+        # 自我重生的新进程: 接着死前那场跑 (场次指针已持久化)。
+        # 场次配置也要套回去 —— 那本是 WebUI /api/start 里 _apply_session 的活,
+        # 漏了的话目标分/规则/休息全空 (首版实测: 48.6M/50M 不会自动收官)。
+        sess = STORE.get(STORE.session_id) or {}
+        STATE.pf_rule = dict(sess["rule"]) if sess.get("rule") else None
+        STATE.score_target = clean_target(sess.get("score_target"))
+        STATE.rest_every = clean_rest(sess.get("rest_every"))
+        STATE.rest_minutes = clean_rest(sess.get("rest_minutes"))
+        STATE.energy_cost = clean_energy(sess.get("energy_cost"))
+        STATE.running = True
+        STATE.log(f"自动续跑场次「{sess.get('name', '?')}」(重生接管)", "warn")
     try:
         bot.run()
     except Exception as e:  # noqa: BLE001
         STATE.status = "ERROR"
         STATE.log(f"运行异常: {e}", "err")
+        _arm_exit_watchdog()
         return 1
+    _arm_exit_watchdog()
     return 0
 
 

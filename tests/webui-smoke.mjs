@@ -53,7 +53,7 @@ const server = createServer(async (request, response) => {
         return send(200, { ok: true });
       }
       if (url.pathname === '/api/start') { select(body.session_id); state.status = 'RUNNING'; return send(200, { ok: true }); }
-      if (url.pathname === '/api/pause') { state.status = 'PAUSED'; return send(200, { ok: true }); }
+      if (url.pathname === '/api/end') { state.status = 'IDLE'; return send(200, { ok: true }); }
       if (url.pathname === '/api/settings') {
         Object.assign(state, { filter_favorite: body.filter_favorite, close_on_goal: body.close_mumu_on_goal });
         return send(200, { ok: true });
@@ -109,7 +109,7 @@ try {
     assert.equal(await page.locator('#in-target').isDisabled(), true);
     await page.screenshot({ path: join(artifacts, 'desktop-empty.png'), fullPage: true });
   });
-  await check('sessions selection, settings persistence, start and pause', async () => {
+  await check('sessions selection, settings persistence, start and end', async () => {
     await page.locator('#sess-chip').click();
     await page.locator('.sess-row[data-id="weekend"]').click();
     await page.locator('#sess-pick').click();
@@ -127,9 +127,9 @@ try {
     await page.locator('#startbtn').click();
     await wait(page, () => document.getElementById('status').textContent === 'RUNNING');
     assert.equal(await page.locator('#in-energy').isDisabled(), true);
-    await page.locator('#pausebtn').click();
-    await wait(page, () => document.getElementById('status').textContent === 'PAUSED');
-    assert.equal(await text(page, '#startbtn'), '继续');
+    await page.locator('#stopbtn').click();
+    await wait(page, () => document.getElementById('status').textContent === 'IDLE');
+    assert.equal(await text(page, '#startbtn'), '开始');
   });
   await check('loaded screenshot and log search/level/follow controls', async () => {
     state.shot_ver = 1; state.shot_time = '12:01:00';

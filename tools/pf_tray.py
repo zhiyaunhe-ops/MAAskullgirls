@@ -207,7 +207,7 @@ def _bg(fn, name: str):
         _busy = name
         _refresh_icon()
         try:
-            fn()
+            fn(icon, item)          # 透传: act_quit 等需要真 icon (2026-09-27 修, 原先 icon=None 必炸)
         except Exception:  # noqa: BLE001
             _excepthook(*sys.exc_info())
         finally:
@@ -224,6 +224,11 @@ def act_start(icon=None, item=None) -> None:
         _log("启动失败: bot 未就绪")
         return
     cur = _http("/api/state", timeout=3.0) or {}
+    # HTTP 应答 ≠ 初始化成功: MAA 连不上模拟器时 bot 会在 setup 阶段退出 (2026-09-27
+    # 实测"就绪→无可用场次"误导), 这里把真实原因翻出来。
+    if cur.get("status") == "ERROR":
+        _log("bot 初始化失败: %s" % (cur.get("step") or "未知原因, 看 bot_stdout.log"))
+        return
     sid = cur.get("session_id") or ""
     if not sid:
         s = _http("/api/sessions", timeout=3.0) or {}
@@ -353,8 +358,7 @@ def _state_head(item=None) -> str:
     if s == "RUNNING":
         return "运行中 · 第%s场 · %s分 · 连胜%s" % (
             st.get("fight_no", "?"), _fmt(st.get("score")), st.get("streak", "?"))
-    return {"PAUSED": "已暂停", "IDLE": "空闲 (未开始)",
-            "ERROR": "出错了", "STOPPED": "已停止"}.get(s, s)
+    return {"IDLE": "待命 (未开始)", "ERROR": "出错了", "STOPPED": "已停止"}.get(s, s)
 
 
 def _poll_loop() -> None:

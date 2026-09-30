@@ -4,7 +4,10 @@ GET  /                  页面（Prize Fighter Bot [运行/图表子页签] / �
 GET  /api/state         {status, step, fight_no, score, streak, logs, shot_ver, shot_time,
                          session_id, session_name, log_total}
 GET  /api/sessions      {sessions: [{id,name,rule,count,last_ts}], active, running}
-GET  /api/summary       {per_min, last_delta}  当前场次轻量统计 (小组件用)
+GET  /api/summary       {per_min, last_delta, score, target, eta_sec}  当前场次轻量统计
+                        (小组件与 WebUI「目标进度」的预计完成时间共用; per_min 只计
+                        相邻间隔≤180s 的活跃段。页面未设目标分时只显速率, 不沿用
+                        这里 eta_sec 的 150M 兜底)
 GET  /api/daily         {data:{queue,pool,names}, saved}  每日任务状态 (debug/pf/daily.json)
 GET  /api/jjc           {snapshot:{day,entries,daily_events,...}, versions, session_names}
                         JJC 日程快照 + 场次×规则版本账本（peek, 不触网）
@@ -15,14 +18,14 @@ GET  /static/...        静态文件（WebUI HTML / CSS / JS、Chart.js）
 GET  /sgm/...           sgm 素材（元素/角色图标等）
 GET  /shot.jpg          最新截图
 POST /api/start         {session_id} 开始指定场次（运行中不可换）
-POST /api/pause         请求暂停（可恢复）
-POST /api/stop          请求停止（主循环退出, 进程结束, WebUI 一并关闭）
+POST /api/end           结束当前场次, 回 IDLE 待命 (进程与 WebUI 保留)
+POST /api/stop          进程退出 (主循环退出, WebUI 一并关闭; 托盘/调度依赖)
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
 POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删）
 GET  /api/mumu             {running, busy, close_on_goal, game_pkg}  模拟器状态
 POST /api/mumu/launch      启动 MuMu（后台线程, 等 start_finished）
 POST /api/mumu/game        启动 MuMu(如需) + adb monkey 拉起 Skullgirls
-POST /api/mumu/shutdown    关闭 MuMu（bot 运行中会先暂停; 只走 MuMuManager control）
+POST /api/mumu/shutdown    关闭 MuMu（bot 运行中会先结束场次; 只走 MuMuManager control）
 POST /api/settings         {filter_favorite, close_mumu_on_goal}
                            close_mumu_on_goal: 总分达标时自动关闭 MuMu（默认开）
 
@@ -214,8 +217,8 @@ def _mumu_do_shutdown(by_user_click: bool = True) -> None:
         return
     if STATE.running:
         STATE.running = False    # 先停 bot, 否则 adb 断开会刷一片异常
-        STATE.status = "PAUSED"
-        STATE.log("关闭 MuMu 前先暂停 bot", "warn")
+        STATE.status = "IDLE"
+        STATE.log("关闭 MuMu 前先结束场次", "warn")
     STATE.log("正在关闭 MuMu ...", "warn")
     if mumu_shutdown():
         STATE.log("MuMu 已关闭", "warn")
@@ -442,9 +445,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._gate(is_post=True):
             return
-        if self.path == "/api/pause":
+        if self.path == "/api/end":
+            # 结束场次: 回 IDLE 待命, 进程与 WebUI 保留。进程退出是 /api/stop
+            # (pf_schedule/托盘按"等进程退出"依赖它), 语义不动。
             STATE.running = False
-            STATE.log("收到 WebUI 暂停请求", "warn")
+            STATE.log("收到 WebUI 结束请求, 本场次结束, 回到待命", "warn")
             self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/stop":
             STATE.running = False
@@ -662,6 +667,9 @@ class _PFHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+_PORT_WAIT_S = 10.0   # 启动时等老进程让出端口的秒数 (重生接管 / 「停止」后正在退出的窗口)
+
+
 def _port_owner(port: int) -> str:
     """探测端口占用者: 'self'=另一个 pf_bot / 'other'=别的服务 / ''=空闲。"""
     import socket
@@ -687,14 +695,25 @@ def start_webui(port: int = None) -> ThreadingHTTPServer:
     端口被占就**直接抛错**, 不悄悄换一个, 也**不允许第二个实例**: 换端口会让写死 URL
     的调用方全部失联; 双实例会两个人同时点同一个模拟器 (见 §8-12)。宁可启动失败让人
     看见, 也不装作成功。
+
+    唯一让步: 老进程退出时端口会多占一两秒 (重生接管 / 点「停止」), 所以先等
+    `_PORT_WAIT_S` 秒; 一直占着才拒绝。绑是独占的 (allow_reuse_address=False), 即便
+    双方同时等到"空闲"也只有一个能绑上, 另一个在 OSError 上被拦 —— 不会出现双实例。
     """
     port = int(port or WEBUI_PORT)
-    owner = _port_owner(port)
-    if owner == "self":
-        raise RuntimeError(
-            f"端口 {port} 上已经有一个 pf_bot 在跑, 拒绝启动第二个实例 —— "
-            f"两个实例会同时向模拟器注入点击 (见 PF_BOT.md §8-12)。"
-            f"先 Taskkill 掉旧进程, 或去 http://127.0.0.1:{port}/ 点「停止」。")
+    deadline = time.time() + _PORT_WAIT_S
+    while True:
+        owner = _port_owner(port)
+        if owner != "self":
+            break
+        if time.time() >= deadline:
+            raise RuntimeError(
+                f"端口 {port} 上已经有一个 pf_bot 在跑, 拒绝启动第二个实例 —— "
+                f"两个实例会同时向模拟器注入点击 (见 PF_BOT.md §8-12)。"
+                f"先 Taskkill 掉旧进程, 或去 http://127.0.0.1:{port}/ 点「停止」。"
+                f"若那是僵死进程 (点「停止」/重生后进程不退、日志不再更新, 端口还被占着), "
+                f"用 netstat -ano | findstr {port} 找到 pid 后 taskkill /PID <pid> /F。")
+        time.sleep(0.5)
     if owner == "other":
         raise RuntimeError(
             f"端口 {port} 被别的服务占用 (不是 pf_bot)。 "

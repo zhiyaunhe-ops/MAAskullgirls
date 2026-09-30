@@ -38,18 +38,22 @@ class ScoreStore:
 
     # ---------- 场次 ----------
     def _load(self) -> None:
+        active = None
         try:
             with open(self.sessions_path, encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data.get("sessions"), list):
                 self.sessions = [s for s in data["sessions"]
                                  if isinstance(s, dict) and s.get("id")]
+            active = data.get("active")          # 上次运行的场次指针 (2026-09-27 起持久化)
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
         if not any(s.get("id") == "default" for s in self.sessions):
             # 历史 CSV 无 session 列的旧行统一归 Default (无规则)
             self.sessions.append({"id": "default", "name": "Default",
                                   "rule": None, "created": time.time()})
+        if active and any(s.get("id") == active for s in self.sessions):
+            self.session_id = active             # 重启后托盘/WebUI 还能"接着上次跑"
         self._save_sessions()
         self._load_history()
         # 老数据倒推: 场次记录缺总分时, 从该场次最后一个采样回填
@@ -73,7 +77,8 @@ class ScoreStore:
         tmp = self.sessions_path.with_suffix(".json.tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"sessions": self.sessions}, f, ensure_ascii=False, indent=1)
+                json.dump({"sessions": self.sessions, "active": self.session_id},
+                          f, ensure_ascii=False, indent=1)
             tmp.replace(self.sessions_path)
         except OSError:
             pass
@@ -182,11 +187,12 @@ class ScoreStore:
             self._save_sessions()
 
     def set_session(self, sid: str):
-        """绑定当前运行场次 (开始前调用), 返回场次 dict。"""
+        """绑定当前运行场次 (开始前调用), 返回场次 dict。指针落盘供重启后恢复。"""
         sess = self.get(sid)
         if not sess:
             raise KeyError(sid)
         self.session_id = sid
+        self._save_sessions()
         return sess
 
     # ---------- 计分 ----------
