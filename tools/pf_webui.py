@@ -41,7 +41,10 @@ POST /api/adb_config       校验后写回 config.json 四件套; 返回 restart
 import ipaddress
 import json
 import mimetypes
+import os
+import re
 import socket
+import subprocess
 import threading
 import time
 import urllib.request
@@ -51,8 +54,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from pf_env import (ADB_SERVER_PORT, CONFIG_PATH, GAME_PKG, MUMU_ADDRESS,
-                    MUMU_ADB_PATH, MUMU_DIR, STATE, WEBUI_PORT, adb_connect,
-                    mumu_is_running, mumu_launch_game, mumu_shutdown, mumu_start)
+                    MUMU_ADB_PATH, MUMU_DIR, STATE, SUBPROC_TEXT, WEBUI_PORT,
+                    adb_connect, mumu_is_running, mumu_launch_game,
+                    mumu_paths, mumu_shutdown, mumu_start)
 from pf_domain import UNSET, clean_rest, clean_target, clean_energy
 from pf_store import STORE
 from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
@@ -77,6 +81,87 @@ def _read_adb_config() -> dict:
         "adb_server_port": int(cfg.get("adb_server_port") or 0),
         "mumu_dir": str(cfg.get("mumu_dir") or ""),
     }
+
+
+def _find_running_mumu_exe() -> str:
+    """跑着的 MuMuNxMain.exe 的完整路径 (最可靠的安装位置信号); 没跑返回空。"""
+    try:
+        ps = ("Get-CimInstance Win32_Process -Filter \"Name='MuMuNxMain.exe'\" "
+              "| Select-Object -First 1 -ExpandProperty ExecutablePath")
+        p = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, timeout=15, **SUBPROC_TEXT)
+        return (p.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _autodetect_adb() -> dict:
+    """自动探测 MuMu 安装目录 / adb / 连接地址 (「自动检测」按钮后端)。
+
+    目录来源按可靠性排序: 运行中进程 → 现配置能解析出的目录 → 常见安装位置
+    (盘符根 + Program Files 下一层 glob)。地址靠真连接探测 (5555/16384/7555),
+    模拟器不在线就探不了, 保留现值并说明。
+    """
+    notes = []
+    dirs: list[str] = []
+    exe = _find_running_mumu_exe()
+    if exe:
+        dirs.append(str(Path(exe).parent))
+    else:
+        notes.append("MuMu 进程未在运行, 跳过进程路径探测")
+    try:
+        _, nx, _ = mumu_paths()
+        if nx:
+            dirs.append(str(Path(nx).parent))
+    except Exception:  # noqa: BLE001
+        pass
+    for drive in "CDEFGH":
+        root = Path(drive + ":/")
+        if not root.is_dir():
+            continue
+        for pat in ("Program Files*/Netease/*/nx_main", "*MuMu*/nx_main"):
+            try:
+                dirs.extend(str(p) for p in root.glob(pat) if p.is_dir())
+            except (OSError, ValueError):
+                continue
+    seen: set[str] = set()
+    mumu_dir = ""
+    for d in dirs:
+        if d in seen:
+            continue
+        seen.add(d)
+        if (Path(d) / "MuMuManager.exe").is_file() or (Path(d) / "MuMuNxMain.exe").is_file():
+            mumu_dir = d
+            break
+    adb_path = ""
+    if mumu_dir and (Path(mumu_dir) / "adb.exe").is_file():
+        adb_path = str(Path(mumu_dir) / "adb.exe")
+        notes.append("adb 用的是 MuMu 自带版本 (当前口径是与巡检同份 platform-tools, 自行斟酌)")
+    # 地址探测: 拿探测到的 (或现配置的) adb 逐个端口试连, 真连上才算数
+    address = ""
+    adb_for_probe = adb_path or (_read_adb_config()["adb_path"])
+    if adb_for_probe and Path(adb_for_probe).is_file():
+        env = dict(os.environ, ANDROID_ADB_SERVER_PORT=str(ADB_SERVER_PORT or 5037))
+        cfg_addr = _read_adb_config()["address"]
+        ports = []
+        m = re.fullmatch(r"[^:]+:(\d+)", cfg_addr)
+        if m:
+            ports.append(int(m.group(1)))
+        ports.extend(p for p in (5555, 16384, 7555) if p not in ports)
+        for port in ports[:4]:
+            try:
+                p = subprocess.run([adb_for_probe, "connect", "127.0.0.1:%d" % port],
+                                   capture_output=True, timeout=6, env=env, **SUBPROC_TEXT)
+                out = ((p.stdout or "") + (p.stderr or "")).lower()
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if "connected to" in out or "already connected" in out:
+                address = "127.0.0.1:%d" % port
+                break
+        if not address:
+            notes.append("模拟器不在线或端口都不通, 地址保留现值 (探测需模拟器在线)")
+    return {"mumu_dir": mumu_dir, "adb_path": adb_path,
+            "address": address, "notes": notes}
 
 
 def _load_daily() -> dict:
@@ -693,6 +778,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json",
                        json.dumps({"ok": True, "restart_required": True, "warnings": warns},
                                   ensure_ascii=False).encode("utf-8"))
+        elif self.path == "/api/adb_config/autodetect":
+            # 「自动检测」: 找 MuMu 目录/adb/地址, 只回填前端字段不落盘 (保存仍走上面)。
+            # 探测器任何异常都不许裸抛 —— 裸抛 = 连接无响应, 前端只见空回包。
+            try:
+                r = _autodetect_adb()
+                STATE.log("自动检测: mumu_dir=%s address=%s %s"
+                          % (r["mumu_dir"] or "未找到", r["address"] or "未探测到",
+                             "; ".join(r["notes"])), "warn")
+                self._send(200, "application/json",
+                           json.dumps({"ok": True, **r}, ensure_ascii=False).encode("utf-8"))
+            except Exception as e:  # noqa: BLE001
+                self._send(200, "application/json",
+                           json.dumps({"ok": False, "mumu_dir": "", "adb_path": "",
+                                       "address": "", "notes": ["探测异常: %s" % e]},
+                                      ensure_ascii=False).encode("utf-8"))
         elif self.path == "/api/jjc/refresh":
             # 唯一允许触网的 JJC 入口 —— 用户显式点「刷新快照」才走
             try:

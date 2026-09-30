@@ -67,6 +67,7 @@
     <span class="stat">地址 <input aria-label="ADB 地址" id="in-adb-addr" class="inp" type="text" style="width:130px;" placeholder="127.0.0.1:5555"></span>
     <span class="stat">server 端口 <input aria-label="adb server 端口" id="in-adb-port" class="inp" type="number" min="0" max="65535" step="1" style="width:76px;" placeholder="0=默认" title="0 = 默认 5037。与后台巡检等服务共用 5037 时会被它们的 kill-server 踢掉, 建议单独配一个端口 (如 5038)"></span>
     <span class="stat">MuMu 目录 <input aria-label="MuMu 目录" id="in-mumu-dir" class="inp" type="text" style="width:170px;" placeholder="MuMuManager.exe 所在目录"></span>
+    <button id="btn-adb-auto" class="mini-btn" onclick="autodetectAdbConfig()" title="找运行中的 MuMu / 常见安装位置, 并试连 5555/16384/7555 探测地址">自动检测</button>
     <button id="btn-adb-save" class="mini-btn" onclick="saveAdbConfig()">保存连接设置</button>
   </span>
   <p class="pool-hint" id="adb-hint">连接参数存于 config.json（不入库）；保存后需重启服务生效。启停按钮在右上角：启动 MuMu / 启动游戏 / 关机。</p>

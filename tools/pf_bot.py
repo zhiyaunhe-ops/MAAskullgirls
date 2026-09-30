@@ -186,6 +186,8 @@ class PfBot:
     def __init__(self) -> None:
         self.controller: AdbController | None = None
         self.tasker = Tasker()
+        self.resource = None           # Resource 在 setup 加载 (不依赖模拟器)
+        self._link_down_since = None   # 断链起始时刻 (日志节流, 见 _link_log)
         self.shot_seq = 0
         self.tracker = ScoreTracker()  # 总分采样基线（随场次自动重置）
         self._rule_done_fight = -1    # 本场已做过规则替换的场次号
@@ -206,42 +208,72 @@ class PfBot:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         start_debug_cleaner(self.run_dir, log=STATE.log)  # 图片≤150MB / 日志≤50MB
         Toolkit.init_option(str(PROJECT_ROOT / "debug"))
-        adb_path, address = resolve_adb()
-        if not adb_path:
-            raise RuntimeError("未找到 MuMu adb: 请在 config.json 配置 adb_path "
-                               "(参考 config.example.json) 或确认模拟器已启动")
-        self.controller = AdbController(
-            adb_path=adb_path,
-            address=address,
-            screencap_methods=int(MaaAdbScreencapMethodEnum.Default),
-            input_methods=int(MaaAdbInputMethodEnum.Default),
-        )
-        # 先补连 (幂等): 注册设备/预热 adb server —— 2026-09-27 实测 MuMu 桥假死窗口期
-        # MAA 首连会失败即退, 托盘"启动服务"表现为秒退假象; 重试 3 次跨过窗口。
-        adb_connect()
-        for attempt in (1, 2, 3):
-            self.controller.post_connection().wait()
-            if self.controller.connected:
-                break
-            STATE.log(f"MAA 连接失败 (第{attempt}/3次), 5s 后补连重试", "warn")
-            time.sleep(5)
-            adb_connect()
-        if not self.controller.connected:
-            raise RuntimeError("连接 MuMu 失败 (已重试3次; 确认模拟器已启动)")
-        STATE.log(f"[ok] 已连接 {adb_path} @ {address}")
-
-        resource = Resource()
-        resource.use_cpu()  # 本机 DirectML 枚举不到适配器, OCR 用 CPU 推理
-        job = resource.post_bundle(str(RESOURCE_DIR))
+        # Resource 加载**不依赖模拟器**, 先做好 —— MuMu 不在线时服务照样活着
+        # (2026-09-30 用户口径: 没检测到 MuMu 不许整个断掉), 只差连接这一步。
+        self.resource = Resource()
+        self.resource.use_cpu()  # 本机 DirectML 枚举不到适配器, OCR 用 CPU 推理
+        job = self.resource.post_bundle(str(RESOURCE_DIR))
         job.wait()
         if not job.succeeded:
             raise RuntimeError("资源加载失败 (检查 model/ocr 与 image/pf)")
         STATE.log("[ok] 资源加载完成")
+        if not self.ensure_connection():
+            # 连不上不再 raise 退出 (旧版在这里 3 次重试后进程整个没了, WebUI 跟着
+            # 失联 —— "服务没检测到 MuMu 就自动断")。改由主循环每 10s 重连。
+            STATE.log("MuMu 未上线 —— 服务保持待命, 每 10s 自动重连; "
+                      "「开始」/「开跑」会先拉起模拟器", "warn")
 
-        if not self.tasker.bind(resource, self.controller):
-            raise RuntimeError("Tasker 绑定失败")
-        if not self.tasker.inited:
-            raise RuntimeError("Tasker 初始化失败")
+    def ensure_connection(self) -> bool:
+        """确保 MAA controller 已连接且 tasker 已绑定; 断了/没建就 (重)建。
+
+        已连接时是纯内存检查, 零 I/O, 主循环每轮调用无负担。连接失败**不抛
+        异常**只返回 False —— 调用方 (setup / run 循环) 决定等待策略。
+        2026-09-30 用户口径: MuMu 缺席时服务保持在线, 模拟器一回来自动接上。
+        """
+        if (self.controller is not None and self.controller.connected
+                and self.tasker.inited):
+            return True
+        try:
+            adb_path, address = resolve_adb()
+            if not adb_path:
+                self._link_log("未找到 MuMu adb (config.json / 自动探测都没有)")
+                return False
+            if self.controller is None or not self.controller.connected:
+                adb_connect()
+                self.controller = AdbController(
+                    adb_path=adb_path,
+                    address=address,
+                    screencap_methods=int(MaaAdbScreencapMethodEnum.Default),
+                    input_methods=int(MaaAdbInputMethodEnum.Default),
+                )
+                self.controller.post_connection().wait()
+                if not self.controller.connected:
+                    self._link_log(f"等待 MuMu 上线 ({address})")
+                    return False
+            # 换了 controller (或首次) 就重建 tasker 绑定 —— 不赌旧 tasker 能否重绑
+            self.tasker = Tasker()
+            if not self.tasker.bind(self.resource, self.controller):
+                self._link_log("Tasker 绑定失败")
+                return False
+            if not self.tasker.inited:
+                self._link_log("Tasker 初始化失败")
+                return False
+            self._link_down_since = None
+            STATE.log(f"[ok] 已连接 {adb_path} @ {address}")
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._link_log(f"重连异常: {e}")
+            return False
+
+    def _link_log(self, msg: str) -> None:
+        """断链期间的日志节流: 状态变化立刻记, 之后每 60s 最多一条。"""
+        now = time.time()
+        if self._link_down_since is None:
+            self._link_down_since = now
+            STATE.log(msg, "warn")
+        elif now - self._link_down_since >= 60.0:
+            self._link_down_since = now
+            STATE.log(msg, "warn")
 
     def snap(self, tag: str = ""):
         """截图: 存档 + 推送 WebUI, 返回图像。走自愈层, 拿不到图抛 LinkDead。"""
@@ -1195,6 +1227,13 @@ class PfBot:
                 STATE.status = "STOPPED"
                 STATE.log("==== PF Bot 已停止, 进程退出 ====")
                 return
+            if not self.ensure_connection():
+                # MuMu 缺席/连接断 —— 服务保持在线等模拟器回来 (2026-09-30 用户口径:
+                # "没检测到 mumu 就自动断"已废)。running 中的场次也在此挂起: 模拟器
+                # 一上线自动接着跑, 不再烧重生额度。
+                STATE.set_step("等待 MuMu")
+                time.sleep(10)
+                continue
             if not STATE.running:
                 if STATE.status == "RUNNING":
                     # 无暂停态: 结束/达标/关机前停跑都走这里 —— 场次结束, 回到待命。

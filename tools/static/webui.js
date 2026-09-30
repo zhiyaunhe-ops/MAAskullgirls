@@ -75,6 +75,18 @@ async function saveAdbConfig() {
     showNotice('连接设置已保存' + (warns ? '（注意：' + warns + '）' : '') + '，重启服务后生效。');
   } catch (e) {}
 }
+/* 自动检测: 后端找运行中的 MuMu/常见安装位置 + 试连探地址, 只回填不落盘 */
+async function autodetectAdbConfig() {
+  try {
+    const r = await api('/api/adb_config/autodetect', {});
+    if (r.mumu_dir) document.getElementById('in-mumu-dir').value = r.mumu_dir;
+    if (r.adb_path) document.getElementById('in-adb-path').value = r.adb_path;
+    if (r.address) document.getElementById('in-adb-addr').value = r.address;
+    const notes = (r.notes || []).join('；');
+    showNotice('检测完成' + (r.mumu_dir ? '：' + r.mumu_dir : '：未找到 MuMu 目录') +
+               (notes ? '。' + notes : '') + '。确认无误后点「保存连接设置」。');
+  } catch (e) {}
+}
 let pfSub = 'run';
 function switchTab(t) {
   document.body.dataset.tab = t;
