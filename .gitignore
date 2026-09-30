@@ -40,3 +40,9 @@ docs/screenshots/
 
 # 本机启动脚本变体 (内含个人 anaconda 路径; 同 *.bat 口径不入库)
 *.vbs
+
+# PyInstaller 产物 (托盘 exe 本地自用, 不入库)
+/dist/
+/build/
+*.spec
+/pf_tray.exe

@@ -33,8 +33,16 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(BASE)
+# 冻结成 exe (PyInstaller onefile) 时 __file__ 指向临时解包目录 —— 仓库根一律取
+# exe 所在目录 (约定: pf_tray.exe 放仓库根), 打包进来的资源走 sys._MEIPASS。
+if getattr(sys, "frozen", False):
+    BASE = os.path.dirname(sys.executable)
+    ROOT = BASE
+    ASSET_DIR = getattr(sys, "_MEIPASS", BASE)
+else:
+    BASE = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.dirname(BASE)
+    ASSET_DIR = BASE
 sys.path.insert(0, BASE)
 
 from pystray import Icon, Menu, MenuItem  # noqa: E402
@@ -315,7 +323,7 @@ def act_quit(icon=None, item=None) -> None:
 
 # ---------------- 图标 ----------------
 
-_ICON_IMG_PATH = Path(__file__).resolve().parent / "static" / "icons" / "tray_icon.png"
+_ICON_IMG_PATH = os.path.join(ASSET_DIR, "static", "icons", "tray_icon.png")
 _BASE_ICON: Image.Image | None = None
 
 
