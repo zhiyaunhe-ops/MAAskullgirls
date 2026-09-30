@@ -216,6 +216,18 @@ def _bg(fn, name: str):
     return run
 
 
+def _notify(msg: str) -> None:
+    """Windows 气泡通知 (pystray → Shell_NotifyIcon; Win10/11 显示为 toast)。
+
+    只能锦上添花, 不许反过来带崩托盘: 图标没起来/后端不支持时静默放弃。
+    """
+    try:
+        if _icon is not None:
+            _icon.notify(msg, "SGM PF")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def act_start(icon=None, item=None) -> None:
     """启动服务 = **只起进程不开跑** (用户 2026-09-30 口径: 启动≠开跑)。
 
@@ -227,10 +239,12 @@ def act_start(icon=None, item=None) -> None:
         _spawn_bot()
     if not _bot_alive():
         _log("启动失败: bot 未就绪")
+        _notify("服务启动失败: bot 未就绪, 看 debug\\pf\\tray.log")
         return
     cur = _http("/api/state", timeout=3.0) or {}
     if cur.get("status") == "ERROR":
         _log("bot 初始化失败: %s" % (cur.get("step") or "未知原因, 看 bot_stdout.log"))
+        _notify("bot 初始化失败: %s" % (cur.get("step") or "未知原因"))
         return
     sid = cur.get("session_id") or ""
     if not sid:
@@ -238,6 +252,7 @@ def act_start(icon=None, item=None) -> None:
         sid = (s.get("active") or "")
     _log("服务已启动, 未开跑 (当前场次: %s); 开跑用「开跑当前场次」或 WebUI「开始」"
          % (sid or "未选"))
+    _notify("服务已启动（未开跑）· 当前场次: %s" % (sid or "未选"))
 
 
 def act_run(icon=None, item=None) -> None:
@@ -422,6 +437,18 @@ def main() -> int:
 
     _icon = Icon("sgm-pf", _make_icon(), "SGM PF", menu)
     threading.Thread(target=_poll_loop, daemon=True, name="poll").start()
+
+    def _auto_start() -> None:
+        # 托盘启动即默认启动服务 (用户 2026-09-30 口径), 仍**不开跑** —— 场次
+        # 留给「开跑当前场次」/WebUI「开始」。睡 1s 等 icon.run() 先把图标挂上,
+        # act_start 末尾的气泡通知才有落点; 起进程本身要好几秒, 不差这 1s。
+        time.sleep(1.0)
+        try:
+            act_start()
+        except Exception:  # noqa: BLE001
+            _log("自动启动服务异常: %s" % traceback.format_exc()[-200:])
+
+    threading.Thread(target=_auto_start, daemon=True, name="autostart").start()
     try:
         _icon.run()
     except Exception:  # noqa: BLE001

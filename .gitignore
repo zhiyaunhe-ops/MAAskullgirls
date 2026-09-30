@@ -37,3 +37,6 @@ requirements.txt.bak
 # 游戏截图含账号信息 (玩家名/等级/货币), 2026-09-30 起不入库 (本地保留)
 docs/explore/
 docs/screenshots/
+
+# 本机启动脚本变体 (内含个人 anaconda 路径; 同 *.bat 口径不入库)
+*.vbs
