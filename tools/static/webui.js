@@ -65,12 +65,50 @@ function switchPfSub(s) {
   }
   if (s === 'chart') pollHistory();
 }
+/* 目标 ETA: 速率来自 /api/summary (本场记分点, 相邻间隔>180s 的空闲段不计入),
+   剩余时间在前端用最新 state 的 score 现算 —— 比记分点最后一点新鲜。
+   未设目标分时只显示速率; 服务端 eta_sec 的 150M 兜底是小组件口径, 页面不沿用。 */
+const fmtRate = v => {
+  const sgn = v >= 0 ? '+' : '-';
+  const a = Math.abs(v);
+  return sgn + (a >= 10000 ? (a / 10000).toFixed(1) + '万' : fmtN(a));
+};
+const fmtDurCn = sec => {
+  let h = Math.floor(sec / 3600), m = Math.round(sec % 3600 / 60);
+  if (m === 60) { h++; m = 0; }        // 59m59s 四舍五入成 60 分时进位成小时
+  if (!h) return Math.max(1, m) + '分钟';
+  return m ? h + '小时' + m + '分' : h + '小时';
+};
+function renderEta(d, sum) {
+  const el = document.getElementById('goal-eta');
+  if (!el) return;
+  const perMin = sum && Number(sum.per_min) > 0 ? Number(sum.per_min) : null;
+  const target = Number(d.score_target) || 0;
+  const score = Number(d.score) || 0;
+  if (!perMin) {
+    el.textContent = target > 0 ? '目标 ' + fmtN(target) + ' · 速率统计中 (需活跃满 30 秒)' : '—';
+    return;
+  }
+  const rate = fmtRate(perMin) + '/分';
+  if (target > 0 && score < target) {
+    const etaSec = Math.max(0, Math.round((target - score) / perMin * 60));
+    const t = new Date(Date.now() + etaSec * 1000);
+    el.textContent = '预计 ' + ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2)
+      + ' 完成 · 剩约 ' + fmtDurCn(etaSec) + ' · ' + rate;
+  } else if (target > 0) {
+    el.textContent = '已达标 · ' + rate;
+  } else {
+    el.textContent = rate + ' · 未设目标分';
+  }
+}
 async function pollState() {
   if (statePolling) return;
   statePolling = true;
   try {
     const d = await requestJSON('/api/state');
     if (!d || typeof d.status !== 'string') throw new Error('状态数据不可用');
+    let sum = null;                      // /api/summary: 本场速率 (ETA 用); 拿不到不拖累状态渲染
+    try { sum = await requestJSON('/api/summary'); } catch (_) { }
     const connection = document.getElementById('connection');
     connection.className = 'connection online';
     connection.textContent = d.demo ? '演示预览 · 示例数据' : '实时连接';
@@ -82,6 +120,7 @@ async function pollState() {
     document.getElementById('goal-label').textContent = goal > 0
       ? Math.min(100, score / goal * 100).toFixed(1) + '% · ' + goal.toLocaleString() : '未设上限';
     document.getElementById('goal-progress').value = goal > 0 ? Math.max(0, Math.min(100, score / goal * 100)) : 0;
+    renderEta(d, sum);
     const st = document.getElementById('status');
     st.textContent = d.status; st.className = 'pill ' + d.status;
     document.getElementById('fight').innerHTML = d.fight_no ? ('<b>' + d.fight_no + '</b>') : '<b>0</b>';
@@ -90,10 +129,8 @@ async function pollState() {
     document.getElementById('step').textContent = d.step;
     const startBtn = document.getElementById('startbtn');
     startBtn.style.display = d.status === 'RUNNING' ? 'none' : 'inline-block';
-    startBtn.textContent = d.status === 'PAUSED' ? '继续' : '开始';
-    document.getElementById('pausebtn').style.display = d.status === 'RUNNING' ? 'inline-block' : 'none';
-    document.getElementById('stopbtn').style.display =
-      (d.status === 'RUNNING' || d.status === 'PAUSED') ? 'inline-block' : 'none';
+    startBtn.textContent = '开始';             // 无暂停态: 只有 开始 / 结束 两种
+    document.getElementById('stopbtn').style.display = d.status === 'RUNNING' ? 'inline-block' : 'none';
     const inT = document.getElementById('in-target'), inE = document.getElementById('in-energy');
     running = d.status === 'RUNNING';
     activeSess = d.session_id;
@@ -629,7 +666,7 @@ async function onStartClick() {
   if (!activeSess) { openSessionModal(); return; }
   const st = document.getElementById('status'), sp = document.getElementById('step');
   const prevSt = st.textContent, prevSp = sp.textContent;
-  st.textContent = 'STARTING'; st.className = 'pill PAUSED';
+  st.textContent = 'STARTING'; st.className = 'pill IDLE';
   sp.textContent = '正在启动…';
   let d = null;
   try {
@@ -649,15 +686,11 @@ async function onStartClick() {
   pollState();
   pollMumu();
 }
-// 停止: 主循环退出、进程结束 (WebUI 一并关闭), 重新运行 pf_bot 才能再启动
-async function onStopClick() {
-  if (!confirm('停止将退出机器人进程（WebUI 一并关闭）, 确定?')) return;
-  try { await api('/api/stop', {}); } catch (e) {}
-  const st = document.getElementById('status');
-  st.textContent = 'STOPPED'; st.className = 'pill STOPPED';
-  document.getElementById('step').textContent = '进程已退出, 重新运行 pf_bot 可再次启动';
-  document.getElementById('pausebtn').style.display = 'none';
-  document.getElementById('stopbtn').style.display = 'none';
+// 结束: 场次收尾回 IDLE 待命, 进程与 WebUI 保留; 再点「开始」同场续跑。
+// 进程退出不走这里 —— /api/stop 语义未动, 托盘/调度按"等进程退出"依赖它。
+async function onEndClick() {
+  try { await api('/api/end', {}); } catch (e) {}
+  pollState();
 }
 async function renderModal() {
   try {

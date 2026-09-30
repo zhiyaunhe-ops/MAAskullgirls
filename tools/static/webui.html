@@ -17,7 +17,7 @@
     <span id="mumu-label" class="device-label">MuMu</span><span id="mumu-dot" class="dev-dot" title="MuMu 模拟器状态"></span>
     <button id="btn-mumu" class="ghost-btn" title="启动 MuMu 模拟器(未开时拉起并等待就绪)" onclick="mumuCmd('/api/mumu/launch')">启动 MuMu</button>
     <button id="btn-game" class="ghost-btn" title="启动 Skullgirls Mobile (模拟器未开则先开机)" onclick="mumuCmd('/api/mumu/game')">启动游戏</button>
-    <button id="btn-mumu-off" class="ghost-btn warn" title="优雅关闭 MuMu (bot 运行中会先暂停)" onclick="onMumuOffClick()">关机</button>
+    <button id="btn-mumu-off" class="ghost-btn warn" title="优雅关闭 MuMu (bot 运行中会先结束场次)" onclick="onMumuOffClick()">关机</button>
     <span class="hdr-sep"></span>
     <span class="theme-wrap">
       <button id="theme-btn" class="ghost-btn" onclick="toggleThemeMenu(event)" title="切换界面主题" aria-haspopup="true" aria-expanded="false" aria-controls="theme-menu">◑ 主题</button>
@@ -35,8 +35,7 @@
 </nav>
 <main id="page-pf" class="page on">
   <div class="page-heading"><div><span class="eyebrow">01 / AUTOMATION</span><h1>Prize Fight<span class="heading-dot">.</span></h1><p>你的阵容，你的节奏。掌控每一场战斗。</p></div><div class="run-actions">  <button id="startbtn" onclick="onStartClick()" style="display:none;">开始</button>
-  <button id="pausebtn" style="display:none;" onclick="api('/api/pause',{}).then(()=>pollState())">暂停</button>
-  <button id="stopbtn" style="display:none;" onclick="onStopClick()">停止</button>
+  <button id="stopbtn" style="display:none;" onclick="onEndClick()">结束</button>
 </div></div>
   <div id="demo-banner" class="module-note" hidden>演示预览 · 使用示例分数与存档截图，操作仅保存在内存，不连接模拟器。</div>
   <section class="run-overview" aria-label="运行概览">
@@ -58,7 +57,7 @@
     <span class="stat"><label title="编队筛选是否只看喜爱角色：每次开始运行后的首次编队，会在游戏内按此勾选/清除喜爱筛选"><input type="checkbox" id="in-fav" checked> 喜爱筛选</label></span>
     <span class="stat">每 <input aria-label="连续场数" id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
     休 <input aria-label="休息分钟" id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
-    <span class="stat"><label title="总分达到「目标总分」时自动暂停, 并优雅关闭 MuMu 模拟器 (走 MuMuManager control shutdown)"><input type="checkbox" id="in-closegoal"> 达标关模拟器</label></span>
+    <span class="stat"><label title="总分达到「目标总分」时自动结束场次, 并优雅关闭 MuMu 模拟器 (走 MuMuManager control shutdown)"><input type="checkbox" id="in-closegoal"> 达标关模拟器</label></span>
   </span>
 </details>
 
@@ -78,7 +77,7 @@
       <div class="panel-heading"><span>模拟器画面 <small>LIVE VIEW</small></span><span class="screen-tag">1280 × 720</span></div>
       <div class="shot-stage"><img id="shot" alt="MuMu 模拟器最新游戏截图" hidden><div id="shot-empty" class="shot-empty"><span aria-hidden="true">▣</span><b>等待模拟器画面</b><p>启动 MuMu 并开始场次后，截图会自动更新。</p></div></div>
       <div class="shot-footer"><span id="sideinfo">尚无截图</span><span id="shot-freshness">等待更新</span></div>
-      <div class="goal-panel"><div><span>目标进度</span><strong id="goal-label">未设上限</strong></div><progress id="goal-progress" value="0" max="100" aria-label="目标总分进度"></progress></div>
+      <div class="goal-panel"><div><span>目标进度</span><strong id="goal-label">未设上限</strong></div><progress id="goal-progress" value="0" max="100" aria-label="目标总分进度"></progress><div id="goal-eta" class="goal-eta" title="预计完成 = (目标分 − 当前分) ÷ 本场次每分钟得分。速率由本场历史记分点计算, 相邻间隔超过 3 分钟的空闲段 (结束/休息/过夜) 不计入; 未设目标分时只显示速率。">—</div></div>
     </section>
   </div>
   </div>
