@@ -46,3 +46,7 @@ docs/screenshots/
 /build/
 *.spec
 /pf_tray.exe
+
+# phone/ 本地基座(MaaTouch/settle_bot 等)本地保留, 仅 autojs/ 入库 (2026-10-01 固化, 别 git add)
+/phone/*
+!/phone/autojs/
