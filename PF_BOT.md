@@ -27,6 +27,7 @@
 | tools/pf_native.py／pf_env.py | CRT／配置、BotState、MuMu、进程、清理 |
 | tools/pf_domain.py／pf_storage.py／pf_store.py | 纯规则／显式依赖存储／运行时装配与兼容 |
 | tools/pf_vision.py／pf_bot.py | cv2识别与几何／监督循环、选人、编队、战斗 |
+| tools/pf_nav.py | 场景导航/场地扫描/绑定居中 (SceneNav mixin, PfBot 继承; 2026-10-02 自 pf_bot 拆出) |
 | tools/pf_webui.py／static/ | HTTP、API／HTML、CSS、JS、主题、图标 |
 | tools/pf_scene.py／pf_schedule.py／pf_tray.py | 导航／调度／托盘 |
 | tools/jjc_store.py | 日程快照、配置版本 |
@@ -105,7 +106,7 @@
 | 6.0 | api/end／api/stop | 结束场次回IDLE进程保留／quit=True进程退出WebUI关闭(托盘·调度依赖) |
 | 6.0 | api/pause／api/stop | 已废：暂停态移除(2026-09-27)，只剩在跑/结束 |
 | 6.0 | 达标／ERROR | 结束场次回IDLE、可关MuMu／running=False、人工检查后可重开 |
-| 6.0 | 接力队列 (2026-10-02) | 正常结束(goal/manual/scene)且队列非空→自动 apply 下一场续跑(scene_pending=按需导航)；**error 结束不接续**；达标关机顺延到队列清空那场(STORE.queue 非空时 on_goal_reached 直接跳过)；/api/stop 进程退出不走队列；队列存 sessions.json "queue", STORE.queue_pop 消费 |
+| 6.0 | 接力队列 (2026-10-02) | **只有达标(goal)才自动接续**(manual 结束=用户要停: /api/end 同时暂停连刷模式, 绝不能解读成"换下一场"——首版 manual/scene 也接续, 用户点结束又见认路+扫描, 观感"卡在扫描循环"; scene 场地没找到/nav 认路失败都停等人工)；消费防呆: 队首=当前场次丢弃防重跑(防"已达标场次重跑→开场即达标→再接续"死循环)、已删场次跳过不搁置剩余队列；/api/start 顺带 queue_discard 该场次；达标关机顺延到队列清空那场；/api/stop 进程退出不走队列；队列存 sessions.json "queue" |
 | 6.0 | IDLE(非运行) | 仍约每2s清弹窗；不代表设备无动作 |
 | 6.0 | IDLE截图卡死 | 全路径截图带超时10s＋每分钟告警；停止·开始仍可响应，不随MAA内部重连一起等 |
 | 6.0 | api/mumu/game | 先adb connect再monkey；device not found时补连重试一次 |
@@ -137,7 +138,8 @@
 | 6.5 | CSV | time,fight_no,score,delta,streak,session；兼容解析：pf_storage |
 | 6.5 | 活跃收益率 | 相邻采样间隔≤3分钟；tools/static/webui.js |
 | 6.5a | 场次／全局配置 | 名称、规则、目标分、能量、休息、场地绑定(scene=PF卡名关键词,可选)／喜爱开关 |
-| 6.5a | 场地绑定 scene (2026-10-02) | 每次「开始」走回 PF hub 识别居中场(读卡逻辑住 PfBot, pf_scene 委托)；绑定关键词则轮播扫到该场居中(先左后右, 轮播不循环)再开打；**找不到=结束本场+接续队列**(宁可停不错跑)；未绑定只认路+报"当前场地: X (score=…)"；导航第一轮认不出界面时补一发 monkey 拉游戏(冷开始只拉了模拟器) |
+| 6.5a | 场地绑定 scene (2026-10-02) | **扫描一天一次**（用户口径: 场只有本时区凌晨 01:00 刷新; refresh_boundary/arenas_fresh 按 01:00 线判过期 —— 00:30 时仍算前一天, 昨晚 23:00 扫的依旧有效）; 每天首次进 PF 才全扫描录入（写 debug/pf/arenas.json 带 ts, 启动回读, 旧格式按游戏日字符串平滑迁移; /api/state.arenas → WebUI「今日场地」条可点选填入; 「立即扫描场地」按钮强制重扫）；今日已录入则**直接沿用不重扫**（首节清掉 ~20s 等待）；绑定关键词则居中该场再开打；**找不到=结束本场+接续队列**(宁可停不错跑)；未绑定回开局卡就近开打（开局卡没认出来停最左=月场并大字告警） |
+| 6.5a | 场地绑定写法 | 名字=字母归一子串(<4字母只认全等)；**#N=位置绑定**(1 起, 用户口径: 轮播最左第一/二位固定是月场) —— 位置法不依赖 OCR, 角色场卡标题整卡失败的既定绕行；#0/越界(对照本次扫描数)拒绝 |
 | 6.5a | 子场／删除父场 | 继承配置、独立采样／子场保留转顶级 |
 | 6.5a | 运行中／default | 限制切换、编辑、删除／default不可删 |
 | 6.5a | 删除场次 | 内存曲线移除；CSV、账本保留；历史每场内存最多3000点 |
@@ -150,12 +152,13 @@
 | 6.7 | MuMu缺席保活 | setup只加载Resource(不依赖模拟器)；连接走ensure_connection(已连=纯内存检查)，主循环没连上就「等待 MuMu」每10s重连**永不退出**(2026-09-30用户口径: 没检测到MuMu不许断)；断链日志节流60s/条；running中场次也挂起等模拟器回来自动续，不再烧重生 |
 | 6.7 | 托盘启动≠开跑 | 「启动服务」只起进程(2026-09-30用户口径)；开跑=托盘「开跑当前场次」或WebUI「开始」；托盘自启即默认启动服务+Windows气泡(_notify→icon.notify)；图标=tools/static/icons/tray_icon.png(Filia头像裁剪, 缺文件回退圆角方块)+右下角状态点；启动器=启动托盘.vbs(ASCII-only：wscript按ANSI解析, UTF-8中文注释静默失败；pythonw需全路径, cscript PATH无anaconda)；重生auto-resume不受此限(接管死前场次) |
 | 6.7 | 每日任务 | 保存编排；未接入执行 |
-| 6.7 | 接力队列 UI/API (2026-10-02) | POST /api/queue/set {ids} 整体重设(去重+丢不存在)；/api/sessions 与 /api/state 带 queue；弹窗「选择 PF 场次」行内 ☰/⛓ 加入·移出＋队列条 ▲▼✕ 排序；主页 queue-chip 显示"接力 N 场: A → B"；场次编辑区"场地绑定"输入(随场次, 运行中锁定)；preview_webui 同构演示 |
+| 6.7 | 接力队列 UI/API (2026-10-02) | POST /api/queue/set {ids} 整体重设(去重+丢不存在)；/api/sessions 与 /api/state 带 queue；弹窗「选择 PF 场次」行内 ☰/⛓ 加入·移出＋队列条 ▲▼✕ 排序；主页 queue-chip 显示"接力 N 场: A → B"；场次编辑区"场地绑定"输入(随场次, 运行中锁定)；「今日场地」条=扫描录入, 点场地名直填新场次绑定＋datalist 联想；preview_webui 同构演示 |
+| 6.7 | 连刷编排页签 (2026-10-02) | PF 页第三子页签: 今日场地**方块**点选接入链条(自上而下连线)+每节目标分(留空=刷到手动停)；配置存 debug/pf/chain.json {blocks:[{pos,title,target,sid}],enabled}；sync_chain 槽位场次按 sid 复用(被删重建)、scene=#N 位置绑定、**标题随当日扫描自动跟新**(场地轮换槽位不换)、运行中当前场次跳过配置同步；勾选「连刷模式」=保存+接力队列按链设置+待命时前端 /api/start 首节；取消=清队列(/api/end)；**手动「结束」=暂停连刷**(chain.json enabled=false、接力队列保留, 前端 onEndClick 回读勾选)；POST /api/scan 待命扫描(pf_bot IDLE 分支消费, 运行中 409)；同一队列双入口(弹窗手排/链条编排)后写为准 |
 | 6.7 | 目标ETA | 速率=本场记分点活跃段(相邻≤180s)增量÷时长；ETA=(目标−当前)÷速率；未设目标只显速率；页面前端现算, /api/summary只供速率 |
 | 6.8 | AUTO／3x | **每次「开始」后的首场都查**(2026-10-02用户口径, run()起始块复位 _battle_auto_checked; 旧版每进程只查首场, 开始之间手动关auto就漏)；亮度阈值75、速度模板0.85；失败告警继续 |
 | 6.9 | goto／explore／center | 冷启动导航／扫卡并恢复居中／目标居中；bot只点居中PLAY! |
-| 6.9 | 读卡逻辑归属 (2026-10-02) | read_center_card/parse_score_ocr/字库/ROI 整体移入 PfBot(bot 接力导航与 pf_scene 共用一份)；PfScene 只留薄委托, explore/center/goto_index 行为不变；标定注释随代码走(pf_bot 常量区) |
-| 6.9 | bot 侧导航原语 | goto_pf_hub(弹窗三路X→PLAY就绪→大厅菱形→房子, NAV_TIMEOUT 180s 含冷启动)＋center_scene(先左扫到头再右扫回, 卡面不变=该侧到头; 轮播不循环)；滑动走 adb input swipe(MAA post_swipe 被吸附轮播弹回) |
+| 6.9 | 读卡逻辑归属 (2026-10-02) | read_center_card/parse_score_ocr/字库/ROI/扫描/导航整体住 **pf_nav.SceneNav** (PfBot 继承; 用户要求功能独立出 pf_bot.py)；PfScene 只留薄委托, explore/center/goto_index 行为不变；标定注释随代码走(pf_nav) |
+| 6.9 | bot 侧导航原语 | goto_pf_hub(弹窗三路X→PLAY就绪→大厅菱形→房子, NAV_TIMEOUT 240s 含冷启动; 第一轮认不出界面补一发 monkey 拉游戏——/api/start 只拉模拟器不拉游戏)＋scan_arenas(右滑到最左→逐卡左扫, 相邻同读=到头; 录入 arenas.json 带 ts[一天一次, 01:00 过期] )＋goto_index(回最左再左滑 N 次)＋center_scene(#N 走 goto_index, 名字先左扫到头再右扫回)；滑动走 adb input swipe(MAA post_swipe 被吸附轮播弹回)；**认路自愈两态**(2026-10-02: 手动结束在战斗中途→游戏自己打完停在 VICTORY 结算页, 认路对结算页按房子 240s 超时→"刷了一场就停"): 速度泡命中=战斗残留只等不点; 结算页(CONTINUE×N 页)逐页剥掉再回 hub; NAV_TIMEOUT 240→300s(含残留战斗 60~120s)；**协作式中止 NavAborted**(导航/扫描中 running 相对进入时翻转即退: 点结束 3s 内响应, 扫描中止不覆盖已录数据; navigate_to_scene 分级返回 ok/scene/nav/stopped)；关键词匹配: 短词全等, ≥4 双向子串, ≥8 字母长名加 0.8 相似度容 OCR 丢字母(18 个已知场名两两零误报) |
 | 6.9 | 标题／无SCORE行 | 常规＋备用ROI、候选择优／已知标题命中可判0 |
 | 6.9 | 角色场卡标题 | OCR整卡失败（读'O'/噪声，HIGH WIRE HIJINKS 两次实测）→center()不可用；hub不循环、最右=角色周场，按位置滑 |
 | 6.9 | score=0／外部导航 | 新场候选，非确证／先停bot；暂停仍清弹窗 |

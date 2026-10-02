@@ -146,8 +146,10 @@ def test_respawn_hard_exits_and_spawns_next_generation(tmp_path):
 
     spawn = json.loads((tmp_path / "spawn.json").read_text(encoding="utf-8"))
     assert "tools\\pf_bot.py" in spawn["cmdline"]
-    gen = Path(spawn["log_path"]).name
-    assert re.fullmatch(r"bot_stdout_\d{8}-\d{6}\.log", gen), gen        # 独立世代日志
+    # 2026-10-02 统一日志: 不再传 log_path (传了就是回到"每代一个文件"的老模型,
+    # 那正是 18:30 bot 在跑而 bot_stdout.log 停在 13:04 的原因)。新进程自己
+    # pf_logging.install() 写同一份 pf.log, 内部靠跨进程行锁保证不丢行。
+    assert spawn["log_path"] is None, spawn["log_path"]
     assert any('SGM_PF_RESUME=1' in line for line in spawn["env_lines"])
 
     marker = json.loads((tmp_path / "respawn.json").read_text(encoding="utf-8"))

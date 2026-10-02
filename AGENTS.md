@@ -15,7 +15,8 @@
 | 战斗／能量／选人 | pf_bot、pf_vision | PF_BOT §§3–6 |
 | 纯规则／计分 | pf_domain | PF_BOT §§2.1、6.5 |
 | 存储／快照 | pf_storage、pf_store、jjc_store | PF_BOT §§6.5a、6.11 |
-| 导航／调度／托盘 | pf_scene、pf_schedule、pf_tray | PF_BOT §§6.9–6.10、8 |
+| 导航／调度／托盘 | pf_scene、pf_nav、pf_schedule、pf_tray | PF_BOT §§6.9–6.10、8 |
+| 接力队列／场地绑定／连刷编排 | pf_storage(queue)、pf_nav(navigate/scan/center)、pf_webui(sync_chain)、static/webui.*(队列·今日场地·连刷编排页签) | PF_BOT §§6.0、6.5a、6.7、6.9；arenas.json/chain.json 本地不入库 |
 | 重生／退出路径 | pf_bot（重生、硬退出、退出看门狗）、pf_webui（端口交接） | PF_BOT §§6.0、8-26~27；tests/test_respawn_exit.py |
 | WebUI／API | pf_webui、static/webui.*、themes.* | README；PF_BOT §6.7 |
 | 每日任务清单 | static/webui.js | docs/explore/2026-09-05/REPORT.md（历史；explore/screenshots 2026-09-30 起本地不入库） |

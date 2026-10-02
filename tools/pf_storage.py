@@ -111,9 +111,17 @@ class ScoreStore:
                         "last_ts": pts[-1]["ts"] if pts else None})
         return out
 
+    def _new_id(self) -> str:
+        """生成不与现有场次撞车的 id。裸毫秒时间戳在同毫秒内连建多个场次时
+        会重复 (sync_chain 一次建多条链槽实测撞过), 重复就递增。"""
+        sid = "s%d" % int(time.time() * 1000)
+        while any(s.get("id") == sid for s in self.sessions):
+            sid = "s%d" % (int(sid[1:]) + 1)
+        return sid
+
     def create(self, name: str, rule, rest_every=0, rest_minutes=0,
                score_target=None, energy_cost=4, scene=None) -> dict:
-        sess = {"id": "s%d" % int(time.time() * 1000), "name": name,
+        sess = {"id": self._new_id(), "name": name,
                 "rule": clean_rule(rule), "created": time.time(),
                 "rest_every": clean_rest(rest_every),
                 "rest_minutes": clean_rest(rest_minutes),
@@ -137,7 +145,7 @@ class ScoreStore:
         while name in existing:
             name = f"{base}-{n}"
             n += 1
-        sess = {"id": "s%d" % int(time.time() * 1000), "name": name,
+        sess = {"id": self._new_id(), "name": name,
                 "parent": p["id"], "rule": p.get("rule"), "created": time.time(),
                 "rest_every": p.get("rest_every") or 0,
                 "rest_minutes": p.get("rest_minutes") or 0,
@@ -245,6 +253,18 @@ class ScoreStore:
             sid = self.queue.pop(0)
             self._save_sessions()
         return sid
+
+    def queue_discard(self, sid: str) -> int:
+        """把场次从接力队列移除 (开始该场次时调用: 已在跑的场次不该再被接续
+        重跑 —— 分数已达标的场次重跑会开场即"达标", 再接续成无限循环)。
+        返回移除条数。"""
+        with self._lock:
+            before = len(self.queue)
+            self.queue = [x for x in self.queue if x != sid]
+            removed = before - len(self.queue)
+            if removed:
+                self._save_sessions()
+        return removed
 
     # ---------- 计分 ----------
     def record(self, sid: str, score: int, streak, fight: int) -> None:

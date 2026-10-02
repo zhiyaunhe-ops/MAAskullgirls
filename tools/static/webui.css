@@ -653,3 +653,40 @@ progress::-moz-progress-bar { background:var(--gold); }
 }
 .queue-strip .qs-item .s-act { padding:0 2px; }
 .sess-row .s-act.onq { color:var(--blue); }
+
+/* ---------- 连刷编排 (2026-10-02): 场地方块连线成链 ---------- */
+.chain-bar { display:flex; gap:14px; align-items:center; margin-bottom:6px; flex-wrap:wrap; }
+.chain-toggle { display:inline-flex; gap:6px; align-items:center; font-weight:600; cursor:pointer; }
+.chain-status { color:var(--dim); font-size:12px; }
+.chain-cols { display:flex; gap:16px; align-items:flex-start; }
+.chain-pool { flex:0 0 340px; min-width:0; }
+.chain-line { flex:1; min-width:0; }
+#arena-pool, #chain-list { padding:10px; }
+.arena-block {
+  display:inline-flex; flex-direction:column; gap:2px;
+  border:1px solid var(--line); border-radius:var(--radius);
+  padding:8px 12px; margin:0 8px 8px 0;
+  cursor:pointer; font-size:12.5px; color:var(--txt); line-height:1.35;
+}
+.arena-block:hover { border-color:var(--blue); }
+.arena-block.in-chain { opacity:.45; cursor:default; }
+.arena-block .ab-pos { color:var(--dim); font-size:11px; }
+.arena-block .ab-score { color:var(--dim); font-size:11px; }
+.chain-node {
+  display:flex; gap:10px; align-items:center;
+  border:1px solid var(--line); border-left:3px solid var(--blue);
+  border-radius:var(--radius); padding:8px 10px; font-size:12.5px;
+}
+.chain-node .cn-step { font-weight:700; color:var(--blue); }
+.chain-node .cn-pos { color:var(--dim); }
+.chain-node .cn-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chain-node .cn-target { width:130px; }
+.chain-link { width:2px; height:18px; background:var(--line); margin:2px auto; position:relative; }
+.chain-link::after {
+  content:''; position:absolute; left:-3px; bottom:-1px;
+  border:4px solid transparent; border-top-color:var(--line);
+}
+@media (max-width:900px) {
+  .chain-cols { flex-direction:column; }
+  .chain-pool { flex:none; width:100%; }
+}

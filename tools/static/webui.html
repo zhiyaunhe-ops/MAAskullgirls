@@ -58,7 +58,7 @@
     <span class="stat"><label title="编队筛选是否只看喜爱角色：每次开始运行后的首次编队，会在游戏内按此勾选/清除喜爱筛选"><input type="checkbox" id="in-fav" checked> 喜爱筛选</label></span>
     <span class="stat">每 <input aria-label="连续场数" id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
     休 <input aria-label="休息分钟" id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
-    <span class="stat">场地绑定 <input aria-label="PF 场地关键词" id="in-scene" class="inp" type="text" style="width:140px;" placeholder="PF 卡名关键词" title="绑定后每次「开始」会先走回 PF hub, 识别居中场并把该场居中再开打; 留空 = 就近开打。关键词按卡面英文名匹配 (大小写不敏感子串, 如 MEDICI / EYE OF THE STORM)"></span>
+    <span class="stat">场地绑定 <input aria-label="PF 场地关键词" id="in-scene" class="inp" type="text" style="width:140px;" list="arena-dl" placeholder="场地名 或 #1" title="绑定后每次「开始」先走回 PF hub, 把该场居中再开打 (场地录入一天一次, 刷新线凌晨 01:00)。可填卡面英文名关键词 (如 MEDICI), 也可用 #1/#2 按轮播位置绑定 —— 位置法不依赖 OCR; 留空 = 就近开打"></span>
     <span class="stat"><label title="总分达到「目标总分」时自动结束场次, 并优雅关闭 MuMu 模拟器 (走 MuMuManager control shutdown)"><input type="checkbox" id="in-closegoal"> 达标关模拟器</label></span>
   </span>
 </details>
@@ -78,6 +78,7 @@
   <div class="pf-subnav">
     <button id="subtab-run" class="on" onclick="switchPfSub('run')">运行监控</button>
     <button id="subtab-chart" onclick="switchPfSub('chart')">战绩分析</button>
+    <button id="subtab-chain" onclick="switchPfSub('chain')">连刷编排</button>
   </div>
   <div id="pf-run" class="pf-sub on">
   <div id="runwrap">
@@ -116,6 +117,21 @@
         <span class="chart-title">连 胜</span><span id="v-streak" class="chart-val v-green"></span>
         <span class="chart-sub" id="sub-streak">推进曲线</span></div>
       <div class="chart-body"><canvas id="ch-streak"></canvas></div></div>
+  </div>
+  </div>
+  <div id="pf-chain" class="pf-sub">
+  <div id="chainwrap">
+    <div class="chain-bar">
+      <label class="chain-toggle" title="勾选=启动连刷: 从链条第一节开跑, 一场达标自动接下一场; 手动点「结束」= 暂停整条连刷 (接力队列保留); 取消勾选=结束当前场次并清掉接力队列 (链条配置保留)">
+        <input type="checkbox" id="chain-on"> 连刷模式</label>
+      <button id="chain-scan" class="mini-btn" onclick="requestScan()" title="强制重扫: 待命中去 PF hub 把轮播扫一遍录入今日场地。平时不用点 —— 每天首次进 PF 会自动扫描, 刷新线 01:00">立即扫描场地</button>
+      <span id="chain-status" class="chain-status"></span>
+    </div>
+    <p class="pool-hint">方块 = 本次进 PF 扫描录入的场地 (最左 #1 固定是月场)。点方块接入链条, 自上而下连线即连刷顺序; 每节可填目标分 —— <b>达标才自动接下一节</b> (留空 = 刷到手动结束); 手动点「结束」= 暂停整条连刷, 队列保留。续跑: 重新勾选「连刷模式」(从链条头), 或直接开始某一节 (队列接着往下走)。场地每天轮换时, 槽位按位置自动跟新场走。</p>
+    <div class="chain-cols">
+      <section class="chain-pool dpanel"><div class="dpanel-title">今日场地</div><div id="arena-pool"></div></section>
+      <section class="chain-line dpanel"><div class="dpanel-title">连刷链条</div><div id="chain-list"></div></section>
+    </div>
   </div>
   </div>
 </main>
@@ -172,6 +188,7 @@
 <div id="sess-modal" class="modal-mask" role="dialog" aria-modal="true" aria-labelledby="session-modal-title" style="display:none;">
   <div class="modal">
     <div id="session-modal-title" class="modal-title">选择 PF 场次</div>
+    <div id="arena-strip" class="queue-strip" hidden title="每天首次进 PF 自动扫描录入 (刷新线凌晨 01:00); 点场地名可填入下方新场次绑定"></div>
     <div id="queue-strip" class="queue-strip" hidden></div>
     <div id="sess-list"></div>
     <div class="sess-new">
@@ -180,7 +197,7 @@
       <input aria-label="新场次能量门槛" id="new-sess-energy" class="inp" type="number" min="1" max="10" step="1" placeholder="能量" style="width:60px;">
       <input aria-label="新场次连续场数" id="new-sess-restn" class="inp" type="number" min="0" step="1" placeholder="每N场" style="width:60px;">
       <input aria-label="新场次休息分钟" id="new-sess-restm" class="inp" type="number" min="0" step="5" placeholder="休M分" style="width:60px;">
-      <input aria-label="新场次场地关键词" id="new-sess-scene" class="inp" type="text" placeholder="场地关键词" style="width:92px;" title="PF 卡名关键词 (可选): 开始时自动识别并居中该场">
+      <input aria-label="新场次场地关键词" id="new-sess-scene" class="inp" type="text" placeholder="场地名 或 #1" list="arena-dl" style="width:92px;" title="可选: PF 场地绑定。卡面英文名关键词或 #N 位置 (1=最左, 固定是月场); 点上方「今日场地」可直填">
       <div id="new-sess-rule" class="rule-mini"></div>
       <button id="new-sess-btn" class="mini-btn">创建</button>
     </div>
@@ -192,6 +209,7 @@
     </div>
   </div>
 </div>
+<datalist id="arena-dl"></datalist>
 <div id="notice" class="notice" role="alert" hidden></div>
 <script src="static/themes.js"></script>
 <script src="static/webui.js"></script></body></html>

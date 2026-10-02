@@ -209,8 +209,8 @@ class PfScene:
         return self.bot.ocr_text(self.snap(), roi)
 
     # ---- 场地识别 (2026-10-02 起委托 PfBot) ----
-    # 读卡/字库/分数归一逻辑整体移入 pf_bot.PfBot —— bot 的接力导航要用同一份,
-    # 两处不再各养一份。这里保留同名薄委托, explore/center/goto_index 行为不变。
+    # 读卡/字库/分数归一逻辑 2026-10-02 起住 pf_nav.SceneNav (pf_bot.PfBot 继承),
+    # bot 的接力导航共用同一份; 这里保留同名薄委托, explore/center/goto_index 行为不变。
 
     parse_score_ocr = staticmethod(PfBot.parse_score_ocr)
 

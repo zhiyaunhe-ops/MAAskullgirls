@@ -101,11 +101,12 @@ function switchTab(t) {
 }
 function switchPfSub(s) {
   pfSub = s;
-  for (const n of ['run','chart']) {
+  for (const n of ['run','chart','chain']) {
     document.getElementById('subtab-'+n).classList.toggle('on', n===s);
     document.getElementById('pf-'+n).classList.toggle('on', n===s);
   }
   if (s === 'chart') pollHistory();
+  if (s === 'chain') loadChain();
 }
 /* 目标 ETA: 速率来自 /api/summary (本场记分点, 相邻间隔>180s 的空闲段不计入),
    剩余时间在前端用最新 state 的 score 现算 —— 比记分点最后一点新鲜。
@@ -193,6 +194,10 @@ async function pollState() {
       if (document.activeElement !== inScene) inScene.value = (d.scene || '');
     }
     renderQueueChip(d.queue);
+    renderArenas(d.arenas);
+    stateArenas = d.arenas;
+    renderChainStatus();
+    if (pfSub === 'chain') renderArenaPool();
     const fav = document.getElementById('in-fav');
     if (!fav.dataset.touched) fav.checked = !!d.filter_favorite;
     const cg = document.getElementById('in-closegoal');
@@ -665,6 +670,157 @@ function updateSessChip(d) {
   }
 }
 
+/* ---------- 今日场地 (2026-10-02: 每次「开始」进 PF 自动扫描录入) ---------- */
+function renderArenas(arenas) {
+  const dl = document.getElementById('arena-dl');
+  const strip = document.getElementById('arena-strip');
+  const list = (arenas && Array.isArray(arenas.arenas)) ? arenas.arenas : [];
+  dl.innerHTML = list.filter(a => a.title)
+    .map(a => `<option value="${esc(a.title)}">`).join('');
+  if (!list.length) { strip.hidden = true; strip.innerHTML = ''; return; }
+  strip.hidden = false;
+  strip.innerHTML = '<span class="qs-label">今日场地</span>' + list.map(a =>
+    `<span class="qs-item" data-arena="${esc(a.title)}" role="button"` +
+    ` title="点击填入新场次的场地绑定 (也可手填 #${a.idx + 1} 按位置)">` +
+    `#${a.idx + 1} ${esc(a.title || '(未识别)')}` +
+    (a.score >= 0 ? ' · ' + fmtN(a.score) : '') + '</span>').join('');
+}
+document.getElementById('arena-strip').addEventListener('click', e => {
+  const chip = e.target.closest('[data-arena]');
+  if (!chip) return;
+  const inp = document.getElementById('new-sess-scene');
+  inp.value = chip.dataset.arena;
+  inp.focus();
+});
+
+/* ---------- 连刷编排 (2026-10-02): 今日场地连成链, 勾选启动连刷 ---------- */
+// 方块=扫描录入的场地 (pos=轮播位, 绑定走 #N 位置法); 链条=接力队列的顺序。
+// 槽位场次由服务端 sync_chain 按 sid 复用, 每天场地轮换时标题自动跟新场走。
+let chainBlocks = [], chainEnabled = false, stateArenas = null;
+
+async function loadChain() {
+  try {
+    const d = await api('/api/chain');
+    chainBlocks = Array.isArray(d.blocks) ? d.blocks : [];
+    chainEnabled = !!d.enabled;
+    renderChainUI();
+    renderChainStatus();
+  } catch (e) {}
+}
+function renderArenaPool() {
+  const pool = document.getElementById('arena-pool');
+  if (!pool) return;
+  const list = (stateArenas && Array.isArray(stateArenas.arenas)) ? stateArenas.arenas : [];
+  if (!list.length) {
+    pool.innerHTML = '<div class="pool-hint" style="padding:8px 2px;">还没有扫描录入 —— 点「立即扫描场地」, 或正常开跑一次 (每天首次进 PF 自动扫描, 刷新线 01:00)。</div>';
+    return;
+  }
+  pool.innerHTML = list.map(a => {
+    const pos = a.idx + 1;
+    const chained = chainBlocks.some(b => b.pos === pos);
+    return `<span class="arena-block${chained ? ' in-chain' : ''}" data-pos="${pos}"` +
+      ` data-title="${esc(a.title || '')}" role="button"` +
+      ` title="${chained ? '已在链条中' : '点击接入连刷链条 (也可绑 ' + '#' + pos + ' 按位置)'}">` +
+      `<span class="ab-pos">#${pos}${a.idx === 0 ? ' · 月场位' : ''}</span>` +
+      `<b>${esc(a.title || '(未识别)')}</b>` +
+      (a.score >= 0 ? `<span class="ab-score">${fmtN(a.score)}</span>` : '') + '</span>';
+  }).join('');
+}
+function renderChainUI() {
+  const box = document.getElementById('chain-list');
+  const cb = document.getElementById('chain-on');
+  if (cb.checked !== chainEnabled) cb.checked = chainEnabled;
+  renderArenaPool();
+  if (!chainBlocks.length) {
+    box.innerHTML = '<div class="pool-hint" style="padding:8px 2px;">链条为空 —— 从左侧点场地方块接入, 勾选「连刷模式」启动。</div>';
+    return;
+  }
+  box.innerHTML = chainBlocks.map((b, i) => {
+    const link = i ? '<div class="chain-link" aria-hidden="true"></div>' : '';
+    return link + `<div class="chain-node" data-i="${i}">` +
+      `<span class="cn-step">${i + 1}</span>` +
+      `<span class="cn-pos">#${b.pos}</span><b class="cn-title">${esc(b.title)}</b>` +
+      `<input class="inp cn-target" type="number" min="0" step="100000" data-i="${i}"` +
+      ` value="${b.target != null ? b.target : ''}" placeholder="目标分(不限)"` +
+      ` aria-label="第${i + 1}节目标分" title="本场刷到该总分自动切下一节; 留空 = 刷到手动结束">` +
+      `<button class="s-act" data-cup="${i}" title="上移">▲</button>` +
+      `<button class="s-act" data-cdown="${i}" title="下移">▼</button>` +
+      `<button class="s-act" data-cdel="${i}" title="从链条断开">✕</button></div>`;
+  }).join('');
+}
+function renderChainStatus() {
+  const el = document.getElementById('chain-status');
+  if (!el) return;
+  if (chainEnabled && sessQueue.length) {
+    el.textContent = '连刷中 · 队列: ' + sessQueue.map(id => {
+      const s = sessions.find(x => x.id === id);
+      return s ? s.name : id;
+    }).join(' → ');
+  } else {
+    el.textContent = '';
+  }
+}
+async function saveChain() {
+  const d = await api('/api/chain/save', { blocks: chainBlocks, enabled: chainEnabled });
+  if (d && d.ok && Array.isArray(d.blocks)) chainBlocks = d.blocks;   // 回填 sid/最新标题
+  renderChainUI();
+  renderChainStatus();
+}
+async function toggleChain(on) {
+  chainEnabled = on;
+  if (on) {
+    await saveChain();                     // 服务端: 槽位同步场次 + 按链设接力队列
+    if (!running) {
+      const first = chainBlocks[0];
+      if (first && first.sid) {
+        await api('/api/start', { session_id: first.sid });
+        showNotice('连刷已启动: 从「' + first.title + '」开跑');
+      } else {
+        showNotice('链条为空 —— 先从「今日场地」点方块接入');
+      }
+    } else {
+      showNotice('连刷队列已更新: 当前场次打完后按链条接续');
+    }
+  } else {
+    await saveChain();                     // enabled=false: 服务端清接力队列
+    await api('/api/end', {});
+    showNotice('连刷已关闭, 本场次结束回待命 (链条配置保留)');
+  }
+  pollState();
+}
+async function requestScan() {
+  await api('/api/scan', {});
+  showNotice('已请求扫描: bot 待命中会去 PF hub 扫一遍录入 (几秒到几十秒)');
+}
+document.getElementById('arena-pool').addEventListener('click', e => {
+  const blk = e.target.closest('.arena-block');
+  if (!blk || blk.classList.contains('in-chain')) return;
+  chainBlocks.push({ pos: Number(blk.dataset.pos), title: blk.dataset.title || '',
+                     target: null, sid: null });
+  saveChain();
+});
+document.getElementById('chain-list').addEventListener('click', e => {
+  const up = e.target.closest('[data-cup]'), down = e.target.closest('[data-cdown]');
+  const del = e.target.closest('[data-cdel]');
+  if (up) {
+    const i = Number(up.dataset.cup);
+    if (i > 0) { [chainBlocks[i - 1], chainBlocks[i]] = [chainBlocks[i], chainBlocks[i - 1]]; saveChain(); }
+  } else if (down) {
+    const i = Number(down.dataset.cdown);
+    if (i >= 0 && i < chainBlocks.length - 1) { [chainBlocks[i + 1], chainBlocks[i]] = [chainBlocks[i], chainBlocks[i + 1]]; saveChain(); }
+  } else if (del) {
+    chainBlocks.splice(Number(del.dataset.cdel), 1);
+    saveChain();
+  }
+});
+document.getElementById('chain-list').addEventListener('change', e => {
+  const inp = e.target.closest('.cn-target');
+  if (!inp) return;
+  const b = chainBlocks[Number(inp.dataset.i)];
+  if (b) { b.target = inp.value.trim() === '' ? null : Number(inp.value); saveChain(); }
+});
+document.getElementById('chain-on').addEventListener('change', e => toggleChain(e.target.checked));
+
 /* ---------- 接力队列 (2026-10-02): 打完一场自动接下一场 ---------- */
 // /api/state 给 [{id,name}], /api/sessions 给 [id]; 归一成 id 数组存 sessQueue。
 let sessQueue = [];
@@ -758,6 +914,7 @@ async function onStartClick() {
 // 进程退出不走这里 —— /api/stop 语义未动, 托盘/调度按"等进程退出"依赖它。
 async function onEndClick() {
   try { await api('/api/end', {}); } catch (e) {}
+  loadChain();      // 结束会暂停连刷模式 (服务端改 chain.json), 回读勾选状态
   pollState();
 }
 async function renderModal() {

@@ -321,7 +321,9 @@ class BotState:
         self.energy_cost = 4          # 出战能量门槛 (可从 WebUI 调)
         self.pf_rule = None           # 当前场次绑定的规则 {"type","value"} / None
         self.scene = None             # 当前场次绑定的 PF 场地关键词 (None=不绑定, 就打散打)
+        self.arenas = None            # 最近一次场地扫描录入 {"day","arenas":[{idx,title,score}]}
         self.scene_pending = False    # 开始后待做一次场景识别/导航 (每次点「开始」都置位)
+        self.scan_requested = False   # WebUI「立即扫描」: 待命主循环去 PF hub 扫一遍录入
         self.end_reason = None        # 场次结束原因: goal/manual/scene/error (接力队列依据)
         self.filter_favorite = True   # 筛选时是否保留 喜爱(爱心) 芯片
         self.rest_every = 0           # 连续 N 场后休息 (0=不启用)
@@ -341,6 +343,8 @@ class BotState:
         with self._lock:
             self._logs.append((stamp, level, msg))
             self._total += 1
+        # 只 print: pf_bot 入口已 install() 接管 stdout, 落盘由 _Tee 负责。
+        # 不要再在这里直接写文件 —— 那是 2026-10-02 统一日志改造要消灭的分散出口。
         print(f"[{stamp}][{level}] {msg}", flush=True)
 
     def dump_logs(self) -> list:
@@ -368,7 +372,7 @@ STATE = BotState()
 # ---------- debug 目录体积控制 (2026-09-03) ----------
 
 IMG_CAP_MB = 150   # debug/pf/run 全部截图总量上限
-LOG_CAP_MB = 50    # 全部 .log 总量上限 (maafw + bot_stdout)
+LOG_CAP_MB = 50    # 全部 .log 总量上限 (maafw + pf.log); pf.log 自身轮转阈值同为 50MB
 CLEAN_INTERVAL_S = 600
 # "还在写"窗口: 目录内最新帧的 mtime 落在这个窗口内, 就认为有活着的进程在用。
 # 2026-09-29 实测: bot 进程待命中(未跑场次)时跑 pf_scene, scene 自己起的清理器把
@@ -379,9 +383,15 @@ LIVE_WINDOW_S = 1800
 
 def cleanup_debug(protected_dir: Path = None) -> str:
     """超限则删旧: 图片按运行目录从旧到新整删(保护当前目录, 仍超则删目录内最旧帧);
-    日志只删最旧的 maafw.bak.* 与旧世代 bot_stdout_*.log (活动中的 maafw.log/
-    bot_stdout.log 由 MAA 自轮转接手, 最新一代 bot_stdout_*.log 受保护)。
-    一次遍历建索引、删除时递减, 不做全量重扫。返回摘要文本。"""
+    日志只删**没人再写**的那些 —— 当前活动的 pf.log / maafw.log 及其备份一律跳过。
+    一次遍历建索引、删除时递减, 不做全量重扫。返回摘要文本。
+
+    ⚠️ 2026-10-02 统一日志后, 这里的"活动日志"判据变简单了: 改之前要同时保护
+    `bot_stdout.log` + **最新一代** `bot_stdout_<时间戳>.log`(每代进程一个文件,
+    只有最新代可能是活的), 现在只剩一个 `pf.log` —— 所有进程都写它, 它永远活着。
+    体积控制交给 pf_logging 自己的轮转(50MB → pf.log.1), 这里只兜底删历史遗留
+    (旧 bot_stdout_*.log / schedule.log / tray.log 仍在磁盘上, 它们已无人写入)。
+    """
     summary = ""
     img_root = PROJECT_ROOT / "debug" / "pf" / "run"
     if img_root.is_dir():
@@ -445,14 +455,15 @@ def cleanup_debug(protected_dir: Path = None) -> str:
             total += f.stat().st_size
         except OSError:
             pass
-    # 名称序 = 时间序, 最旧在前。活动日志不能删: 当前进程的 maafw.log/bot_stdout.log,
-    # 以及**最新一代** bot_stdout_<时间戳>.log —— 后者可能正被重生出来的进程写着
-    # (它被 cmd `>>` 持有时 unlink 本来也会失败, 这里显式保护, 不靠文件锁兜底)。
-    newest_gen = next((f for f in reversed(logs) if f.name.startswith("bot_stdout_")), None)
+    # 名称序 = 时间序, 最旧在前。活动日志一律不删: pf.log(所有进程都在写)、
+    # pf.log.1(轮转备份)、maafw.log(MAA 框架自己轮转)。**不能靠文件锁兜底** ——
+    # Windows 上被持有的文件 unlink 会失败, 这里显式保护。
+    # 剩下的都是历史遗留(旧 bot_stdout_*.log / schedule.log / tray.log), 无人写入。
+    ACTIVE = ("pf.log", "pf.log.1", "maafw.log")
     for f in logs:
         if total <= limit:
             break
-        if f.name in ("maafw.log", "bot_stdout.log") or f is newest_gen:
+        if f.name in ACTIVE:
             continue
         try:
             size = f.stat().st_size

@@ -41,6 +41,7 @@ import urllib.request
 from pathlib import Path
 
 from pf_env import WEBUI_PORT
+from pf_logging import log as _pf_log
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
@@ -58,13 +59,15 @@ WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
 
 
 def log(msg: str, level: str = "info") -> None:
+    """写统一日志 pf.log（2026-10-02 起不再单独写 schedule.log）。
+
+    保留 print: 调度器常被手工前台跑, 终端仍要看得到。
+    调度器事件与 bot 事件同处一份, 按时间混排 —— 这样"谁在什么时候把 bot 拉起来
+    的"一行就能查到, 不用在 schedule.log / bot_stdout.log 之间来回跳。
+    """
     line = f"[{time.strftime('%m-%d %H:%M:%S')}][{level}] {msg}"
     print(line, flush=True)
-    try:
-        with open(SCHED_LOG, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except OSError:
-        pass
+    _pf_log(line, level, tag="sched")
 
 
 # ---------- HTTP 辅助 ----------
@@ -164,10 +167,13 @@ def start_bot_process() -> None:
     try:
         # 首选: 脱离调度器的作业对象 (需要 job 允许 breakaway), 自己留句柄
         flags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
-        lf = open(BOT_LOG, "ab")
+        # 不再 open(BOT_LOG,"ab") 抢句柄 (2026-10-02): 调度器与 bot 各写一份同一个
+        # 文件时, Windows 的 append 不原子 → 丢行(实测 6 进程丢 161/1200)。
+        # bot 进程内部 pf_logging.install() 自己写 pf.log, 这里丢弃它的 stdout。
         bot = subprocess.Popen(
             [PY, "tools/pf_bot.py"], cwd=str(PROJECT_ROOT),
-            stdout=lf, stderr=subprocess.STDOUT, close_fds=True, creationflags=flags)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, creationflags=flags)
         bot  # noqa: B018 (留存引用, 进程随调度器常驻)
     except OSError:
         # breakaway 被宿主作业对象拒绝 (workbuddy/终端等 agent 宿主): 普通 Popen 会让
@@ -176,7 +182,7 @@ def start_bot_process() -> None:
         # 改经 WMI 由 WmiPrvSE 代生, 彻底在调用方作业对象之外 (无句柄, 就绪靠 HTTP 轮询)。
         from pf_env import spawn_detached
         pid = spawn_detached(
-            '"%s" tools/pf_bot.py' % PY, str(PROJECT_ROOT), str(BOT_LOG),
+            '"%s" tools/pf_bot.py' % PY, str(PROJECT_ROOT), None,
             env_lines=('set "PYTHONUTF8=1"', 'set "PYTHONIOENCODING=utf-8"',
                        'set "PYTHONUNBUFFERED=1"'))
         log(f"breakaway 不被允许, 已改用 WMI 独立进程拉起 pf_bot (pid={pid})")

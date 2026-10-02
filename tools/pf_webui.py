@@ -22,6 +22,10 @@ POST /api/start         {session_id} 开始指定场次（运行中不可换）;
 POST /api/end           结束当前场次, 回 IDLE 待命 (进程与 WebUI 保留)
 POST /api/stop          进程退出 (主循环退出, WebUI 一并关闭; 托盘/调度依赖)
 POST /api/queue/set     {ids:[...]} 整体重设接力队列 (打完一场自动接下一场的任务单)
+GET  /api/chain         {blocks, enabled, queue, running}  连刷编排配置 (debug/pf/chain.json)
+POST /api/chain/save    {blocks:[{pos,title,target}], enabled} 场块槽位同步成场次
+                        (scene=#N 位置绑定) 并按链条设接力队列; enabled=false 只清队列
+POST /api/scan          待命中请求去 PF hub 扫描录入今日场地 (运行中 409)
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
 POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删;
                         场次可带 scene=PF 场地关键词, 开始时自动识别并居中该场）
@@ -70,6 +74,7 @@ SVC_ID = "sgm-pf-bot"    # 本服务的身份标签, 见 _gate 说明与 /api/st
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SGM_DIR = Path(__file__).resolve().parent.parent / "sgm"
 DAILY_PATH = Path(__file__).resolve().parent.parent / "debug" / "pf" / "daily.json"
+CHAIN_PATH = Path(__file__).resolve().parent.parent / "debug" / "pf" / "chain.json"
 
 
 def _read_adb_config() -> dict:
@@ -350,6 +355,72 @@ def apply_session(sess: dict) -> None:
     STATE.energy_cost = clean_energy(sess.get("energy_cost"))
 
 
+# ---------- 连刷编排 (2026-10-02): 场地方块连成链, 勾选启动连刷 ----------
+
+def sync_chain(store, blocks, scan=None, *, enabled=True, logger=None) -> list:
+    """连刷链 -> 场次同步 + 接力队列。
+
+    blocks: [{pos,title,target,sid?}] —— pos = 轮播位 (1 起), 场次 scene 绑 "#pos"
+    (位置绑定, 不依赖 OCR); 槽位场次按 sid 复用 (chain.json 记账, 被删则重建),
+    同步只动 名称/目标分/scene, 规则/能量/休息等人工配置不碰; 标题优先取当日
+    扫描 (pos 对得上), 场地每天轮换时槽位自动跟新场走。
+    enabled=False 只清接力队列 (链条配置保留, 不开跑)。
+    返回落库后的 blocks (带 sid)。"""
+    log = logger or STATE.log
+    scan_by_pos = {}
+    if isinstance(scan, dict):
+        for a in scan.get("arenas") or []:
+            if isinstance(a, dict) and isinstance(a.get("idx"), int):
+                scan_by_pos[a["idx"] + 1] = str(a.get("title") or "").strip()
+    out, sids = [], []
+    for b in blocks or []:
+        try:
+            pos = int(b.get("pos"))
+        except (TypeError, ValueError):
+            continue
+        if pos < 1:
+            continue
+        title = scan_by_pos.get(pos) or str(b.get("title") or "").strip()
+        tgt = clean_target(b.get("target"))
+        sess = store.get(str(b.get("sid") or ""))
+        if sess is None:
+            sess = store.create(title or f"连刷#{pos}", None, 0, 0, tgt, 4, f"#{pos}")
+            log(f"连刷槽位 #{pos}: 新建场次「{sess['name']}」", "warn")
+        elif sess["id"] == store.session_id and STATE.running:
+            log(f"连刷槽位 #{pos}: 场次「{sess['name']}」运行中, 配置同步跳过 (下次开始生效)",
+                "warn")
+        else:
+            store.update(sess["id"], name=title or sess.get("name"),
+                         score_target=tgt, scene=f"#{pos}")
+        sids.append(sess["id"])
+        out.append({"pos": pos, "title": title or f"连刷#{pos}",
+                    "target": tgt, "sid": sess["id"]})
+    store.queue_set(sids if enabled else [])
+    return out
+
+
+def _load_chain() -> dict:
+    try:
+        data = json.loads(CHAIN_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"blocks": [], "enabled": False}
+    if not isinstance(data, dict):
+        return {"blocks": [], "enabled": False}
+    return {"blocks": data.get("blocks") if isinstance(data.get("blocks"), list) else [],
+            "enabled": bool(data.get("enabled"))}
+
+
+def _save_chain(blocks: list, enabled: bool) -> None:
+    try:
+        CHAIN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CHAIN_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"blocks": blocks, "enabled": enabled},
+                                  ensure_ascii=False), encoding="utf-8")
+        tmp.replace(CHAIN_PATH)
+    except OSError as e:
+        STATE.log(f"连刷配置写盘失败 (不影响运行): {e}", "warn")
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # 静默访问日志
         pass
@@ -396,8 +467,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _send(self, code, ctype, body):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
-        if ctype.startswith("image/"):
-            self.send_header("Cache-Control", "no-store")
+        # 全响应禁缓存 (2026-10-02): 原来只有图片带 no-store, webui.js 被浏览器
+        # 缓住旧版 → 前端半新半旧 (页面有「连刷编排」页签, JS 却是老的, 面板全空,
+        # 用户实测踩过)。js/html/json 都是小文件且走局域网, 无脑 no-store 最省心。
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -428,6 +501,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "energy_cost": STATE.energy_cost,
                     "pf_rule": STATE.pf_rule,
                     "scene": STATE.scene,
+                    "arenas": STATE.arenas,
                     "queue": STORE.queue_named(),
                     "sess_rest_every": (STORE.get(STORE.session_id or "") or {}).get("rest_every") or 0,
                     "sess_rest_minutes": (STORE.get(STORE.session_id or "") or {}).get("rest_minutes") or 0,
@@ -499,6 +573,12 @@ class _Handler(BaseHTTPRequestHandler):
                  "queue": STORE.queue_list(), "running": bool(STATE.running)},
                 ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
+        elif path == "/api/chain":
+            stored = _load_chain()
+            body = json.dumps({"blocks": stored["blocks"], "enabled": stored["enabled"],
+                               "queue": STORE.queue_list(), "running": bool(STATE.running)},
+                              ensure_ascii=False).encode("utf-8")
+            self._send(200, "application/json", body)
         elif path == "/api/history":
             ids = [s for s in (qs.get("sessions") or [""])[0].split(",") if s]
             if not ids:
@@ -569,9 +649,16 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/end":
             # 结束场次: 回 IDLE 待命, 进程与 WebUI 保留。进程退出是 /api/stop
             # (pf_schedule/托盘按"等进程退出"依赖它), 语义不动。
-            # manual 结束也算"正常打完": 接力队列非空时 pf_bot 会自动接下一场。
+            # 2026-10-02 用户口径: 手动「结束」= 要停 —— 只有达标才自动接续,
+            # 所以这里顺手把连刷模式暂停 (队列保留), 否则用户点结束后 bot 又去
+            # 认路+扫描下一场, 观感是"卡在扫描循环里"。
             STATE.end_reason = "manual"
             STATE.running = False
+            stored = _load_chain()
+            if stored["enabled"]:
+                _save_chain(stored["blocks"], False)
+                STATE.log(f"连刷模式已暂停 (接力队列保留 {len(STORE.queue_list())} 场; "
+                          f"想接着排: 重新勾选「连刷模式」)", "warn")
             STATE.log("收到 WebUI 结束请求, 本场次结束, 回到待命", "warn")
             self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/stop":
@@ -599,6 +686,9 @@ class _Handler(BaseHTTPRequestHandler):
             apply_session(sess)
             STATE.end_reason = None        # 新开始: 清掉上一场的结束原因
             STATE.scene_pending = True     # 开始时做一次场景识别/居中绑定场地 (pf_bot 消费)
+            if STORE.queue_discard(sess["id"]):
+                STATE.log(f"接力队列: 已移除刚开始的场次「{sess['name']}」(防接续重跑)",
+                          "warn")
             # 「开始」必须自足: 模拟器没开就先开, adb 断了就补连。
             # 2026-09-22 教训 —— 原先只打一条日志提醒"请先点启动 MuMu", 用户点「开始」
             # 什么都不会发生 (提示只躺在日志里), 连点三次都"没反应"。
@@ -618,6 +708,33 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json",
                        json.dumps({"ok": True, "starting_mumu": starting},
                                   ensure_ascii=False).encode("utf-8"))
+        elif self.path == "/api/chain/save":
+            # 连刷编排保存: 场块槽位同步成场次 (scene=#N) + 按链条设接力队列。
+            # enabled=false 只清队列不开跑; 「启动」由前端随后 /api/start 首节。
+            try:
+                data = self._read_json()
+            except json.JSONDecodeError as e:
+                self._json_err(400, str(e))
+                return
+            blocks = data.get("blocks")
+            enabled = bool(data.get("enabled"))
+            if not isinstance(blocks, list):
+                self._json_err(400, "blocks 需要为数组")
+                return
+            out = sync_chain(STORE, blocks, STATE.arenas, enabled=enabled)
+            _save_chain(out, enabled)
+            desc = " → ".join(b["title"] for b in out) or "空"
+            STATE.log(f"连刷链条已{'启动' if enabled else '保存'}: {desc}", "warn")
+            self._send(200, "application/json",
+                       json.dumps({"ok": True, "blocks": out}).encode())
+        elif self.path == "/api/scan":
+            # 待命扫描: 主循环 IDLE 分支消费 (开跑状态拒绝, 避免抢点击)。
+            if STATE.running:
+                self._json_err(409, "运行中不扫描 (先结束场次)")
+                return
+            STATE.scan_requested = True
+            STATE.log("收到 WebUI 扫描请求, 待命中将去 PF hub 扫一遍录入", "warn")
+            self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/sessions/select":
             # 仅绑定当前场次不开始; 之后可在主页改规则/上界/休息
             try:

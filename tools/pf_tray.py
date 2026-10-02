@@ -48,10 +48,15 @@ sys.path.insert(0, BASE)
 from pystray import Icon, Menu, MenuItem  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
+from pf_logging import log_path as _pf_log_path  # noqa: E402
+from pf_logging import log as _pf_log           # noqa: E402
+
 WEBUI_PORT = 8790
 API = "http://127.0.0.1:%d" % WEBUI_PORT
-BOT_LOG = os.path.join(ROOT, "debug", "pf", "bot_stdout.log")
-TRAY_LOG = os.path.join(ROOT, "debug", "pf", "tray.log")
+# 2026-10-02 统一日志: 托盘不再自己写 bot_stdout.log / tray.log, 与 bot 同写一份。
+PF_LOG = _pf_log_path()
+TRAY_LOG = PF_LOG      # 兼容旧引用 (提示语里用); 实际都落到 PF_LOG
+BOT_LOG = PF_LOG       # 同上 —— 现在指向统一日志, 不再是"名义上的主日志"
 
 # 与 pf_schedule 用同一个解释器口径 (anaconda 才有 cv2/maa)
 PY = r"C:\Users\zhiya\anaconda3\python.exe"
@@ -66,13 +71,19 @@ _busy = ""          # 正在执行的操作名, 非空时图标右上角加"忙"
 
 # ---------------- 日志 ----------------
 
+def short_log() -> str:
+    """给通知气泡用的短路径 (只给文件名, 不给全路径 —— 气泡放不下)。"""
+    return os.path.basename(PF_LOG)
+
+
 def _log(msg: str) -> None:
-    try:
-        os.makedirs(os.path.dirname(TRAY_LOG), exist_ok=True)
-        with open(TRAY_LOG, "a", encoding="utf-8") as f:
-            f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
-    except OSError:
-        pass
+    """写统一日志（与 bot 同一份 pf.log）。
+
+    2026-10-02 起不再单独写 tray.log —— 那让"托盘干了什么"只能在一个冷门文件里
+    翻。统一之后托盘事件和 bot 事件按时间混排, 反而更容易还原"谁在什么时候
+    做了什么"。tag 标明来源。
+    """
+    _pf_log(msg, "info", tag="tray")
 
 
 def _excepthook(t, v, tb) -> None:
@@ -114,7 +125,7 @@ def _bot_alive() -> bool:
 # ---------------- 进程生命周期 ----------------
 
 def _spawn_bot() -> None:
-    """后台起 pf_bot.py。日志追加到 bot_stdout.log (与 pf_schedule 行为一致)。
+    """后台起 pf_bot.py。日志由 bot 进程自己写统一 pf.log (2026-10-02 起)。
 
     ⚠️ 这段的 env 是本文件存在的核心理由之一: 显式 UTF-8, 不继承 cp936。
     """
@@ -123,7 +134,6 @@ def _spawn_bot() -> None:
         if _bot_alive():
             _log("pf_bot 已在运行, 复用")
             return
-        os.makedirs(os.path.dirname(BOT_LOG), exist_ok=True)
         env = dict(os.environ)
         env["PYTHONUTF8"] = "1"            # Python UTF-8 mode
         env["PYTHONIOENCODING"] = "utf-8"  # stdout/stderr 强制 UTF-8
@@ -133,9 +143,14 @@ def _spawn_bot() -> None:
         try:
             # 脱离托盘进程的作业对象: 托盘退出/被关时 bot 不陪葬
             flags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
-            lf = open(BOT_LOG, "ab")
+            # ⚠️ 不再 `stdout=open(BOT_LOG,"ab")` (2026-10-02): 托盘用普通 Popen
+            # 拉起时自己持有句柄, 与 bot 自己的落盘并发写同一文件 → Windows 上
+            # append 不原子, 实测 6 进程并发会丢 161/1200 行。现在改成把 stdout
+            # 接到管道丢弃: bot 进程内部 pf_logging.install() 负责写 pf.log,
+            # 托盘不碰那个文件。
+            DEVNULL = subprocess.DEVNULL
             _bot_proc = subprocess.Popen([PY, "tools/pf_bot.py"], cwd=ROOT,
-                                         env=env, stdout=lf, stderr=subprocess.STDOUT,
+                                         env=env, stdout=DEVNULL, stderr=DEVNULL,
                                          close_fds=True, creationflags=flags)
             pid = _bot_proc.pid
         except OSError as e:
@@ -145,7 +160,7 @@ def _spawn_bot() -> None:
             _log("breakaway 不被允许 (%s), 改用 WMI 独立进程拉起" % e)
             from pf_env import spawn_detached
             pid = spawn_detached(
-                '"%s" tools/pf_bot.py' % PY, ROOT, BOT_LOG,
+                '"%s" tools/pf_bot.py' % PY, ROOT, None,   # None = 不做 cmd >> 重定向
                 env_lines=('set "PYTHONUTF8=1"', 'set "PYTHONIOENCODING=utf-8"',
                            'set "PYTHONUNBUFFERED=1"'))
             _bot_proc = None
@@ -248,11 +263,11 @@ def act_start(icon=None, item=None) -> None:
         _spawn_bot()
     if not _bot_alive():
         _log("启动失败: bot 未就绪")
-        _notify("服务启动失败: bot 未就绪, 看 debug\\pf\\tray.log")
+        _notify("服务启动失败: bot 未就绪, 看 %s" % short_log())
         return
     cur = _http("/api/state", timeout=3.0) or {}
     if cur.get("status") == "ERROR":
-        _log("bot 初始化失败: %s" % (cur.get("step") or "未知原因, 看 bot_stdout.log"))
+        _log("bot 初始化失败: %s" % (cur.get("step") or ("未知原因, 看 " + short_log())))
         _notify("bot 初始化失败: %s" % (cur.get("step") or "未知原因"))
         return
     sid = cur.get("session_id") or ""
@@ -273,7 +288,7 @@ def act_run(icon=None, item=None) -> None:
             return
     cur = _http("/api/state", timeout=3.0) or {}
     if cur.get("status") == "ERROR":
-        _log("bot 初始化失败: %s" % (cur.get("step") or "未知原因, 看 bot_stdout.log"))
+        _log("bot 初始化失败: %s" % (cur.get("step") or ("未知原因, 看 " + short_log())))
         return
     if cur.get("status") == "RUNNING":
         _log("已在跑 (fight=%s), 不重复开跑" % cur.get("fight_no"))
@@ -441,7 +456,6 @@ def _poll_loop() -> None:
 
 def main() -> int:
     global _icon
-    os.makedirs(os.path.dirname(BOT_LOG), exist_ok=True)
     _log("托盘启动 (pid=%d)" % os.getpid())
 
     menu = Menu(

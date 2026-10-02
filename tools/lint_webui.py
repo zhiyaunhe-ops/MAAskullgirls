@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate the standalone WebUI without importing bot or emulator modules."""
 
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 import subprocess
@@ -43,6 +44,30 @@ class Assets(HTMLParser):
             self.inline.append(data)
 
 
+TOP_DECL = re.compile(r"^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^(?:let|const|var)\s+([A-Za-z_$][\w$]*)")
+
+
+def duplicate_top_level(script: Path) -> list:
+    """顶层函数/变量声明重名检查 (2026-10-02)。
+
+    JS 函数声明同名时**后者覆盖前者**且不报错 —— 连刷编排的 renderPool 被
+    每日任务页签同名函数静默覆盖, node --check 与浏览器控制台全绿, 但面板
+    永远空 (用户实测)。这里对每个 script 扫顶层声明, 重名即报错。
+    """
+    seen, dups = {}, []
+    for no, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+        m = TOP_DECL.match(line)
+        if not m:
+            continue
+        name = m.group(1) or m.group(2)
+        if name in seen:
+            dups.append(f"duplicate top-level declaration {name!r} in {script.name} "
+                        f"(line {seen[name]} and {no}) —— 后者会静默覆盖前者")
+        else:
+            seen[name] = no
+    return dups
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     static = root / "tools" / "static"
@@ -57,6 +82,8 @@ def main():
         if not target.is_file():
             errors.append(f"missing referenced asset: {reference}")
     scripts = sorted(static.glob("*.js"))
+    for script in scripts:
+        errors.extend(duplicate_top_level(script))
     with tempfile.TemporaryDirectory(prefix="sgm-webui-lint-") as tmp:
         inline = Path(tmp) / "inline.js"
         inline.write_text("\n".join(parser.inline), encoding="utf-8")

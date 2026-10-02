@@ -23,6 +23,10 @@ SESSIONS = [
      "scene": "TRIAL BY FIRE"},
 ]
 QUEUE = ["fire"]   # 接力队列演示: 打完当前场自动接 Fire Element
+CHAIN = {"blocks": [
+    {"pos": 1, "title": "MEDICI SHAKEDOWN", "target": 50000000, "sid": "default"},
+    {"pos": 2, "title": "TRIAL BY FIRE", "target": None, "sid": "demo-chain-2"}],
+    "enabled": False}   # 连刷编排演示: 方块槽位 -> 场次 (scene=#N) -> 接力队列
 STATE = {
     "svc": "sgm-pf-bot-preview", "demo": True, "status": "IDLE",
     "step": "演示数据 · 操作仅影响本次预览", "fight_no": 24, "score": 6842500, "streak": 18,
@@ -30,6 +34,10 @@ STATE = {
     "filter_favorite": True, "close_on_goal": True, "rest_every": 10, "rest_minutes": 5,
     "rest_until": 0, "session_id": "default", "session_name": "Monthly Prize Fight",
     "scene": None, "queue": QUEUE,
+    "arenas": {"day": time.strftime("%Y-%m-%d"), "arenas": [
+        {"idx": 0, "title": "MEDICI SHAKEDOWN", "score": 48600000},
+        {"idx": 1, "title": "TRIAL BY FIRE", "score": 1230000},
+        {"idx": 2, "title": "BIG BEN'S BEATDOWN", "score": 0}]},
     "shot_ver": 1, "shot_time": "14:32:08", "log_total": 8,
     "logs": [["14:28:01", "info", "演示预览：未连接模拟器，所有操作只保存在内存。"],
              ["14:28:04", "step", "[第 24 场] 开始 Prize Fight 循环"],
@@ -70,6 +78,9 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                                    "running": STATE["status"] == "RUNNING"})
             if path == "/api/daily":
                 return self.reply({"data": DAILY, "saved": True})
+            if path == "/api/chain":
+                return self.reply({"blocks": CHAIN["blocks"], "enabled": CHAIN["enabled"],
+                                   "queue": list(QUEUE), "running": STATE["status"] == "RUNNING"})
             if path == "/api/summary":
                 # 与真实服务端同构 (真实 eta_sec 由记分点速率算出; 前端自行用 target/score 复算)
                 return self.reply({"per_min": 96500.0, "last_delta": 425000,
@@ -146,6 +157,21 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 QUEUE[:] = clean      # 与真实 STORE.queue_set 同口径: 去重+丢不存在
                 STATE["queue"] = list(QUEUE)
                 return self.reply({"ok": True, "queue": list(QUEUE), "demo": True})
+            elif path == "/api/chain/save":
+                blocks = body.get("blocks")
+                if not isinstance(blocks, list):
+                    return self.reply({"error": "blocks 需要为数组"}, 400)
+                enabled = bool(body.get("enabled"))
+                CHAIN["blocks"] = [dict(b, sid=str(b.get("sid") or f"demo-chain-{b.get('pos')}"))
+                                   for b in blocks if isinstance(b, dict) and b.get("pos")]
+                CHAIN["enabled"] = enabled
+                QUEUE[:] = [b["sid"] for b in CHAIN["blocks"]] if enabled else []
+                STATE["queue"] = list(QUEUE)
+                return self.reply({"ok": True, "blocks": CHAIN["blocks"], "demo": True})
+            elif path == "/api/scan":
+                if STATE["status"] == "RUNNING":
+                    return self.reply({"error": "运行中不扫描 (先结束场次)"}, 409)
+                return self.reply({"ok": True, "demo": True})
             elif path == "/api/end":
                 STATE["status"] = "IDLE"
             elif path == "/api/stop":
