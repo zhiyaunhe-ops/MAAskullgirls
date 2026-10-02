@@ -19,14 +19,17 @@ SESSIONS = [
     {"id": "default", "name": "Monthly Prize Fight", "rule": None, "count": 24,
      "last_ts": NOW, "score_target": 10000000, "energy_cost": 4, "rest_every": 10, "rest_minutes": 5},
     {"id": "fire", "name": "Fire Element", "rule": {"type": "element", "value": "fire"},
-     "count": 12, "last_ts": NOW - 3600, "score_target": 5000000, "energy_cost": 4},
+     "count": 12, "last_ts": NOW - 3600, "score_target": 5000000, "energy_cost": 4,
+     "scene": "TRIAL BY FIRE"},
 ]
+QUEUE = ["fire"]   # 接力队列演示: 打完当前场自动接 Fire Element
 STATE = {
     "svc": "sgm-pf-bot-preview", "demo": True, "status": "IDLE",
     "step": "演示数据 · 操作仅影响本次预览", "fight_no": 24, "score": 6842500, "streak": 18,
     "score_target": 10000000, "energy_cost": 4, "pf_rule": None,
     "filter_favorite": True, "close_on_goal": True, "rest_every": 10, "rest_minutes": 5,
     "rest_until": 0, "session_id": "default", "session_name": "Monthly Prize Fight",
+    "scene": None, "queue": QUEUE,
     "shot_ver": 1, "shot_time": "14:32:08", "log_total": 8,
     "logs": [["14:28:01", "info", "演示预览：未连接模拟器，所有操作只保存在内存。"],
              ["14:28:04", "step", "[第 24 场] 开始 Prize Fight 循环"],
@@ -63,6 +66,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 return self.reply(MUMU)
             if path == "/api/sessions":
                 return self.reply({"sessions": SESSIONS, "active": STATE["session_id"],
+                                   "queue": list(QUEUE),
                                    "running": STATE["status"] == "RUNNING"})
             if path == "/api/daily":
                 return self.reply({"data": DAILY, "saved": True})
@@ -127,9 +131,21 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 STATE.update(session_id=session["id"], session_name=session["name"],
                              pf_rule=session["rule"], score_target=session.get("score_target"),
                              energy_cost=session.get("energy_cost", 4), rest_every=session.get("rest_every", 0),
-                             rest_minutes=session.get("rest_minutes", 0))
+                             rest_minutes=session.get("rest_minutes", 0), scene=session.get("scene"))
                 if path == "/api/start":
                     STATE["status"] = "RUNNING"
+            elif path == "/api/queue/set":
+                ids = body.get("ids")
+                known = {s["id"] for s in SESSIONS}
+                seen: set = set()
+                clean = []
+                for x in (ids if isinstance(ids, list) else []):
+                    if isinstance(x, str) and x in known and x not in seen:
+                        seen.add(x)
+                        clean.append(x)
+                QUEUE[:] = clean      # 与真实 STORE.queue_set 同口径: 去重+丢不存在
+                STATE["queue"] = list(QUEUE)
+                return self.reply({"ok": True, "queue": list(QUEUE), "demo": True})
             elif path == "/api/end":
                 STATE["status"] = "IDLE"
             elif path == "/api/stop":
@@ -139,7 +155,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 if session:
                     session.update({k: v for k, v in body.items() if k != "id"})
                     if session["id"] == STATE["session_id"]:
-                        for key in ("score_target", "energy_cost", "rest_every", "rest_minutes"):
+                        for key in ("score_target", "energy_cost", "rest_every",
+                                    "rest_minutes", "scene"):
                             if key in body:
                                 STATE[key] = body[key]
                         STATE["pf_rule"] = session.get("rule")
@@ -149,7 +166,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                     return self.reply({"error": "请填写场次名称"}, 400)
                 session = {"id": "demo-" + str(time.time_ns()), "name": name,
                            "rule": body.get("rule"), "count": 0, "last_ts": 0}
-                for key in ("score_target", "energy_cost", "rest_every", "rest_minutes", "parent"):
+                for key in ("score_target", "energy_cost", "rest_every", "rest_minutes",
+                            "parent", "scene"):
                     if key in body:
                         session[key] = body[key]
                 SESSIONS.append(session)
@@ -159,6 +177,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
                 if sid == "default" or sid == STATE["session_id"]:
                     return self.reply({"error": "演示中不能删除 Default 或当前场次"}, 409)
                 SESSIONS[:] = [s for s in SESSIONS if s["id"] != sid]
+                QUEUE[:] = [x for x in QUEUE if x != sid]
+                STATE["queue"] = list(QUEUE)
             elif path == "/api/jjc/refresh":
                 self.path = "/api/jjc"
                 return self.do_GET()

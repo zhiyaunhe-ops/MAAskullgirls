@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import difflib
 import json
 import re
 import subprocess
@@ -78,16 +77,8 @@ ROI_MODAL_X = (700, 0, 1060, 300)
 # 真 X 是孤立峰 (实测次峰仅 0.5x); 背景渐变会形成连片平台 (实测多峰 0.951~0.953,
 # 差仅 0.001~0.002)。取 0.05 —— 真峰远大于此, 伪平台远小于此, 分离很干净。
 MODAL_X_PEAK_MARGIN = 0.05
-ROI_CARD_SCORE = (505, 138, 775, 185)  # 居中卡 "SCORE: n"
-ROI_CARD_TITLE = (500, 290, 780, 378)  # 居中卡场地名 (可两行)
-# 标题兜底 ROI: 卡面版式不统一, 标题高度不固定。2026-09-18 实测 DEATH METTLE 的
-# 标题在 y≈265-295 (比 MEDICI SHAKEDOWN 的 y≈325-365 高 ~60px), 原 ROI 只框到
-# 倒计时 '02D:23H:54M', OCR 剥完非字母只剩 'M'。
-# ⚠️ 兜底区域不能贪大: MAA OCR 对大/暗区域会整体失灵 (实测 y235-380 读空串),
-#    (520,255,780,310) 是扫描多组 ROI 后唯一稳定读出该标题的窗口; 且在
-#    A CLASS / AGAINST / MEDICI 各帧上读出的是垃圾 ('PSOOS'/'M') 但都不命中
-#    已知名 —— 不会误匹配。只在原 ROI 未命中已知名时才启用, 既有卡行为不变。
-ROI_CARD_TITLE_FALLBACK = (520, 255, 780, 310)
+# 居中卡 SCORE/标题 ROI (ROI_CARD_*) 与字库 2026-10-02 起住在 pf_bot
+# (接力导航共用同一份读卡逻辑), 本文件经 PfScene 委托使用。
 
 HOME_BTN = (115, 37)   # 顶栏房子: 回大厅
 HALL_TIMEOUT = 150.0   # 冷启动含 CONNECTING
@@ -217,182 +208,15 @@ class PfScene:
     def ocr(self, roi: tuple) -> str:
         return self.bot.ocr_text(self.snap(), roi)
 
-    KNOWN_TITLES = [
-        "EYE OF THE STORM", "AGAINST THE WIND", "TRIAL BY FIRE", "THE BIG THAW",
-        "A CLASS OF ONE'S OWN", "SEEING STARS", "NIGHT'S GHOUL", "BLOOD SPORT",
-        "MEDICI SHAKEDOWN", "ROSHAMBOH", "GOLD RUSH", "BELLE OF THE BRAWL",
-        "DEATH METTLE",
-        # 2026-09-20: 暗元素场。卡面 OCR 稳定丢空格且丢字母 I, 读成
-        # 'ASHOTINTHEDARK' / 'ASHOTNTHEDARK' —— 靠 difflib (cutoff 0.55) 归一到本名,
-        # 否则 center('A SHOT IN THE DARK') 会 10 步转不到 (实测 01:27 失败)。
-        "A SHOT IN THE DARK",
-        # 2026-09-22: Annie 的角色场名 (游戏日 09-21 周一新开)。实机实证:
-        # BRONZE + INFINITY AND BEYOND, 无 SCORE 行, 剩 02D:23H:55M, 立绘绿发星饰;
-        # 快照 Current Character PF 当日 Marie(收)→Annie(开), 与 §6.12.2 该周
-        # Annie/Big Band 对、周一-三=前一个 吻合。OCR 实读 'NFINITYAND BETOND'
-        # (丢首字母 I、丢 Y), difflib 能归一, 但**必须先收录**, 否则 fallback 读数
-        # 会被丢弃 (见 read_center_card 2026-09-22 注)。
-        "INFINITY AND BEYOND",
-        # 2026-09-25: Big Band 的角色场名 (游戏日 09-24 周四半周切换新开)。实机实证:
-        # BRONZE + BIG BEN'S BEATDOWN, 无 SCORE 行, 剩 02D:23H:56M, 立绘礼帽+耳机+
-        # 喇叭手臂 = Big Band; 快照 Current Character PF 当日 Annie→Big Band, 与
-        # §6.12.2 该周 Annie/Big Band 对、周四-六=后一个 吻合。OCR 实读
-        # 'IG BEN'S BEATDOWN' (丢首字母 B, BEN=BAND 的变体), difflib 能归一。
-        # ⚠️ 此卡与 DEATH METTLE/INFINITY AND BEYOND 同款版式: 顶部是 BRONZE
-        # 层级标签+装饰图, SCORE ROI (y138-185) 框到装饰区, 读数是随机噪声
-        # ('ROgO0' / '900'), 见 read_center_card 2026-09-25 注。
-        "BIG BEN'S BEATDOWN",
-    ]
+    # ---- 场地识别 (2026-10-02 起委托 PfBot) ----
+    # 读卡/字库/分数归一逻辑整体移入 pf_bot.PfBot —— bot 的接力导航要用同一份,
+    # 两处不再各养一份。这里保留同名薄委托, explore/center/goto_index 行为不变。
 
-    # 卡片上的"难度层级"文字与场次名**同框**: ROI_CARD_TITLE=(500,290,780,378) 实测同时
-    # 框到层级小字与场地名大字 (2026-09-16 用 hub_scan/02.png 裁图实证)。所以 OCR 出来的
-    # 是 "DIAMOND BLOOD SPORT" 这类带层级前缀的串 —— 历史记录里那个
-    # "DIAMOND NIGHT'S GHOUL" 就是这么来的 (DIAMOND 是层级, 不属于名字)。
-    # 但**不能无脑删前缀**: "GOLD RUSH" 本身就以 GOLD 开头。所以做法是把
-    # "原串 / 去前缀串" 都当候选, 谁跟已知场地名更接近用谁。
-    TIER_PREFIXES = ("BRONZE", "SILVER", "GOLD", "DIAMOND")
-
-    def _title_cands(self, raw: str) -> tuple[str, list[str], bool]:
-        """OCR 原文 -> (字母归一串, [原串, 去层级前缀串...], 是否剥过前缀)。"""
-        title = re.sub(r"[^A-Z]", "", raw.upper())
-        cands = [title]
-        stripped = False
-        for pre in self.TIER_PREFIXES:
-            if title.startswith(pre) and len(title) > len(pre) + 2:
-                cands.append(title[len(pre):])
-                stripped = True
-        return title, cands, stripped
-
-    def _match_known(self, cands: list[str]) -> str | None:
-        keys = [re.sub(r"[^A-Z]", "", k) for k in self.KNOWN_TITLES]
-        best, best_ratio = None, 0.0
-        for cand in cands:
-            close = difflib.get_close_matches(cand, keys, n=1, cutoff=0.55)
-            if close:
-                ratio = difflib.SequenceMatcher(None, cand, close[0]).ratio()
-                if ratio > best_ratio:
-                    best_ratio, best = ratio, self.KNOWN_TITLES[keys.index(close[0])]
-        return best
-
-    @staticmethod
-    def parse_score_ocr(raw: str) -> int:
-        """把居中卡 SCORE 行的 OCR 原文解析成分数。读不出返回 -1。
-
-        坑史 (按发现顺序):
-          ① 20:17 之前 —— 新场分数是 "SCORE: 0", OCR 把这个 0 认成**字母 O**,
-             整行变 'SCORE: O' / 'SCOREO', 一个数字都搜不到 -> score=-1 ->
-             run_new_pf 报「没有 score=0 的新场」。
-             修法: 先剥 SCORE 标签, 再把 O/Q -> 0。**必须先后剥标签**, 否则标签里
-             那个 O 会被当成数字 0, 得到 '0' + 'SCORE' 的错值。
-          ② 2026-09-19 复现 —— 原实现只在这一步失败时 (m is None) 才走归一化分支,
-             但 'SCOREO' 里 **没有数字**, re.search(r"[\\d,]+") 确实返回 None,
-             所以按理该进分支……实测却仍报「无 score=0」。根因是标签正则
-             `score\\s*:?` 紧跟的 `\\s*:?` 允许零宽匹配, 而 `(?i)` 下 'SCOREO' 的
-             'SCORE' 被剥掉后剩 'O' -> 0 -> m 命中 '0', **这一步其实是对的**;
-             真正漏掉的是下一层: '0' 解析成 0 之后, 上层 pick_new_arena 用
-             `score == 0` 判新场 —— 逻辑没问题。
-             => 结论: 该分支本身可用, 但**只在完全没有数字时才触发**, 覆盖面太窄。
-             例如 OCR 把 'SCORE: 0' 读成 'SCORE: 6' / 'SCORE: 8' 时,
-             re.search 命中 '6'/'8', 分支不触发, 直接得 score=6 —— 与真值 0 不符,
-             新场被漏判。这就是 2026-09-19 01:02 实测 SEEING STARS 卡 score=6 的来源
-             (截图 debug/pf/run/0919_010200/0018_scene.jpg 卡面确为 'SCORE: 0')。
-        本实现对**两条路径都做归一化**, 并加一条领域约束兜底:
-          SGM 的 PF 分数不可能是个位数 (< 100 的 score 只可能是 OCR 把 0 读错),
-          个位数一律判 0。
-        """
-        if not raw:
-            return -1
-        # 剥标签 (大小写不敏感, 允许 'SCORE' 与 'SCORE:' 两种写法)
-        body = re.sub(r"(?i)\bscore\b\s*:?", " ", raw)
-        # 字母 -> 数字 (0/O/Q 互认, 以及常见的 6/8/9 与 0 互认)
-        norm = re.sub(r"[OQ]", "0", body)
-        norm = re.sub(r"[^0-9,]", " ", norm).strip()
-        # 取最长的数字串作为分数 (留 ',' 以便千分位)
-        chunks = [c for c in re.split(r"\s+", norm) if c]
-        if not chunks:
-            return -1
-        best = max(chunks, key=lambda c: len(c.replace(",", "")))
-        digits = best.replace(",", "")
-        if not digits:
-            return -1
-        try:
-            score = int(digits)
-        except ValueError:
-            return -1
-        # 领域约束: 个位数只可能是 OCR 把 0 读错 (SGM 分数没有个位数)
-        if score < 10:
-            log(f"分数 OCR 得个位数 {score}, 按 0 处理 (原文 {raw!r})", "warn")
-            return 0
-        return score
+    parse_score_ocr = staticmethod(PfBot.parse_score_ocr)
 
     def read_center_card(self) -> tuple[str, int]:
-        """读居中场地的 (名称, 分数)。名称优先匹配已知场地名。
-
-        层级前缀不直接删, 而是展开成候选再择优 —— 见 TIER_PREFIXES 上面的说明。
-
-        2026-09-22 两条修:
-        1. fallback 读数不再"只在接受 KNOWN 命中时才用"。INFINITY AND BEYOND
-           首见时 primary ROI 框到倒计时, OCR '02:23 51' 剥完非字母=空串,
-           fallback 读出 'NFINITYAND BETOND' 但表里没有这名字 -> 整卡报 ('', -1),
-           explore 八连空、新场漏判。09-18 DEATH METTLE 恰好当次补进了 KNOWN,
-           把这条路全掩住了。现在 primary 剥完为空而 fallback 非空时,
-           采用 fallback 串返回 (即使未命中 KNOWN —— 让上层至少拿到近似名,
-           走「未收录」路径留痕, 而不是静默变空)。
-        2. 无 SCORE 行的卡判 0。新场 (从没打过) 的卡面**没有 SCORE 行**
-           (2026-09-18 DEATH METTLE / 2026-09-22 INFINITY AND BEYOND 两次实证),
-           SCORE ROI 读出空串 != OCR 失灵。判 0 的门卫: 标题必须命中 KNOWN
-           (证明 OCR 通道活着、画面确实是张卡), 否则保持 -1 如实报读不出 ——
-           宁可漏跑不可错跑 (误判 0 会错建场次)。
-        """
-        raw_score = self.ocr(ROI_CARD_SCORE)
-        score = self.parse_score_ocr(raw_score)
-        raw_title = self.ocr(ROI_CARD_TITLE)
-        full, cands, stripped = self._title_cands(raw_title)
-        best = self._match_known(cands)
-        if best is None:
-            # 原 ROI 未命中已知名 -> 卡面版式可能不同, 用加高 ROI 兜底再试一次
-            # (2026-09-18 DEATH METTLE: 标题比常规版式高 ~60px, 原 ROI 框到倒计时)。
-            raw2 = self.ocr(ROI_CARD_TITLE_FALLBACK)
-            full2, cands2, stripped2 = self._title_cands(raw2)
-            best2 = self._match_known(cands2)
-            if best2 is not None:
-                log(f"标题 ROI 未命中, 加高 ROI 兜底命中: {raw_title!r} -> {raw2!r} "
-                    f"-> {best2!r}", "warn")
-                full, cands, stripped = full2, cands2, stripped2
-                best = best2
-            elif not cands[0] and cands2[0]:
-                # 2026-09-22: primary 剥完是空串而 fallback 读出了字母 ->
-                # 采用 fallback 串 (全新名字未收录时也留痕, 不再静默丢成 '')。
-                log(f"标题 ROI 读空, 采用兜底 ROI 未收录名: {raw_title!r} -> {raw2!r}",
-                    "warn")
-                full, cands, stripped = full2, cands2, stripped2
-        # 无 SCORE 行判 0 的两种形态 (门卫同为「标题命中 KNOWN」= OCR 通道活着、
-        # 画面确实是张已收录的卡):
-        # ① SCORE ROI 剥完标签为空 —— 读到 'SCORE: O' 这类纯标签
-        #    (2026-09-22 原修, 要求 score==-1)。
-        # ② 2026-09-25 (BIG BEN'S BEATDOWN 实证): SCORE ROI 读到的文本**不含
-        #    SCORE 字样** —— 该区域根本不是 SCORE 行。角色新场卡顶部是 BRONZE
-        #    层级标签+装饰图, SCORE ROI (y138-185) 框到装饰区, OCR 读数是
-        #    随机噪声且每次不同 (同一次运行: 扫描时 'ROgO0'→个位数兜底判 0,
-        #    复读时 '900'→parse 成 900 ≥10 不走兜底 → 复核 900≠0 误 abort)。
-        #    所以形态②不看 parse 结果, 但加领域上限: 噪声若 ≥10000 则不覆盖
-        #    (SGM PF 真分数都是百万量级, 若某天 SCORE 区读出 ≥1 万的数, 更可能
-        #    是真分数丢了 SCORE 标签, 保持原值让复核防守生效 —— 宁可漏跑不错跑)。
-        score_body = re.sub(r"(?i)\bscore\b\s*:?", " ", raw_score).strip()
-        has_score_label = bool(re.search(r"(?i)score", raw_score))
-        if best is not None and (
-            (score == -1 and not score_body)
-            or (not has_score_label and 0 <= score < 10000)
-        ):
-            log(f"卡面无 SCORE 行 (标题 {best!r} 识别正常, SCORE 区原文 {raw_score!r}), "
-                f"按新场 0 处理", "warn")
-            score = 0
-        if best:
-            if stripped:
-                log(f"场地名带层级前缀, 归一为 {best!r}: OCR 原文 {full}", "warn")
-            return best, score
-        # 未命中已知名: 返回去前缀那版 (带层级前缀的串拿去找 arena_rules 没意义)
-        return (cands[-1] if len(cands) > 1 else full), score
+        """读居中场地的 (名称, 分数)。实现在 PfBot.read_center_card。"""
+        return self.bot.read_center_card()
 
     # ---------- 场景 ----------
 

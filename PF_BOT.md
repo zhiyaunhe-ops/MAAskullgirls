@@ -105,6 +105,7 @@
 | 6.0 | api/end／api/stop | 结束场次回IDLE进程保留／quit=True进程退出WebUI关闭(托盘·调度依赖) |
 | 6.0 | api/pause／api/stop | 已废：暂停态移除(2026-09-27)，只剩在跑/结束 |
 | 6.0 | 达标／ERROR | 结束场次回IDLE、可关MuMu／running=False、人工检查后可重开 |
+| 6.0 | 接力队列 (2026-10-02) | 正常结束(goal/manual/scene)且队列非空→自动 apply 下一场续跑(scene_pending=按需导航)；**error 结束不接续**；达标关机顺延到队列清空那场(STORE.queue 非空时 on_goal_reached 直接跳过)；/api/stop 进程退出不走队列；队列存 sessions.json "queue", STORE.queue_pop 消费 |
 | 6.0 | IDLE(非运行) | 仍约每2s清弹窗；不代表设备无动作 |
 | 6.0 | IDLE截图卡死 | 全路径截图带超时10s＋每分钟告警；停止·开始仍可响应，不随MAA内部重连一起等 |
 | 6.0 | api/mumu/game | 先adb connect再monkey；device not found时补连重试一次 |
@@ -135,7 +136,8 @@
 | 6.5 | 采样 | 对手页、fight_no锚定；零收益保留；同场续跑保留基线 |
 | 6.5 | CSV | time,fight_no,score,delta,streak,session；兼容解析：pf_storage |
 | 6.5 | 活跃收益率 | 相邻采样间隔≤3分钟；tools/static/webui.js |
-| 6.5a | 场次／全局配置 | 名称、规则、目标分、能量、休息／喜爱开关 |
+| 6.5a | 场次／全局配置 | 名称、规则、目标分、能量、休息、场地绑定(scene=PF卡名关键词,可选)／喜爱开关 |
+| 6.5a | 场地绑定 scene (2026-10-02) | 每次「开始」走回 PF hub 识别居中场(读卡逻辑住 PfBot, pf_scene 委托)；绑定关键词则轮播扫到该场居中(先左后右, 轮播不循环)再开打；**找不到=结束本场+接续队列**(宁可停不错跑)；未绑定只认路+报"当前场地: X (score=…)"；导航第一轮认不出界面时补一发 monkey 拉游戏(冷开始只拉了模拟器) |
 | 6.5a | 子场／删除父场 | 继承配置、独立采样／子场保留转顶级 |
 | 6.5a | 运行中／default | 限制切换、编辑、删除／default不可删 |
 | 6.5a | 删除场次 | 内存曲线移除；CSV、账本保留；历史每场内存最多3000点 |
@@ -148,9 +150,12 @@
 | 6.7 | MuMu缺席保活 | setup只加载Resource(不依赖模拟器)；连接走ensure_connection(已连=纯内存检查)，主循环没连上就「等待 MuMu」每10s重连**永不退出**(2026-09-30用户口径: 没检测到MuMu不许断)；断链日志节流60s/条；running中场次也挂起等模拟器回来自动续，不再烧重生 |
 | 6.7 | 托盘启动≠开跑 | 「启动服务」只起进程(2026-09-30用户口径)；开跑=托盘「开跑当前场次」或WebUI「开始」；托盘自启即默认启动服务+Windows气泡(_notify→icon.notify)；图标=tools/static/icons/tray_icon.png(Filia头像裁剪, 缺文件回退圆角方块)+右下角状态点；启动器=启动托盘.vbs(ASCII-only：wscript按ANSI解析, UTF-8中文注释静默失败；pythonw需全路径, cscript PATH无anaconda)；重生auto-resume不受此限(接管死前场次) |
 | 6.7 | 每日任务 | 保存编排；未接入执行 |
+| 6.7 | 接力队列 UI/API (2026-10-02) | POST /api/queue/set {ids} 整体重设(去重+丢不存在)；/api/sessions 与 /api/state 带 queue；弹窗「选择 PF 场次」行内 ☰/⛓ 加入·移出＋队列条 ▲▼✕ 排序；主页 queue-chip 显示"接力 N 场: A → B"；场次编辑区"场地绑定"输入(随场次, 运行中锁定)；preview_webui 同构演示 |
 | 6.7 | 目标ETA | 速率=本场记分点活跃段(相邻≤180s)增量÷时长；ETA=(目标−当前)÷速率；未设目标只显速率；页面前端现算, /api/summary只供速率 |
-| 6.8 | AUTO／3x | 每实例首战检查；亮度阈值75、速度模板0.85；失败告警继续 |
+| 6.8 | AUTO／3x | **每次「开始」后的首场都查**(2026-10-02用户口径, run()起始块复位 _battle_auto_checked; 旧版每进程只查首场, 开始之间手动关auto就漏)；亮度阈值75、速度模板0.85；失败告警继续 |
 | 6.9 | goto／explore／center | 冷启动导航／扫卡并恢复居中／目标居中；bot只点居中PLAY! |
+| 6.9 | 读卡逻辑归属 (2026-10-02) | read_center_card/parse_score_ocr/字库/ROI 整体移入 PfBot(bot 接力导航与 pf_scene 共用一份)；PfScene 只留薄委托, explore/center/goto_index 行为不变；标定注释随代码走(pf_bot 常量区) |
+| 6.9 | bot 侧导航原语 | goto_pf_hub(弹窗三路X→PLAY就绪→大厅菱形→房子, NAV_TIMEOUT 180s 含冷启动)＋center_scene(先左扫到头再右扫回, 卡面不变=该侧到头; 轮播不循环)；滑动走 adb input swipe(MAA post_swipe 被吸附轮播弹回) |
 | 6.9 | 标题／无SCORE行 | 常规＋备用ROI、候选择优／已知标题命中可判0 |
 | 6.9 | 角色场卡标题 | OCR整卡失败（读'O'/噪声，HIGH WIRE HIJINKS 两次实测）→center()不可用；hub不循环、最右=角色周场，按位置滑 |
 | 6.9 | score=0／外部导航 | 新场候选，非确证／先停bot；暂停仍清弹窗 |

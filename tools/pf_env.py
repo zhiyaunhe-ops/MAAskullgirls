@@ -320,6 +320,9 @@ class BotState:
         self.score_target = None      # 总分上限, 达到即自动暂停 (None=不限)
         self.energy_cost = 4          # 出战能量门槛 (可从 WebUI 调)
         self.pf_rule = None           # 当前场次绑定的规则 {"type","value"} / None
+        self.scene = None             # 当前场次绑定的 PF 场地关键词 (None=不绑定, 就打散打)
+        self.scene_pending = False    # 开始后待做一次场景识别/导航 (每次点「开始」都置位)
+        self.end_reason = None        # 场次结束原因: goal/manual/scene/error (接力队列依据)
         self.filter_favorite = True   # 筛选时是否保留 喜爱(爱心) 芯片
         self.rest_every = 0           # 连续 N 场后休息 (0=不启用)
         self.rest_minutes = 0         # 休息时长(分钟)

@@ -13,6 +13,7 @@ import difflib
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -20,11 +21,13 @@ from pathlib import Path
 
 from pf_env import (
     adb_connect,
+    mumu_launch_game,
     mumu_shutdown,
     resolve_adb,
     spawn_detached,
     PROJECT_ROOT,
     STATE,
+    SUBPROC_TEXT,
     WEBUI_PORT,
     preload_msvcrt,
     start_debug_cleaner,
@@ -45,9 +48,9 @@ from maa.toolkit import Toolkit  # noqa: E402
 from maa.tasker import Tasker  # noqa: E402
 
 import pf_vision as vis  # noqa: E402
-from pf_domain import ScoreTracker, clean_energy, clean_rest, clean_target  # noqa: E402
+from pf_domain import ScoreTracker  # noqa: E402  (clean_* 在 pf_webui.apply_session)
 from pf_store import STORE  # noqa: E402
-from pf_webui import start_webui  # noqa: E402
+from pf_webui import apply_session, start_webui  # noqa: E402
 
 RESOURCE_DIR = PROJECT_ROOT / "assets" / "resource" / "base"
 SHOT_DIR = PROJECT_ROOT / "debug" / "pf" / "run"
@@ -75,6 +78,33 @@ TPL_SPD_1X = IMG + "battle_spd_1x.png"
 TPL_SPD_2X = IMG + "battle_spd_2x.png"
 TPL_SPD_3X = IMG + "battle_spd_3x.png"
 ROI_POPUP = (860, 160, 1060, 340)   # 弹窗右上 X 区域
+
+# ---- 场景识别 / 接力导航 (2026-10-02: 场地绑定 + 打完自动切场) ----
+# 与 pf_scene.py 同源的坐标/模板; 阈值沿用那边实测标定, 改动须有任务依据。
+TPL_HALL_PRIZE = IMG + "hall_prize_fights.png"  # 大厅 PRIZE FIGHTS 菱形
+TPL_SCENE_X = IMG + "scene_popup_x.png"         # 大厅促销弹窗 X (BACK TO SCHOOL 等)
+TPL_MODAL_X = IMG + "popup_close_x.png"         # 弹窗通用方形关闭 X (每日奖励等)
+ROI_HUB_PLAY = (500, 400, 780, 530)   # PF hub 居中卡 PLAY!
+ROI_SCENE_X = (880, 30, 1240, 180)    # 促销弹窗右上 X (历史 ROI, 见 pf_scene 同名注释)
+ROI_MODAL_X = (700, 0, 1060, 300)     # 模态弹窗方形 X (上限 1060 挡 OPTIONS X, pf_scene 同源)
+MODAL_X_PEAK_MARGIN = 0.05            # cv2 模态 X 的峰值唯一性判据 (pf_scene 实测标定)
+ROI_CARD_SCORE = (505, 138, 775, 185)  # 居中卡 "SCORE: n"
+ROI_CARD_TITLE = (500, 290, 780, 378)  # 居中卡场地名 (可两行)
+# 标题兜底 ROI: 卡面版式不统一, 标题高度不固定。2026-09-18 实测 DEATH METTLE 的
+# 标题在 y≈265-295 (比 MEDICI SHAKEDOWN 的 y≈325-365 高 ~60px), 原 ROI 只框到
+# 倒计时 '02D:23H:54M', OCR 剥完非字母只剩 'M'。
+# ⚠️ 兜底区域不能贪大: MAA OCR 对大/暗区域会整体失灵 (实测 y235-380 读空串),
+#    (520,255,780,310) 是扫描多组 ROI 后唯一稳定读出该标题的窗口; 且在
+#    A CLASS / AGAINST / MEDICI 各帧上读出的是垃圾 ('PSOOS'/'M') 但都不命中
+#    已知名 —— 不会误匹配。只在原 ROI 未命中已知名时才启用, 既有卡行为不变。
+ROI_CARD_TITLE_FALLBACK = (520, 255, 780, 310)
+HOME_BTN = (115, 37)                  # 顶栏房子: 从 PF 任意页回大厅
+NAV_TIMEOUT = 240.0                   # 场景导航总超时 (240s: 含冷启动拉游戏; 战斗中途点
+                                      # 「开始」时要等这一场打完才回得了大厅, 180s 不够)
+# 轮播滑动: MAA post_swipe 瞬时释放会被吸附轮播弹回, 用 adb input swipe (pf_scene 实测);
+# 340px+600ms: 520px 大步会因惯性一次跳 2 张卡, 中间场地会被漏扫。
+SWIPE_L = ("input", "swipe", "900", "400", "560", "400", "600")
+SWIPE_R = ("input", "swipe", "560", "400", "900", "400", "600")
 
 ROI_TOPRIGHT = (1040, 15, 1260, 115)  # x0,y0,x1,y1
 # 编队页筛选面板芯片坐标 (1280x720, 见 docs/screenshots/filter_panel.png)
@@ -200,6 +230,8 @@ class PfBot:
         self._stuck_shot = None       # 卡住未完成的截图作业 (见 _screencap_bounded)
         self._stuck_shot_warned = 0.0  # 上次提醒"截图卡住"的时间戳
         self._shot_fails = 0          # 连续截图失败计数 (断链自愈用)
+        self._adb = None              # (adb_path, address) 懒解析 (轮播滑动用)
+        self._tpl_cache = {}          # cv2 模板缓存 (find_modal_x_cv 用)
         self.run_dir = SHOT_DIR / time.strftime("%m%d_%H%M%S")
 
     # ---------- 基础设施 ----------
@@ -548,6 +580,7 @@ class PfBot:
         if STATE.score_target is not None and val >= STATE.score_target:
             # 无暂停态 (2026-09-27 用户口径): 达标 = 场次结束, 主循环随即回 IDLE 待命
             STATE.log(f"总分 {val:,} 已达上限 {STATE.score_target:,}, 结束场次", "warn")
+            STATE.end_reason = "goal"
             STATE.running = False
             self.on_goal_reached(val)
             return
@@ -567,13 +600,18 @@ class PfBot:
         STORE.record(sid, val, STATE.streak, STATE.fight_no)
 
     def on_goal_reached(self, val: int) -> None:
-        """达标收尾: 开关打开则关掉 MuMu。
+        """达标收尾: 开关打开则关掉 MuMu (接力队列非空时不关, 直接接下一场)。
 
         关模拟器是**有副作用的外界动作** (会连带打断同一实例上别的 MAA 自启),
         所以受「达标关模拟器」开关控制 (默认开, 用户 2026-09-26 口径: 凌晨无人
         值守跑完就该关机; WebUI 可关), 且每次运行只做一次 ——
         否则达标后 bot 停在对手页, 每次循环都会再读一次总分、再关一次。
+        2026-10-02: 排了接力队列时, "跑完就关机"顺延到队列清空那一场 ——
+        排任务的用户要的是"这个场打完切下一个", 中途关机队列就断了。
         """
+        if STORE.queue_list():
+            STATE.log("接力队列还有下一场, 达标不关模拟器, 直接接续", "warn")
+            return
         if not STATE.close_mumu_on_goal or self._goal_closed:
             return
         self._goal_closed = True
@@ -583,6 +621,312 @@ class PfBot:
             STATE.log("MuMu 已关闭 (达标收尾)", "warn")
         else:
             STATE.log("关闭 MuMu 失败: MuMuManager 不可用或未响应 (请手动关闭)", "err")
+
+    # ---------- 场景识别 / 接力导航 (2026-10-02) ----------
+    # 坐标/阈值与 pf_scene.py 同源 (见常量区注释); 读卡逻辑整体从 PfScene 移入,
+    # pf_scene 改为委托本类, 两处不再各养一份。
+
+    # 场地名字库 (历史收录; OCR 命中与否影响"未收录"兜底路径, 关键词子串匹配不受限)。
+    KNOWN_TITLES = [
+        "EYE OF THE STORM", "AGAINST THE WIND", "TRIAL BY FIRE", "THE BIG THAW",
+        "A CLASS OF ONE'S OWN", "SEEING STARS", "NIGHT'S GHOUL", "BLOOD SPORT",
+        "MEDICI SHAKEDOWN", "ROSHAMBOH", "GOLD RUSH", "BELLE OF THE BRAWL",
+        "DEATH METTLE",
+        # 2026-09-20: 暗元素场。卡面 OCR 稳定丢空格且丢字母 I, 读成
+        # 'ASHOTINTHEDARK' / 'ASHOTNTHEDARK' —— 靠 difflib (cutoff 0.55) 归一到本名,
+        # 否则 center('A SHOT IN THE DARK') 会 10 步转不到 (实测 01:27 失败)。
+        "A SHOT IN THE DARK",
+        # 2026-09-22: Annie 的角色场名 (游戏日 09-21 周一新开)。实机实证:
+        # BRONZE + INFINITY AND BEYOND, 无 SCORE 行, 剩 02D:23H:55M, 立绘绿发星饰;
+        # 快照 Current Character PF 当日 Marie(收)→Annie(开), 与 §6.12.2 该周
+        # Annie/Big Band 对、周一-三=前一个 吻合。OCR 实读 'NFINITYAND BETOND'
+        # (丢首字母 I、丢 Y), difflib 能归一, 但**必须先收录**, 否则 fallback 读数
+        # 会被丢弃 (见 read_center_card 2026-09-22 注)。
+        "INFINITY AND BEYOND",
+        # 2026-09-25: Big Band 的角色场名 (游戏日 09-24 周四半周切换新开)。实机实证:
+        # BRONZE + BIG BEN'S BEATDOWN, 无 SCORE 行, 剩 02D:23H:56M, 立绘礼帽+耳机+
+        # 喇叭手臂 = Big Band; 快照 Current Character PF 当日 Annie→Big Band, 与
+        # §6.12.2 该周 Annie/Big Band 对、周四-六=后一个 吻合。OCR 实读
+        # 'IG BEN'S BEATDOWN' (丢首字母 B, BEN=BAND 的变体), difflib 能归一。
+        # ⚠️ 此卡与 DEATH METTLE/INFINITY AND BEYOND 同款版式: 顶部是 BRONZE
+        # 层级标签+装饰图, SCORE ROI (y138-185) 框到装饰区, 读数是随机噪声
+        # ('ROgO0' / '900'), 见 read_center_card 2026-09-25 注。
+        "BIG BEN'S BEATDOWN",
+    ]
+
+    # 卡片上的"难度层级"文字与场次名**同框**: ROI_CARD_TITLE=(500,290,780,378) 实测同时
+    # 框到层级小字与场地名大字 (2026-09-16 用 hub_scan/02.png 裁图实证)。所以 OCR 出来的
+    # 是 "DIAMOND BLOOD SPORT" 这类带层级前缀的串 —— 历史记录里那个
+    # "DIAMOND NIGHT'S GHOUL" 就是这么来的 (DIAMOND 是层级, 不属于名字)。
+    # 但**不能无脑删前缀**: "GOLD RUSH" 本身就以 GOLD 开头。所以做法是把
+    # "原串 / 去前缀串" 都当候选, 谁跟已知场地名更接近用谁。
+    TIER_PREFIXES = ("BRONZE", "SILVER", "GOLD", "DIAMOND")
+
+    def _adb_shell(self, args: list) -> str:
+        """直连 adb shell (轮播滑动走它 —— MAA post_swipe 瞬时释放会被吸附轮播弹回)。"""
+        if self._adb is None:
+            adb_path, address = resolve_adb()
+            if not adb_path:
+                raise RuntimeError("场景导航需要 adb (config.json 配 adb_path 或先连接)")
+            self._adb = (adb_path, address)
+        p = subprocess.run([self._adb[0], "-s", self._adb[1], *args],
+                           capture_output=True, timeout=30, **SUBPROC_TEXT)
+        return (p.stdout or "").strip()
+
+    def swipe_left(self) -> None:
+        """轮播下一张 (340px+600ms, 大步会因惯性跳 2 张卡 —— pf_scene 实测)。"""
+        self._adb_shell(list(SWIPE_L))
+
+    def swipe_right(self) -> None:
+        """轮播上一张。"""
+        self._adb_shell(list(SWIPE_R))
+
+    def find_modal_x_cv(self, img):
+        """cv2 版弹窗方形关闭 X 检测, 命中返回中心 (x, y), 否则 None。
+
+        为什么不走 match_tpl (MAA TemplateMatch): pf_scene 2026-09-17 实测, 圆环 X
+        模板 MAA 返回的是弹窗面板内部装饰区坐标, 而同图 cv2 TM_CCOEFF_NORMED 的
+        最高分恰在真 X —— 两套引擎命中语义不同。峰值唯一性判据 (主峰与次峰差
+        >= MODAL_X_PEAK_MARGIN) 挡背景渐变伪峰。标定与坑史见
+        pf_scene.find_modal_x_cv / find_any_popup_x 注释。"""
+        img_dir = RESOURCE_DIR / "image"
+        for tpl_path, th in ((TPL_MODAL_X, 0.90),):
+            tpl = self._tpl_cache.get(tpl_path)
+            if tpl is None:
+                tpl = cv2.imread(str(img_dir / tpl_path))
+                if tpl is None:
+                    continue
+                self._tpl_cache[tpl_path] = tpl
+            x0, y0, x1, y1 = ROI_MODAL_X
+            sub = img[y0:y1, x0:x1]
+            if sub.shape[0] < tpl.shape[0] or sub.shape[1] < tpl.shape[1]:
+                continue
+            res = cv2.matchTemplate(sub, tpl, cv2.TM_CCOEFF_NORMED)
+            _, mx, _, ml = cv2.minMaxLoc(res)
+            if mx < th:
+                continue
+            h, w = tpl.shape[:2]
+            pad = max(h, w) * 2
+            cy0, cx0 = ml[1], ml[0]
+            masked = res.copy()
+            masked[max(0, cy0 - pad):cy0 + pad,
+                   max(0, cx0 - pad):cx0 + pad] = -1.0
+            second = cv2.minMaxLoc(masked)[1]
+            if mx - second < MODAL_X_PEAK_MARGIN:
+                STATE.log(f"模态 X 疑似背景伪峰: 主峰 {mx:.3f} @ {ml}, 次峰 {second:.3f}",
+                          "warn")
+                continue
+            return (ml[0] + x0 + w // 2, ml[1] + y0 + h // 2)
+        return None
+
+    def _title_cands(self, raw: str) -> tuple[str, list[str], bool]:
+        """OCR 原文 -> (字母归一串, [原串, 去层级前缀串...], 是否剥过前缀)。"""
+        title = re.sub(r"[^A-Z]", "", raw.upper())
+        cands = [title]
+        stripped = False
+        for pre in self.TIER_PREFIXES:
+            if title.startswith(pre) and len(title) > len(pre) + 2:
+                cands.append(title[len(pre):])
+                stripped = True
+        return title, cands, stripped
+
+    def _match_known(self, cands: list[str]) -> str | None:
+        keys = [re.sub(r"[^A-Z]", "", k) for k in self.KNOWN_TITLES]
+        best, best_ratio = None, 0.0
+        for cand in cands:
+            close = difflib.get_close_matches(cand, keys, n=1, cutoff=0.55)
+            if close:
+                ratio = difflib.SequenceMatcher(None, cand, close[0]).ratio()
+                if ratio > best_ratio:
+                    best_ratio, best = ratio, self.KNOWN_TITLES[keys.index(close[0])]
+        return best
+
+    @staticmethod
+    def parse_score_ocr(raw: str) -> int:
+        """把居中卡 SCORE 行的 OCR 原文解析成分数。读不出返回 -1。
+
+        坑史与归一化规则详见 PF_BOT.md §6.9; 要点:
+          - 先剥 SCORE 标签, 再把 O/Q -> 0 (顺序不能反, 否则标签里的 O 混进数字);
+          - 取最长数字串, 千分位逗号兼容;
+          - 领域约束: SGM PF 分数没有个位数, <10 一律按 0 (OCR 把 0 读错的兜底)。
+        """
+        if not raw:
+            return -1
+        body = re.sub(r"(?i)\bscore\b\s*:?", " ", raw)
+        norm = re.sub(r"[OQ]", "0", body)
+        norm = re.sub(r"[^0-9,]", " ", norm).strip()
+        chunks = [c for c in re.split(r"\s+", norm) if c]
+        if not chunks:
+            return -1
+        best = max(chunks, key=lambda c: len(c.replace(",", "")))
+        digits = best.replace(",", "")
+        if not digits:
+            return -1
+        try:
+            score = int(digits)
+        except ValueError:
+            return -1
+        if score < 10:
+            STATE.log(f"分数 OCR 得个位数 {score}, 按 0 处理 (原文 {raw!r})", "warn")
+            return 0
+        return score
+
+    def read_center_card(self, img=None) -> tuple[str, int]:
+        """读 PF hub 居中场地的 (名称, 分数)。名称优先匹配已知场地名。
+
+        层级前缀不直接删, 而是展开成候选再择优 (见 TIER_PREFIXES 注释);
+        标题 ROI 未命中已知名时用加高 ROI 兜底再试一次 (DEATH METTLE 高标题版式);
+        无 SCORE 行的卡 (新场) 在标题命中字库的前提下判 0 —— 门卫保证 OCR 通道
+        活着才判 0, 宁可漏跑不错跑。完整坑史见 PF_BOT.md §6.9 与 pf_scene 历史。"""
+        if img is None:
+            img = self.snap("识别场地")
+        raw_score = self.ocr_text(img, ROI_CARD_SCORE)
+        score = self.parse_score_ocr(raw_score)
+        raw_title = self.ocr_text(img, ROI_CARD_TITLE)
+        full, cands, stripped = self._title_cands(raw_title)
+        best = self._match_known(cands)
+        if best is None:
+            raw2 = self.ocr_text(img, ROI_CARD_TITLE_FALLBACK)
+            full2, cands2, stripped2 = self._title_cands(raw2)
+            best2 = self._match_known(cands2)
+            if best2 is not None:
+                STATE.log(f"标题 ROI 未命中, 加高 ROI 兜底命中: {raw_title!r} -> {best2!r}",
+                          "warn")
+                full, cands, stripped = full2, cands2, stripped2
+                best = best2
+            elif not cands[0] and cands2[0]:
+                # primary 剥完是空串而 fallback 读出了字母 -> 采用 fallback 串留痕
+                full, cands, stripped = full2, cands2, stripped2
+        score_body = re.sub(r"(?i)\bscore\b\s*:?", " ", raw_score).strip()
+        has_score_label = bool(re.search(r"(?i)score", raw_score))
+        if best is not None and (
+            (score == -1 and not score_body)
+            or (not has_score_label and 0 <= score < 10000)
+        ):
+            STATE.log(f"卡面无 SCORE 行 (标题 {best!r}), 按新场 0 处理", "warn")
+            score = 0
+        if best:
+            if stripped:
+                STATE.log(f"场地名带层级前缀, 归一为 {best!r}: OCR 原文 {full}", "warn")
+            return best, score
+        return (cands[-1] if len(cands) > 1 else full), score
+
+    @staticmethod
+    def _card_key(title: str) -> str:
+        return re.sub(r"[^A-Z0-9]", "", title or "")[:14]
+
+    def _kw_hit(self, kw: str, title: str) -> bool:
+        """场地关键词命中判定 (pf_scene.center 同口径): 只比字母, <4 字母只认全等。"""
+        k = re.sub(r"[^A-Z]", "", (kw or "").upper())
+        t = re.sub(r"[^A-Z]", "", (title or "").upper())
+        return (k == t) if 0 < len(k) < 4 else bool(k and k in t)
+
+    def goto_pf_hub(self, timeout: float = NAV_TIMEOUT) -> None:
+        """从任意界面走回 PF hub: 弹窗优先 → PLAY 就绪 → 大厅菱形 → 房子回家。
+
+        第一轮认不出任何界面时先补一发游戏拉起 (冷启动「开始」只拉了模拟器,
+        游戏可能还没开; 已开时 monkey 只是把现有任务切到前台, 无副作用)。
+        弹窗三路检测与 pf_scene.wait_hall 同源: 模态方形 X (cv2) / 通用 X /
+        促销 X, 缺一路就会在促销弹窗上空转到超时。"""
+        STATE.set_step("回到 PF hub")
+        launched = False
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            img = self.snap("nav")
+            if self.match_tpl(img, TPL_HUB_PLAY, ROI_HUB_PLAY, th=0.7):
+                STATE.log("PF hub 就绪")
+                return
+            x = (self.find_modal_x_cv(img)
+                 or self.find_popup_x(img)
+                 or self.match_tpl(img, TPL_SCENE_X, ROI_SCENE_X, th=0.8))
+            if x:
+                STATE.log(f"导航途中弹窗, 点 X @ {x}", "warn")
+                self.controller.post_click(*x).wait()
+                time.sleep(1.8)
+                continue
+            box = self.match_tpl(img, TPL_HALL_PRIZE, (0, 0, 0, 0), th=0.72)
+            if box:
+                self.controller.post_click(*box).wait()
+                time.sleep(2.5)
+                continue
+            if not launched:
+                launched = True
+                try:
+                    ok, out = mumu_launch_game()
+                    if ok:
+                        STATE.log("导航: 补拉起 Skullgirls (冷启动兜底)", "warn")
+                    else:
+                        STATE.log(f"导航: 游戏拉起失败 ({out}), 继续按房子回家", "warn")
+                except Exception as e:  # noqa: BLE001
+                    STATE.log(f"导航: 游戏拉起异常 ({e}), 继续按房子回家", "warn")
+            self.controller.post_click(*HOME_BTN).wait()
+            time.sleep(2.5)
+        raise RuntimeError(f"{timeout:.0f}s 未走回 PF hub (看 debug/pf/run 最新帧确认卡在哪)")
+
+    def center_scene(self, keyword: str, max_steps: int = 14) -> tuple[str, int]:
+        """把场地关键词 keyword 对应的卡转到居中, 返回 (名称, 分数)。
+
+        轮播**不循环** (pf_scene explore 2026-09-22 实证: 滑到头画面不动):
+        先向左扫到头, 没命中再向右扫回起点。扫完仍没有 -> RuntimeError,
+        由调用方按"结束本场+接续队列"处理, 不在错场上空烧。"""
+        kw = re.sub(r"[^A-Z]", "", (keyword or "").upper())
+        if not kw:
+            raise RuntimeError("场地关键词为空")
+        STATE.set_step("居中绑定场地")
+        title, score = self.read_center_card()
+        if self._kw_hit(kw, title):
+            STATE.log(f"已在绑定场地: {title} (score={score:,})")
+            return title, score
+        prev = self._card_key(title)
+        for tag, swipe in (("L", self.swipe_left), ("R", self.swipe_right)):
+            for i in range(max_steps):
+                swipe()
+                time.sleep(1.8)
+                title, score = self.read_center_card()
+                if self._kw_hit(kw, title):
+                    STATE.log(f"已居中绑定场地: {title} (score={score:,})")
+                    return title, score
+                k = self._card_key(title)
+                if k == prev:
+                    STATE.log(f"向{'左' if tag == 'L' else '右'}滑画面不动, 该侧到头")
+                    break
+                prev = k
+        raise RuntimeError(f"轮播扫完未找到场地关键词 {keyword!r} "
+                           f"(停在第 {title!r} 卡, 分数 {score})")
+
+    def navigate_to_scene(self, keyword) -> tuple[bool, str]:
+        """开始时的一次性场景识别/导航: 走回 PF hub, 识别居中场地上报日志;
+        绑定了关键词则把该场居中。返回 (ok, 场地名)。
+
+        失败不抛异常 (截图层 LinkDead 照常抛, 主循环统一自愈/重生):
+        调用方按"结束本场+接续队列"处理 —— 宁可停不错跑, 不在没找到的场上开打。"""
+        try:
+            self.goto_pf_hub()
+            if keyword:
+                title, _ = self.center_scene(keyword)
+                return True, title
+            title, score = self.read_center_card()
+            STATE.log(f"当前场地: {title or '(未识别)'} (score={score:,})"
+                      f" —— 未绑定场地, 就近开打")
+            return True, title
+        except RuntimeError as e:
+            STATE.log(f"场景导航失败: {e}", "err")
+            return False, ""
+
+    def _queue_next(self):
+        """场次正常结束 (达标/手动结束/场景没找到) 时取接力队列的下一场。
+
+        error 结束不接续 —— 那类要人工看截图, 接着跑只会把问题场上发生的
+        事情盖过去。取到的场次由调用方 apply_session 并继续运行。"""
+        reason = STATE.end_reason
+        STATE.end_reason = None
+        if reason not in ("goal", "manual", "scene"):
+            return None
+        sid = STORE.queue_pop()
+        if sid:
+            nxt = STORE.get(sid) or {}
+            STATE.log(f"接力队列: 接续场次「{nxt.get('name', sid)}」", "warn")
+        return sid
 
     # ---------- 各阶段 ----------
 
@@ -1032,9 +1376,11 @@ class PfBot:
         return float(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[:, :, 2].mean()) >= 75
 
     def ensure_battle_auto(self) -> None:
-        """首场战斗开场检查自动战斗+3x 速度。
+        """战斗开场检查自动战斗+3x 速度 (每次「开始」后的首场都查, 2026-10-02 口径)。
         开场介绍画面 ~2.5s 人物不动: 脑子(640,690)=auto 开关, 速度泡(640,605) 点一下升一档,
-        两项设置游戏内跨场持久, 故每次进程只查首场。失败只告警, 不影响运行。"""
+        两项设置游戏内跨场持久 —— 旧版因此每进程只查首场; 但「开始」之间用户可能
+        手动关过 auto 或重开过游戏, 检查点改为随每次开始复位 (见 run() 起始块)。
+        失败只告警, 不影响运行。"""
         time.sleep(1.8)
         try:
             img = self.snap("battle_auto")
@@ -1236,6 +1582,18 @@ class PfBot:
                 continue
             if not STATE.running:
                 if STATE.status == "RUNNING":
+                    # 场次刚结束: 先看接力队列 —— 正常打完 (达标/手动结束/场景没找到)
+                    # 且队列非空就自动接下一场; error 结束不接, 留给人工看现场。
+                    nxt = self._queue_next()
+                    if nxt is not None and STORE.get(nxt):
+                        STORE.set_session(nxt)
+                        apply_session(STORE.get(nxt))
+                        STATE.scene_pending = bool(STATE.scene)
+                        # status 归位 IDLE: 本场视为已收尾, 下轮从「(重)开始」起始块
+                        # 进新场 (自动战斗检查复位/场景导航都挂在那个块上, 漏了就是空枪)。
+                        STATE.status = "IDLE"
+                        STATE.running = True
+                        continue
                     # 无暂停态: 结束/达标/关机前停跑都走这里 —— 场次结束, 回到待命。
                     # STOPPED 仍保留给进程真退出 (/api/stop, 托盘/调度按"等进程退出"依赖它)。
                     STATE.status = "IDLE"
@@ -1281,11 +1639,24 @@ class PfBot:
                 STATE.status = "RUNNING"
                 self._filter_cleared = False   # 每次(重)开始: 首次编队重新按设置归位筛选
                 self._defense_done = False     # 换场次: 防守队弹窗重新允许触发 (每 PF 一次)
+                # 自动战斗/速度检查随每次「开始」复位 (2026-10-02 用户口径: 旧版每进程
+                # 只查首场, 开始之间手动关过 auto 或重开过游戏就查不到了)。
+                self._battle_auto_checked = False
                 # 达标关机的"只做一次"标记: 分数还没到目标才复位, 避免刚恢复运行
                 # 就因为当前分已超标而立刻又关一次模拟器。
                 if STATE.score_target is None or (STATE.score or 0) < STATE.score_target:
                     self._goal_closed = False
                 STATE.log("==== PF Bot 运行中 ====")
+                if STATE.scene_pending:
+                    # 场景识别/导航 (2026-10-02): 每次点「开始」都走回 PF hub 认一次
+                    # 居中场; 绑定了场地关键词就把该场居中再开打。失败 = 本场结束
+                    # (宁可停不错跑), 接力队列照常接下一场。
+                    STATE.scene_pending = False
+                    ok, _title = self.navigate_to_scene(STATE.scene)
+                    if not ok:
+                        STATE.end_reason = "scene"
+                        STATE.running = False
+                        continue
             try:
                 self.step()
             except LinkDead as e:
@@ -1300,10 +1671,12 @@ class PfBot:
                 _hard_exit(3)
             except Exception as e:  # noqa: BLE001
                 STATE.status = "ERROR"
+                STATE.end_reason = "error"     # 异常结束不接续队列 (要人工看现场)
                 STATE.log(f"运行异常: {e}", "err")
                 STATE.running = False
                 continue  # 不 return: 保持监督循环存活, WebUI 可重新开始
             if STATE.status == "ERROR":
+                STATE.end_reason = "error"     # 同上: step() 内部判定的错误也不接续
                 STATE.running = False
                 STATE.log("==== 运行出错已停止 (查看日志后可在 WebUI 重新开始) ====", "err")
 
@@ -1441,14 +1814,10 @@ def main() -> int:
         return 1
     if os.environ.get("SGM_PF_RESUME") == "1" and STORE.session_id:
         # 自我重生的新进程: 接着死前那场跑 (场次指针已持久化)。
-        # 场次配置也要套回去 —— 那本是 WebUI /api/start 里 _apply_session 的活,
-        # 漏了的话目标分/规则/休息全空 (首版实测: 48.6M/50M 不会自动收官)。
+        # 场次配置套用与 WebUI /api/start 同一份 apply_session (首版手抄漏字段,
+        # 48.6M/50M 不会自动收官 —— 别再拆两份)。重生是原场续跑, 不做场景导航。
         sess = STORE.get(STORE.session_id) or {}
-        STATE.pf_rule = dict(sess["rule"]) if sess.get("rule") else None
-        STATE.score_target = clean_target(sess.get("score_target"))
-        STATE.rest_every = clean_rest(sess.get("rest_every"))
-        STATE.rest_minutes = clean_rest(sess.get("rest_minutes"))
-        STATE.energy_cost = clean_energy(sess.get("energy_cost"))
+        apply_session(sess)
         STATE.running = True
         STATE.log(f"自动续跑场次「{sess.get('name', '?')}」(重生接管)", "warn")
     try:

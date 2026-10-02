@@ -10,7 +10,8 @@ import threading
 import time
 from pathlib import Path
 
-from pf_domain import UNSET, clean_energy, clean_rest, clean_rule, clean_target
+from pf_domain import (UNSET, clean_energy, clean_rest, clean_rule,
+                       clean_scene, clean_target)
 
 HISTORY_CAP = 3000
 
@@ -34,6 +35,7 @@ class ScoreStore:
         self.sessions: list = []       # [{id,name,rule,created}]
         self.history_by: dict = {}     # {session_id: [{ts,score,streak,fight}]}
         self.session_id = None         # 当前/最近一次运行的场次
+        self.queue: list = []          # 接力队列 (有序 session_id, 打完一场自动接下一场)
         self._load()
 
     # ---------- 场次 ----------
@@ -46,6 +48,9 @@ class ScoreStore:
                 self.sessions = [s for s in data["sessions"]
                                  if isinstance(s, dict) and s.get("id")]
             active = data.get("active")          # 上次运行的场次指针 (2026-09-27 起持久化)
+            q = data.get("queue")
+            if isinstance(q, list):
+                self.queue = [str(x) for x in q if isinstance(x, str)]
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
         if not any(s.get("id") == "default" for s in self.sessions):
@@ -54,6 +59,8 @@ class ScoreStore:
                                   "rule": None, "created": time.time()})
         if active and any(s.get("id") == active for s in self.sessions):
             self.session_id = active             # 重启后托盘/WebUI 还能"接着上次跑"
+        ids = {s.get("id") for s in self.sessions}
+        self.queue = [x for x in self.queue if x in ids]   # 队列里已删的场次顺手清掉
         self._save_sessions()
         self._load_history()
         # 老数据倒推: 场次记录缺总分时, 从该场次最后一个采样回填
@@ -77,7 +84,8 @@ class ScoreStore:
         tmp = self.sessions_path.with_suffix(".json.tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"sessions": self.sessions, "active": self.session_id},
+                json.dump({"sessions": self.sessions, "active": self.session_id,
+                           "queue": self.queue},
                           f, ensure_ascii=False, indent=1)
             tmp.replace(self.sessions_path)
         except OSError:
@@ -93,6 +101,7 @@ class ScoreStore:
             pts = self.history_by.get(s["id"], [])
             out.append({"id": s["id"], "name": s["name"], "rule": s.get("rule"),
                         "parent": s.get("parent"),
+                        "scene": s.get("scene"),
                         "score": s.get("score"),
                         "score_target": s.get("score_target"),
                         "energy_cost": clean_energy(s.get("energy_cost")),
@@ -103,13 +112,14 @@ class ScoreStore:
         return out
 
     def create(self, name: str, rule, rest_every=0, rest_minutes=0,
-               score_target=None, energy_cost=4) -> dict:
+               score_target=None, energy_cost=4, scene=None) -> dict:
         sess = {"id": "s%d" % int(time.time() * 1000), "name": name,
                 "rule": clean_rule(rule), "created": time.time(),
                 "rest_every": clean_rest(rest_every),
                 "rest_minutes": clean_rest(rest_minutes),
                 "score_target": clean_target(score_target),
-                "energy_cost": clean_energy(energy_cost)}
+                "energy_cost": clean_energy(energy_cost),
+                "scene": clean_scene(scene)}
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
@@ -132,7 +142,8 @@ class ScoreStore:
                 "rest_every": p.get("rest_every") or 0,
                 "rest_minutes": p.get("rest_minutes") or 0,
                 "score_target": p.get("score_target"),
-                "energy_cost": clean_energy(p.get("energy_cost"))}
+                "energy_cost": clean_energy(p.get("energy_cost")),
+                "scene": p.get("scene")}
         with self._lock:
             self.sessions.append(sess)
             self._save_sessions()
@@ -150,7 +161,7 @@ class ScoreStore:
 
     def update(self, sid: str, name=None, rule=UNSET,
                rest_every=UNSET, rest_minutes=UNSET, score_target=UNSET,
-               energy_cost=UNSET):
+               energy_cost=UNSET, scene=UNSET):
         sess = self.get(sid)
         if not sess:
             raise KeyError(sid)
@@ -167,6 +178,8 @@ class ScoreStore:
             sess["score_target"] = clean_target(score_target)
         if energy_cost is not UNSET:
             sess["energy_cost"] = clean_energy(energy_cost)
+        if scene is not UNSET:
+            sess["scene"] = clean_scene(scene)
         with self._lock:
             self._save_sessions()
         self._ver(sess, op="update", before=before)
@@ -184,6 +197,7 @@ class ScoreStore:
             self.history_by.pop(sid, None)
             if self.session_id == sid:
                 self.session_id = None
+            self.queue = [x for x in self.queue if x != sid]
             self._save_sessions()
 
     def set_session(self, sid: str):
@@ -194,6 +208,43 @@ class ScoreStore:
         self.session_id = sid
         self._save_sessions()
         return sess
+
+    # ---------- 接力队列 ----------
+    def queue_list(self) -> list:
+        """当前接力队列 (session_id 有序列表)。"""
+        return list(self.queue)
+
+    def queue_named(self) -> list:
+        """接力队列带场次名 (WebUI 展示用): [{id,name}]。"""
+        out = []
+        for sid in self.queue:
+            s = self.get(sid)
+            if s:
+                out.append({"id": sid, "name": s["name"]})
+        return out
+
+    def queue_set(self, sids: list) -> list:
+        """整体重设接力队列 (前端管理完整顺序): 去重、丢掉不存在的场次。"""
+        seen, clean = set(), []
+        for x in sids or []:
+            x = str(x)
+            if x in seen or not self.get(x):
+                continue
+            seen.add(x)
+            clean.append(x)
+        with self._lock:
+            self.queue = clean
+            self._save_sessions()
+        return list(self.queue)
+
+    def queue_pop(self):
+        """弹出队首场次 id (空队列返回 None), 供打完一场后自动接续。"""
+        with self._lock:
+            if not self.queue:
+                return None
+            sid = self.queue.pop(0)
+            self._save_sessions()
+        return sid
 
     # ---------- 计分 ----------
     def record(self, sid: str, score: int, streak, fight: int) -> None:

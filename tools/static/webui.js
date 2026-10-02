@@ -181,15 +181,18 @@ async function pollState() {
     navPicker.set(d.pf_rule);
     setRuleCollapsed(running, d.pf_rule);
     const rn = document.getElementById('in-restn'), rm = document.getElementById('in-restm');
-    const sessLocked = !activeSess || running;   // 能量/上界/休息/规则随场次
-    inT.disabled = inE.disabled = rn.disabled = rm.disabled = sessLocked;
-    if (sessInputsFor !== activeSess) {          // 选中场次变了 -> 回填该场次的能量/上界/休息
+    const inScene = document.getElementById('in-scene');
+    const sessLocked = !activeSess || running;   // 能量/上界/休息/规则/场地绑定随场次
+    inT.disabled = inE.disabled = rn.disabled = rm.disabled = inScene.disabled = sessLocked;
+    if (sessInputsFor !== activeSess) {          // 选中场次变了 -> 回填该场次的能量/上界/休息/场地
       sessInputsFor = activeSess;
       if (document.activeElement !== inE) inE.value = (d.energy_cost != null ? d.energy_cost : 4);
       if (document.activeElement !== inT) inT.value = (d.score_target != null ? d.score_target : '');
       if (document.activeElement !== rn) rn.value = (d.rest_every || 0);
       if (document.activeElement !== rm) rm.value = (d.rest_minutes || 0);
+      if (document.activeElement !== inScene) inScene.value = (d.scene || '');
     }
+    renderQueueChip(d.queue);
     const fav = document.getElementById('in-fav');
     if (!fav.dataset.touched) fav.checked = !!d.filter_favorite;
     const cg = document.getElementById('in-closegoal');
@@ -661,6 +664,29 @@ function updateSessChip(d) {
     chip.textContent = '场次 未选';
   }
 }
+
+/* ---------- 接力队列 (2026-10-02): 打完一场自动接下一场 ---------- */
+// /api/state 给 [{id,name}], /api/sessions 给 [id]; 归一成 id 数组存 sessQueue。
+let sessQueue = [];
+function normQueue(q) {
+  return (Array.isArray(q) ? q : []).map(x => (x && x.id) ? x.id : x).filter(Boolean);
+}
+function renderQueueChip(queue) {
+  if (Array.isArray(queue)) sessQueue = normQueue(queue);
+  const el = document.getElementById('queue-chip');
+  if (!sessQueue.length) { el.hidden = true; el.textContent = ''; return; }
+  const names = sessQueue.map(id => {
+    const s = sessions.find(x => x.id === id);
+    return s ? s.name : id;
+  });
+  el.hidden = false;
+  el.textContent = '接力 ' + names.length + ' 场: ' + names.join(' → ');
+}
+async function queueApply(ids) {
+  const d = await api('/api/queue/set', { ids });
+  if (d && d.ok) sessQueue = normQueue(d.queue);
+  renderModal();
+}
 function ruleColor(rule) {
   if (!rule || !rule.type) return '#9aa6bf';
   if (rule.type === 'element') {
@@ -738,6 +764,7 @@ async function renderModal() {
   try {
     const d = await api('/api/sessions');
     sessions = d.sessions; activeSess = d.active;
+    sessQueue = normQueue(d.queue);
   } catch (e) {}
   if (!sessions.some(s => s.id === modalSel)) modalSel = sessions.length ? sessions[0].id : null;
   // 母子分组: 子场次紧跟父场次 (缩进展示), 顶级场次按创建顺序
@@ -761,24 +788,50 @@ async function renderModal() {
     const badges = `<span class="rule-badge">${ruleLabel(s.rule)}</span>` +
       `<span class="rule-badge">能量${s.energy_cost != null ? s.energy_cost : 4}</span>` +
       (s.score_target != null ? `<span class="rule-badge">≤${fmtN(s.score_target)}</span>` : '') +
+      (s.scene ? `<span class="rule-badge" title="场地绑定: 开始时自动识别并居中该场">📍${esc(s.scene)}</span>` : '') +
       (kids[s.id] ? `<span class="rule-badge parent-badge">${kids[s.id].length}期</span>` : '');
     const isChildRow = isChild.has(s.id);
     const indent = isChildRow ? '└ ' : '';
     const nameHtml = renamingId === s.id
       ? `<input id="rn-input" class="inp" value="${esc(s.name)}">`
       : `<span class="s-name">${esc(indent + s.name)}</span>`;
+    const inQ = sessQueue.includes(s.id);
+    const qbtn = `<button class="s-act${inQ ? ' onq' : ''}" data-qtoggle="${s.id}"` +
+      ` title="${inQ ? '移出接力队列' : '加入接力队列 (打完一场自动接这一场)'}">${inQ ? '⛓' : '☰'}</button>`;
     return `<div class="sess-row${isChildRow ? ' child' : ''}${s.id === modalSel ? ' sel' : ''}" data-id="${s.id}">
       ${nameHtml}${badges}
       <span class="s-meta">${meta}</span>
-      <button class="s-act" data-rename="${s.id}" title="重命名">✎</button>${del}</div>`;
+      ${qbtn}<button class="s-act" data-rename="${s.id}" title="重命名">✎</button>${del}</div>`;
   }).join('') || '<div style="color:var(--faint);padding:20px;text-align:center;">还没有场次</div>';
+  renderQueueStrip();
   document.getElementById('sess-start').disabled = !modalSel;
   document.getElementById('sess-pick').disabled = !modalSel;
   document.getElementById('sess-child').disabled = !modalSel;
   const inp = document.getElementById('rn-input');
   if (inp) { inp.focus(); inp.select(); }
 }
+function renderQueueStrip() {
+  const strip = document.getElementById('queue-strip');
+  if (!sessQueue.length) { strip.hidden = true; strip.innerHTML = ''; return; }
+  strip.hidden = false;
+  strip.innerHTML = '<span class="qs-label">接力队列</span>' + sessQueue.map((id, i) => {
+    const s = sessions.find(x => x.id === id);
+    const nm = s ? s.name : id;
+    return `<span class="qs-item"><b>${i + 1}</b>. ${esc(nm)}` +
+      `<button class="s-act" data-qup="${id}" title="上移">▲</button>` +
+      `<button class="s-act" data-qdown="${id}" title="下移">▼</button>` +
+      `<button class="s-act" data-qdel="${id}" title="移出队列">✕</button></span>`;
+  }).join('') + '<span class="hint">打完当前场后按此顺序自动接续</span>';
+}
 document.getElementById('sess-list').addEventListener('click', async e => {
+  const qt = e.target.closest('[data-qtoggle]');
+  if (qt) {
+    const id = qt.dataset.qtoggle;
+    const ids = sessQueue.includes(id) ? sessQueue.filter(x => x !== id)
+                                       : sessQueue.concat(id);
+    await queueApply(ids);
+    return;
+  }
   const ren = e.target.closest('[data-rename]');
   if (ren) { renamingId = ren.dataset.rename; renderModal(); return; }
   const del = e.target.closest('[data-del]');
@@ -798,6 +851,21 @@ document.getElementById('sess-list').addEventListener('click', async e => {
   if (e.target.closest('#rn-input')) return;   // 改名输入中, 不切换选择
   const row = e.target.closest('.sess-row');
   if (row) { modalSel = row.dataset.id; renamingId = null; renderModal(); }
+});
+document.getElementById('queue-strip').addEventListener('click', async e => {
+  const up = e.target.closest('[data-qup]'), down = e.target.closest('[data-qdown]');
+  const del = e.target.closest('[data-qdel]');
+  let ids = null;
+  if (up) {
+    const i = sessQueue.indexOf(up.dataset.qup);
+    if (i > 0) { ids = sessQueue.slice(); [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]]; }
+  } else if (down) {
+    const i = sessQueue.indexOf(down.dataset.qdown);
+    if (i >= 0 && i < sessQueue.length - 1) { ids = sessQueue.slice(); [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]]; }
+  } else if (del) {
+    ids = sessQueue.filter(x => x !== del.dataset.qdel);
+  }
+  if (ids) await queueApply(ids);
 });
 document.getElementById('sess-list').addEventListener('keydown', e => {
   if (e.target.id === 'rn-input' && e.key === 'Enter') saveRename();
@@ -821,15 +889,18 @@ document.getElementById('new-sess-btn').addEventListener('click', async () => {
   const en = document.getElementById('new-sess-energy').value.trim();
   const rn = document.getElementById('new-sess-restn').value.trim();
   const rm = document.getElementById('new-sess-restm').value.trim();
+  const scene = document.getElementById('new-sess-scene').value.trim();
   const d = await api('/api/sessions/create', { name, rule: rule.type ? rule : null,
     score_target: t === '' ? null : Number(t),
     energy_cost: en === '' ? 4 : Number(en),
-    rest_every: rn === '' ? 0 : Number(rn), rest_minutes: rm === '' ? 0 : Number(rm) });
+    rest_every: rn === '' ? 0 : Number(rn), rest_minutes: rm === '' ? 0 : Number(rm),
+    scene });
   document.getElementById('new-sess-name').value = '';
   document.getElementById('new-sess-target').value = '';
   document.getElementById('new-sess-energy').value = '';
   document.getElementById('new-sess-restn').value = '';
   document.getElementById('new-sess-restm').value = '';
+  document.getElementById('new-sess-scene').value = '';
   modalPicker.set(null);
   modalSel = d.id;
   renderModal();
@@ -865,21 +936,24 @@ async function saveSettings() {               // 全局: 喜爱 / 达标关模�
     body: JSON.stringify({ filter_favorite: document.getElementById('in-fav').checked,
       close_mumu_on_goal: document.getElementById('in-closegoal').checked }) });
 }
-async function saveSessionSettings() {        // 随场次: 能量/分数上界/休息 (编辑当前选中场次)
+async function saveSessionSettings() {        // 随场次: 能量/分数上界/休息/场地绑定
   if (!activeSess || running) return;
   const e = document.getElementById('in-energy').value.trim();
   const t = document.getElementById('in-target').value.trim();
   const rn = document.getElementById('in-restn').value.trim();
   const rm2 = document.getElementById('in-restm').value.trim();
+  const scene = document.getElementById('in-scene').value.trim();
   await api('/api/sessions/update', { id: activeSess,
     energy_cost: e === '' ? 4 : Number(e),
     score_target: t === '' ? null : Number(t),
-    rest_every: rn === '' ? 0 : Number(rn), rest_minutes: rm2 === '' ? 0 : Number(rm2) });
+    rest_every: rn === '' ? 0 : Number(rn), rest_minutes: rm2 === '' ? 0 : Number(rm2),
+    scene });   // 空串=清除绑定, 后端 clean_scene 归一
 }
 document.getElementById('in-target').addEventListener('change', saveSessionSettings);
 document.getElementById('in-energy').addEventListener('change', saveSessionSettings);
 document.getElementById('in-restn').addEventListener('change', saveSessionSettings);
 document.getElementById('in-restm').addEventListener('change', saveSessionSettings);
+document.getElementById('in-scene').addEventListener('change', saveSessionSettings);
 
 /* ================= JJC 日程 (sgmnow 快照 / 场次×规则版本账本) =================
    数据来自 Krazete 的 SGM Score Cutoffs 表 now 页; 快照按 SGM reset 日归档,

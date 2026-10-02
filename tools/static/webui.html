@@ -45,6 +45,7 @@
     <div class="metric"><span class="metric-label">FIGHTS / 场数</span><span id="fight" class="stat">—</span></div>
   </section>
   <div class="session-context">  <button id="sess-chip" class="sess-chip none pf-only" onclick="openSessionModal()">场次 未选</button>
+  <span id="queue-chip" class="queue-chip pf-only" hidden title="接力队列: 打完一场自动接下一场 (在「选择 PF 场次」弹窗里编辑)"></span>
   <div id="rule-bar" class="pf-only">
     <span class="rule-label">PF规则</span>
     <div class="seg" id="ruleSeg"></div>
@@ -57,6 +58,7 @@
     <span class="stat"><label title="编队筛选是否只看喜爱角色：每次开始运行后的首次编队，会在游戏内按此勾选/清除喜爱筛选"><input type="checkbox" id="in-fav" checked> 喜爱筛选</label></span>
     <span class="stat">每 <input aria-label="连续场数" id="in-restn" class="inp" type="number" min="0" step="1" value="0" style="width:64px;"> 场
     休 <input aria-label="休息分钟" id="in-restm" class="inp" type="number" min="0" step="5" value="0" style="width:64px;"> 分钟</span>
+    <span class="stat">场地绑定 <input aria-label="PF 场地关键词" id="in-scene" class="inp" type="text" style="width:140px;" placeholder="PF 卡名关键词" title="绑定后每次「开始」会先走回 PF hub, 识别居中场并把该场居中再开打; 留空 = 就近开打。关键词按卡面英文名匹配 (大小写不敏感子串, 如 MEDICI / EYE OF THE STORM)"></span>
     <span class="stat"><label title="总分达到「目标总分」时自动结束场次, 并优雅关闭 MuMu 模拟器 (走 MuMuManager control shutdown)"><input type="checkbox" id="in-closegoal"> 达标关模拟器</label></span>
   </span>
 </details>
@@ -170,6 +172,7 @@
 <div id="sess-modal" class="modal-mask" role="dialog" aria-modal="true" aria-labelledby="session-modal-title" style="display:none;">
   <div class="modal">
     <div id="session-modal-title" class="modal-title">选择 PF 场次</div>
+    <div id="queue-strip" class="queue-strip" hidden></div>
     <div id="sess-list"></div>
     <div class="sess-new">
       <input aria-label="新场次名称" id="new-sess-name" class="inp" placeholder="新场次名称" style="width:130px;">
@@ -177,6 +180,7 @@
       <input aria-label="新场次能量门槛" id="new-sess-energy" class="inp" type="number" min="1" max="10" step="1" placeholder="能量" style="width:60px;">
       <input aria-label="新场次连续场数" id="new-sess-restn" class="inp" type="number" min="0" step="1" placeholder="每N场" style="width:60px;">
       <input aria-label="新场次休息分钟" id="new-sess-restm" class="inp" type="number" min="0" step="5" placeholder="休M分" style="width:60px;">
+      <input aria-label="新场次场地关键词" id="new-sess-scene" class="inp" type="text" placeholder="场地关键词" style="width:92px;" title="PF 卡名关键词 (可选): 开始时自动识别并居中该场">
       <div id="new-sess-rule" class="rule-mini"></div>
       <button id="new-sess-btn" class="mini-btn">创建</button>
     </div>

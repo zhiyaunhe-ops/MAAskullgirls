@@ -17,11 +17,14 @@ GET  /api/history       ?sessions=a,b,c -> {series: [{id,name,rule,points}]}
 GET  /static/...        静态文件（WebUI HTML / CSS / JS、Chart.js）
 GET  /sgm/...           sgm 素材（元素/角色图标等）
 GET  /shot.jpg          最新截图
-POST /api/start         {session_id} 开始指定场次（运行中不可换）
+POST /api/start         {session_id} 开始指定场次（运行中不可换）; 置 scene_pending
+                        让主循环做一次场景识别/居中绑定场地
 POST /api/end           结束当前场次, 回 IDLE 待命 (进程与 WebUI 保留)
 POST /api/stop          进程退出 (主循环退出, WebUI 一并关闭; 托盘/调度依赖)
+POST /api/queue/set     {ids:[...]} 整体重设接力队列 (打完一场自动接下一场的任务单)
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
-POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删）
+POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删;
+                        场次可带 scene=PF 场地关键词, 开始时自动识别并居中该场）
 GET  /api/mumu             {running, busy, close_on_goal, game_pkg}  模拟器状态
 POST /api/mumu/launch      启动 MuMu（后台线程, 等 start_finished）
 POST /api/mumu/game        启动 MuMu(如需) + adb monkey 拉起 Skullgirls
@@ -57,7 +60,8 @@ from pf_env import (ADB_SERVER_PORT, CONFIG_PATH, GAME_PKG, MUMU_ADDRESS,
                     MUMU_ADB_PATH, MUMU_DIR, STATE, SUBPROC_TEXT, WEBUI_PORT,
                     adb_connect, mumu_is_running, mumu_launch_game,
                     mumu_paths, mumu_shutdown, mumu_start)
-from pf_domain import UNSET, clean_rest, clean_target, clean_energy
+from pf_domain import (UNSET, clean_rest, clean_target, clean_energy,
+                       clean_scene)
 from pf_store import STORE
 from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
 
@@ -335,9 +339,11 @@ def _mumu_do_shutdown(by_user_click: bool = True) -> None:
         STATE.log("关闭 MuMu 失败: MuMuManager 不可用或未响应", "err")
 
 
-def _apply_session(sess: dict) -> None:
-    """把场次配置同步进运行状态 (开始/仅选择/修改当前场次后调用)。"""
+def apply_session(sess: dict) -> None:
+    """把场次配置同步进运行状态 (开始/仅选择/修改当前场次后调用)。
+    pf_bot 的队列接续也用它 —— 改字段时两处行为保持一致。"""
     STATE.pf_rule = dict(sess["rule"]) if sess.get("rule") else None
+    STATE.scene = clean_scene(sess.get("scene"))
     STATE.score_target = clean_target(sess.get("score_target"))
     STATE.rest_every = clean_rest(sess.get("rest_every"))
     STATE.rest_minutes = clean_rest(sess.get("rest_minutes"))
@@ -421,6 +427,8 @@ class _Handler(BaseHTTPRequestHandler):
                     "score_target": STATE.score_target,
                     "energy_cost": STATE.energy_cost,
                     "pf_rule": STATE.pf_rule,
+                    "scene": STATE.scene,
+                    "queue": STORE.queue_named(),
                     "sess_rest_every": (STORE.get(STORE.session_id or "") or {}).get("rest_every") or 0,
                     "sess_rest_minutes": (STORE.get(STORE.session_id or "") or {}).get("rest_minutes") or 0,
                     "filter_favorite": STATE.filter_favorite,
@@ -488,7 +496,7 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/sessions":
             body = json.dumps(
                 {"sessions": STORE.list_sessions(), "active": STORE.session_id,
-                 "running": bool(STATE.running)},
+                 "queue": STORE.queue_list(), "running": bool(STATE.running)},
                 ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)
         elif path == "/api/history":
@@ -561,6 +569,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/end":
             # 结束场次: 回 IDLE 待命, 进程与 WebUI 保留。进程退出是 /api/stop
             # (pf_schedule/托盘按"等进程退出"依赖它), 语义不动。
+            # manual 结束也算"正常打完": 接力队列非空时 pf_bot 会自动接下一场。
+            STATE.end_reason = "manual"
             STATE.running = False
             STATE.log("收到 WebUI 结束请求, 本场次结束, 回到待命", "warn")
             self._send(200, "application/json", b'{"ok":true}')
@@ -586,7 +596,9 @@ class _Handler(BaseHTTPRequestHandler):
             except (ValueError, KeyError, json.JSONDecodeError):
                 self._json_err(400, "需要有效的 session_id")
                 return
-            _apply_session(sess)
+            apply_session(sess)
+            STATE.end_reason = None        # 新开始: 清掉上一场的结束原因
+            STATE.scene_pending = True     # 开始时做一次场景识别/居中绑定场地 (pf_bot 消费)
             # 「开始」必须自足: 模拟器没开就先开, adb 断了就补连。
             # 2026-09-22 教训 —— 原先只打一条日志提醒"请先点启动 MuMu", 用户点「开始」
             # 什么都不会发生 (提示只躺在日志里), 连点三次都"没反应"。
@@ -622,7 +634,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json_err(409, "运行中不允许切换场次")
                 return
             STORE.set_session(sid)
-            _apply_session(sess)
+            apply_session(sess)
             STATE.log(f"已选择场次「{sess['name']}」(未开始)", "warn")
             self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/sessions/create":
@@ -639,7 +651,8 @@ class _Handler(BaseHTTPRequestHandler):
                                 data.get("rest_every") or 0,
                                 data.get("rest_minutes") or 0,
                                 data.get("score_target"),
-                                data.get("energy_cost"))
+                                data.get("energy_cost"),
+                                data.get("scene"))
             STATE.log(f"新建场次「{name}」")
             self._send(200, "application/json",
                        json.dumps({"ok": True, "id": sess["id"]}).encode())
@@ -663,17 +676,34 @@ class _Handler(BaseHTTPRequestHandler):
             rest_m = data["rest_minutes"] if "rest_minutes" in data else UNSET
             tgt = data["score_target"] if "score_target" in data else UNSET
             ec = data["energy_cost"] if "energy_cost" in data else UNSET
+            scene = data["scene"] if "scene" in data else UNSET
             try:
                 STORE.update(sid, name=name, rule=rule,
                              rest_every=rest_e, rest_minutes=rest_m,
-                             score_target=tgt, energy_cost=ec)
+                             score_target=tgt, energy_cost=ec, scene=scene)
             except KeyError:
                 self._json_err(404, "场次不存在")
                 return
             if sid == STORE.session_id:
-                _apply_session(sess)
+                apply_session(sess)
             STATE.log(f"场次「{sess['name']}」已更新")
             self._send(200, "application/json", b'{"ok":true}')
+        elif self.path == "/api/queue/set":
+            # 接力队列整体重设 (前端管理完整顺序): 打完一场自动接下一场的任务单
+            try:
+                data = self._read_json()
+                ids = data.get("ids")
+            except json.JSONDecodeError as e:
+                self._json_err(400, str(e))
+                return
+            if not isinstance(ids, list):
+                self._json_err(400, "ids 需要为数组")
+                return
+            q = STORE.queue_set(ids)
+            names = " → ".join((STORE.get(x) or {}).get("name", x) for x in q) or "空"
+            STATE.log(f"接力队列已更新: {names}")
+            self._send(200, "application/json",
+                       json.dumps({"ok": True, "queue": q}).encode())
         elif self.path == "/api/sessions/child":
             # 周期性分类的每一期: 建带日期的子场次, 继承父场次规则/上界/休息
             try:

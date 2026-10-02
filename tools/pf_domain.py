@@ -43,6 +43,14 @@ def clean_energy(v) -> int:
         return 4
 
 
+def clean_scene(v):
+    """场地绑定清洗: 去空白, 空串/缺失回 None (=不绑定, 就打散打)。"""
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
 class ScoreTracker:
     """总分采样基线: 判定是否采样/算 delta, 换场次自动重置 (pf_bot 调 on_score)。"""
 
