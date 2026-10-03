@@ -7,8 +7,9 @@
  * 免 Root / 免无障碍 / 免录屏弹窗: 截屏 (screencap) 与点击 (input tap) 全走 Shizuku shell。
  * 模板与阈值与 phone/settle_bot.py 同源 (基准 1280x576, 帧自动缩放匹配)。
  *
- * 「导航」按钮: 调同目录 pf_nav.js 自动走 启动游戏→大厅→EVENTS→角色场 PLAY!→
- * 节点/选人/FIGHT→AUTO/3x 自检, 完成后无缝接本结算循环 (缺模板会自动转采集模式)。
+ * 「导航」按钮: 调同目录 pf_nav.js 自动走 启动游戏→大厅→EVENTS→划到目标活动卡
+ * (Pillow Talk, ev_target 模板) PLAY!→最右战斗节点→PLAY→AUTO/3x 自检, 完成后无缝接
+ * 本结算循环 (缺模板会自动转采集模式)。
  *
  * 悬浮条: 运行中随时可拖动; 松手时靠近屏幕边缘会自动缩进, 只留一小条, 拖出即恢复。
  * 场次: 今日场数/胜负持久化到 store.json (pf_store.js), DAILY_CAP 可设每日上限, 到限自动停。

@@ -83,7 +83,8 @@ HyperOS 装第三方 APK 被拦时，按你平时装 pfwidget 的方式放行即
     ├── btn_continue.png # 紫蓝 CONTINUE 按钮
     ├── btn_quit.png     # 紫色 QUIT 按钮
     ├── hall_events.png  # (导航用, 待采集) 大厅 EVENTS 菱形文字标签
-    └── ev_play.png      # (导航用, 待采集) 活动居中卡橙色 PLAY! 按钮
+    ├── ev_play.png      # (导航用, 待采集) 活动居中卡橙色 PLAY! 按钮
+    └── ev_target.png    # (导航用, 待采集) 目标活动卡模板 (当前=Pillow Talk, 换活动重裁此图)
 ```
 
 运行后脚本还会在 `/sdcard/sgm_settle/` 下生成截图与 `store.json`（今日场次），不用手动建。
@@ -133,14 +134,15 @@ HyperOS 装第三方 APK 被拦时，按你平时装 pfwidget 的方式放行即
 
 ---
 
-## 5. 导航挂机（启动→大厅→EVENTS→角色场→自动开打）
+## 5. 导航挂机（启动→大厅→EVENTS→Pillow Talk→自动开打）
 
 点 **「导航」** 交给 `pf_nav.js` 执行，全链路：
 
 ```
 启动游戏 → 等大厅(促销弹窗X/结算残局逃逸/偶发点房子) → 点 EVENTS 菱形
-  → 轮播翻卡找 居中卡 PLAY! 彩色可用 (置灰的跳过, 绝不点 SKIP!)
-  → 按 FIGHT_STEPS 选单人节点/选人 → FIGHT
+  → 轮播翻卡划到目标活动卡 Pillow Talk (ev_target 模板命中居中卡才点;
+    目标卡 PLAY! 置灰 = 报错不跳过, 绝不点 SKIP!)
+  → 点 PLAY! → 按 FIGHT_STEPS 划轨/选最右战斗节点/点 PLAY 开打
   → 战斗开场 AUTO(脑子)+3x 速度自检 (同 pf_bot 逻辑)
   → 无缝接结算循环 (VICTORY/DEFEAT → REMATCH/CONTINUE)
 ```
@@ -151,19 +153,20 @@ HyperOS 装第三方 APK 被拦时，按你平时装 pfwidget 的方式放行即
 会自动转采集模式**，不用记命令：
 
 1. 点悬浮条「导航」→ 日志提示转采集，往 `/sdcard/sgm_settle/nav/` 每 2.5s 存一帧（共 60 帧 ≈ 2.5 分钟）；
-2. 采集期间**手动**把流程走一遍：大厅 → EVENTS → 找一张角色场卡 → PLAY! →
-   选单人节点 → 选人 → FIGHT → 战斗开场（脑子/速度泡露出即可停）；
+2. 采集期间**手动**把流程走一遍：大厅 → EVENTS → 划到 Pillow Talk 卡 → PLAY! →
+   选最右战斗节点 → 点 PLAY → 战斗开场（脑子/速度泡露出即可停）；
 3. 采集完电脑 `adb pull /sdcard/sgm_settle/nav/`（或 Tailscale），按
-   `phone/assets/settle/make_templates.py` 同款思路裁出 `hall_events.png`、`ev_play.png`
-   （以及可选 `scene_x` / `vs_fight` / `battle_spd_1x|2x|3x`），放进手机 `templates/`；
+   `phone/assets/settle/make_templates.py` 同款思路裁出 `hall_events.png`、`ev_play.png`、
+   `ev_target.png`（Pillow Talk 卡标题字样，避开相邻卡边缘；以及可选 `scene_x` /
+   `vs_fight` / `battle_spd_1x|2x|3x`），放进手机 `templates/`；
 4. 按 5.2 填 `pf_nav.js` 的坐标/步骤配置 → 重跑 `node test_nav.js` → 再点「导航」。
 
 ### 5.2 待标定清单（都在 pf_nav.js 顶部配置区，坐标基准 1280×576）
 
 | 项 | 用途 | 现状 |
 |---|---|---|
-| `hall_events.png` / `ev_play.png` 模板 | 认大厅 EVENTS 菱形 / 居中卡 PLAY! | 缺 → 自动采集 |
-| `FIGHT_STEPS` | PLAY! 之后的 节点/选人/FIGHT 步骤表 | 空 = 停在安全点不盲点 |
+| `hall_events.png` / `ev_play.png` / `ev_target.png` 模板 | 认大厅 EVENTS 菱形 / 居中卡 PLAY! / 目标卡 (Pillow Talk) | 缺 → 自动采集 |
+| `FIGHT_STEPS` | PLAY! 之后的 划轨/最右战斗节点/点 PLAY 步骤表 (Pillow Talk 链) | 空 = 停在安全点不盲点 |
 | `HOME_XY` / `CARD_ROI` / `SWIPE_FROM/TO` | 回家按钮 / 居中卡区域 / 翻卡手势 | MuMu 坐标 y×0.8 估算 |
 | `BRAIN_BOX`/`BRAIN_XY`/`SPD_ROI`/`SPD_XY` | 战斗开场脑子+速度泡 | 同上；速度三模板没裁出前**只读不点** |
 | `pf_select.js GEOM` | 能量换人：出战槽/候选列黄钉读数 + 拖拽落点 | PC 1280×720 实测，手机粗估 y×0.8，未标定不接入（见 5.4） |
@@ -240,7 +243,9 @@ AutoJs6 内置打包：文件列表长按 `sgm_settle` 文件夹（或脚本）�
 | 手机重启后不工作 | 三件事：无线调试重开、Shizuku 重新启动、AutoJs6 重新运行脚本 |
 | 点「导航」转采集/提示缺模板 | 正常——导航模板还没标定（见 5.1）；走完采集→裁模板→填坐标即可 |
 | 悬浮条不显示「今日N场」/计数不累计 | 缺 pf_store.js（要与 settle_bot.js 同目录）；或 /sdcard/sgm_settle/ 不可写 |
-| 导航日志停在「FIGHT_STEPS 未标定」 | PLAY! 之后没标定坐标，脚本按安全规则不盲点；按 5.2 填 FIGHT_STEPS |
+| 导航日志停在「FIGHT_STEPS 未标定」 | PLAY! 之后没标定坐标，脚本按安全规则不盲点；按 5.2 填 FIGHT_STEPS（划轨/最右节点/PLAY） |
+| 一直翻卡最后报「没划到目标卡」 | ev_target 模板与卡面对不上（换活动/裁图带了相邻卡边缘）→ 重裁居中卡标题区域 |
+| 报「目标卡 PLAY! 置灰」 | Pillow Talk 本身没次数/能量了 → 不是脚本问题 |
 
 ## 9. 已知边界
 

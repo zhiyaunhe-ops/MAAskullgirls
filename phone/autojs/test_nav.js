@@ -1,7 +1,10 @@
 /*
  * pf_nav / settle_bot 程序级验证 — 电脑上 Node 跑 (真机行为另行验证):
  *   1) pf_nav 纯决策函数单测: 饱和度判可用 / 速度计划 / 大厅逃逸优先级 / 轮播处置
+ *      (任意卡 + 目标卡 Pillow Talk 两种模式)
  *   2) pickAndPlay 仿真: stub AutoJs6 全局, 验证 翻卡→点中心→实机坐标换算 与 全灰防死转
+ *      (目标卡模式: 划到 ev_target 才点 / 置灰报错不跳过 / 划不到上限报错)
+ *   2.5) runFightSteps 步骤表: swipe 步骤实机坐标换算
  *   3) runNav 控制流: 缺模板自动转采集 + 停止哨兵
  *   4) settle_bot.js 装载冒烟: 三按钮 handler 挂上, 导航/开始 require 通路
  *   5) pf_store 纯逻辑单测: 日历天滚动 / 计数 / 上限 / 存取闭环
@@ -57,12 +60,24 @@ ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: null, hall: null
 ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: null, hall: null, n: 4, homeTries: 3 }).act === "wait", "回家 3 次后只等待");
 ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: null, hall: null, n: 1, homeTries: 0 }).act === "wait", "非第 4 帧不回家");
 
-/* planCard — 轮播处置 */
+/* planCard — 轮播处置 (旧行为: 任意可用 PLAY!) */
 ok(nav.planCard({ play: [1, 2], sat: 207, swipes: 0 }).act === "play", "可用 PLAY → 点");
 ok(nav.planCard({ play: [1, 2], sat: 30, swipes: 0 }).act === "swipe", "置灰 PLAY → 翻卡跳过");
 ok(nav.planCard({ play: null, sat: null, swipes: 0 }).act === "swipe", "无 PLAY → 翻卡");
 ok(nav.planCard({ play: null, sat: null, swipes: nav.config.MAX_SWIPES }).act === "fail", "翻够上限 → 失败");
 ok(nav.planCard({ play: [1, 2], sat: 30, swipes: nav.config.MAX_SWIPES }).act === "fail", "置灰也受上限约束 (防死转)");
+
+/* planTargetCard — 目标卡模式 (只认 ev_target 命中的居中卡) */
+ok(nav.config.TARGET_CARD === "ev_target", "目标卡模板名 = ev_target (Pillow Talk)");
+ok(nav.planTargetCard({ card: [1, 2], play: [3, 4], sat: 207, swipes: 0 }).act === "play",
+    "目标卡可用 PLAY → 点");
+var tf = nav.planTargetCard({ card: [1, 2], play: [3, 4], sat: 30, swipes: 0 });
+ok(tf.act === "fail" && String(tf.why).indexOf("置灰") >= 0, "目标卡 PLAY 置灰 → 报错不跳过");
+tf = nav.planTargetCard({ card: [1, 2], play: null, sat: null, swipes: 0 });
+ok(tf.act === "fail" && String(tf.why).indexOf("PLAY") >= 0, "目标卡无 PLAY → 报错");
+ok(nav.planTargetCard({ card: null, play: null, sat: null, swipes: 0 }).act === "swipe", "非目标卡 → 翻卡");
+ok(nav.planTargetCard({ card: null, play: null, sat: null, swipes: nav.config.MAX_SWIPES }).act === "fail",
+    "划不到目标卡翻够上限 → 失败");
 
 /* ---------- 1.5 pf_store 场次存储 ---------- */
 var store = require(path.join(__dirname, "pf_store.js"));
@@ -217,6 +232,7 @@ global.images = {
     resize: function () { return fakeImg(1280, 576); },
     findImage: function (work, tpl) {
         if (tpl === EV_PLAY_TPL) return findQueue.length ? findQueue.shift() : null;
+        if (tpl === TARGET_TPL) return cardQueue.length ? cardQueue.shift() : null;
         return null;
     },
     pixel: function () { return 0xFFFF7830; }   // 默认橙
@@ -235,7 +251,9 @@ function fakeImg(w, h) {
     return { getWidth: function () { return w; }, getHeight: function () { return h; }, recycle: noop };
 }
 var EV_PLAY_TPL = { getWidth: function () { return 150; }, getHeight: function () { return 46; } };
-var findQueue = [];
+var TARGET_TPL = { getWidth: function () { return 200; }, getHeight: function () { return 60; } };
+var findQueue = [];       // ev_play 模板逐帧命中队列
+var cardQueue = [];       // ev_target 模板逐帧命中队列
 
 /* ---------- 2. pickAndPlay 仿真 (帧 2560x1152 → scale 2) ---------- */
 section("pickAndPlay 仿真");
@@ -252,6 +270,7 @@ ok(tapsA[tapsA.length - 1] === "input tap 1150 646", "点 PLAY! 中心并换算�
 
 /* 场景 B: 每帧都是置灰 PLAY → 翻卡至上限后报错, 不死转 */
 findQueue = [];
+cardQueue = [];
 for (var i = 0; i < 25; i++) findQueue.push({ x: 500, y: 300 });
 global.images.pixel = function () { return 0xFF808080; };
 cmds = [];
@@ -261,6 +280,64 @@ catch (e) { threw = e; }
 ok(!!threw && String(threw.message || threw).indexOf("没有可用的 PLAY") >= 0, "全灰卡翻够上限报错");
 var swipesB = cmds.filter(function (c) { return c.indexOf("input swipe") === 0; }).length;
 ok(swipesB === nav.config.MAX_SWIPES, "翻卡次数正好等于上限 (" + nav.config.MAX_SWIPES + ")");
+
+/* ---------- 2.5 pickAndPlay 目标卡仿真 (Pillow Talk 链) ---------- */
+section("pickAndPlay 目标卡仿真");
+
+/* 场景 T1: 第 1 帧无目标卡 → 左滑; 第 2 帧目标卡居中 + 橙 PLAY@(500,300) → 点按钮中心 */
+cardQueue = [null, { x: 400, y: 200 }];
+findQueue = [null, { x: 500, y: 300 }];
+global.images.pixel = function () { return 0xFFFF7830; };
+cmds = [];
+nav.pickAndPlay(noop, { ev_play: EV_PLAY_TPL, ev_target: TARGET_TPL }, function () { return false; });
+var swipesT = cmds.filter(function (c) { return c.indexOf("input swipe") === 0; }).length;
+var tapsT = cmds.filter(function (c) { return c.indexOf("input tap") === 0; });
+ok(swipesT === 1, "目标卡模式: 非目标卡翻卡一次");
+ok(tapsT[tapsT.length - 1] === "input tap 1150 646", "目标卡点 PLAY! 中心并换算实机坐标 ((500+75)*2, (300+23)*2)");
+
+/* 场景 T2: 目标卡居中但 PLAY 置灰 → 报错, 不翻卡不点 (目标卡绝不跳过) */
+cardQueue = [{ x: 400, y: 200 }];
+findQueue = [{ x: 500, y: 300 }];
+global.images.pixel = function () { return 0xFF808080; };
+cmds = [];
+threw = null;
+try { nav.pickAndPlay(noop, { ev_play: EV_PLAY_TPL, ev_target: TARGET_TPL }, function () { return false; }); }
+catch (e) { threw = e; }
+ok(!!threw && String(threw.message || threw).indexOf("置灰") >= 0, "目标卡置灰 → 报错带原因");
+ok(cmds.filter(function (c) { return c.indexOf("input swipe") === 0; }).length === 0,
+    "目标卡置灰 → 不翻卡跳过");
+
+/* 场景 T3: 目标卡居中但 ROI 里没有 PLAY! → 报错 (界面与预期不符) */
+cardQueue = [{ x: 400, y: 200 }];
+findQueue = [null];
+cmds = [];
+threw = null;
+try { nav.pickAndPlay(noop, { ev_play: EV_PLAY_TPL, ev_target: TARGET_TPL }, function () { return false; }); }
+catch (e) { threw = e; }
+ok(!!threw && String(threw.message || threw).indexOf("PLAY") >= 0, "目标卡无 PLAY → 报错");
+
+/* 场景 T4: 一直没划到目标卡 → 翻到上限报错, 不死转 */
+cardQueue = [];
+findQueue = [];
+global.images.pixel = function () { return 0xFFFF7830; };
+cmds = [];
+threw = null;
+try { nav.pickAndPlay(noop, { ev_play: EV_PLAY_TPL, ev_target: TARGET_TPL }, function () { return false; }); }
+catch (e) { threw = e; }
+ok(!!threw && String(threw.message || threw).indexOf("没划到目标卡") >= 0, "划不到目标卡 → 上限报错");
+ok(cmds.filter(function (c) { return c.indexOf("input swipe") === 0; }).length === nav.config.MAX_SWIPES,
+    "划卡次数正好等于上限 (" + nav.config.MAX_SWIPES + ")");
+
+/* ---------- 2.6 runFightSteps swipe 步骤 ---------- */
+section("runFightSteps 步骤表");
+nav.config.FIGHT_STEPS.push({ note: "节点轨划到最右", swipe: [900, 320, 560, 320] });
+cmds = [];
+var stepsOk = nav.runFightSteps(noop, {}, function () { return false; });
+ok(stepsOk === true, "swipe 步骤表执行成功");
+var sw = cmds.filter(function (c) { return c.indexOf("input swipe") === 0; });
+ok(sw.length === 1 && sw[0] === "input swipe 1800 640 1120 640 600",
+    "swipe 步骤按 scale 换算实机坐标 ((900,320)→(560,320) ×2)");
+nav.config.FIGHT_STEPS.length = 0;   // 还原空表 (安全规则: 未标定不盲点)
 
 /* ---------- 3. runNav 控制流 ---------- */
 section("runNav 控制流");
@@ -276,11 +353,12 @@ section("模板装载");
 var ctx = nav.loadNavTemplates();
 ok(!!ctx.tpls.victory && !!ctx.tpls.defeat && !!ctx.tpls.btn_continue,
     "逃逸链结算模板已装载 (waitHall 依赖, regression)");
-ok(!!ctx.tpls.hall_events && !!ctx.tpls.ev_play, "导航必需模板已装载");
+ok(!!ctx.tpls.hall_events && !!ctx.tpls.ev_play && !!ctx.tpls.ev_target,
+    "导航必需模板已装载 (含目标卡 ev_target)");
 ok(ctx.haveSpd === true, "速度三模板齐 → 允许动脑子/速度泡");
 ok(nav.missingRequired().length === 0, "模板齐 → missingRequired 为空");
 global.files.exists = function () { return false; };
-ok(nav.missingRequired().length === 5, "全缺 → 报 5 个必需模板");
+ok(nav.missingRequired().length === 6, "全缺 → 报 6 个必需模板 (多 ev_target)");
 global.files.exists = function () { return true; };
 
 /* ---------- 4. settle_bot.js 装载冒烟 ---------- */

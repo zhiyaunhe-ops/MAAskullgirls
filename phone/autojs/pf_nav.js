@@ -1,17 +1,17 @@
 /*
  * SGM 导航模块 — AutoJs6 版 (由 settle_bot.js 的「导航」按钮 require 调用, 不单独运行)
  *
- * 流程: 启动游戏 → 等大厅 (促销弹窗 X / 结算残局逃逸) → 点 EVENTS 菱形 → 轮播找
- *       一个可用的角色场 (居中卡 PLAY! 彩色=可用) → 点 PLAY! (绝不点 SKIP!) →
- *       按 FIGHT_STEPS 标定依次 选单人节点/选人/FIGHT → 战斗开场 AUTO+3x 自检
- *       (同 pf_bot ensure_battle_auto) → 交棒 settle_bot 结算循环。
+ * 流程: 启动游戏 → 等大厅 (促销弹窗 X / 结算残局逃逸) → 点 EVENTS 菱形 → 轮播划到
+ *       目标活动卡 (Pillow Talk, ev_target 模板命中居中卡才点) → 点 PLAY! (绝不点
+ *       SKIP!) → 按 FIGHT_STEPS 标定 划轨/选最右战斗节点/点 PLAY 开打 → 战斗开场
+ *       AUTO+3x 自检 (同 pf_bot ensure_battle_auto) → 交棒 settle_bot 结算循环。
  *
  * 坐标基准 1280x576 (同 settle_bot: 帧缩放到高 576 再匹配, 点击按 scale 换算回实机)。
  *
- * 标定状态 (2026-09-06 逻辑先行, 真机截图标定后启用):
+ * 标定状态 (2026-10-03 改 Pillow Talk 目标链, 真机截图标定后启用):
  *   已标定  结算大字/三槽/右槽先手 (沿用 settle_bot 模板与 FIRST_TAP)
- *   待标定  hall_events / ev_play 模板 (缺 → 导航自动转采集模式)
- *   待标定  FIGHT_STEPS (PLAY! 之后的节点/选人/FIGHT, 真机截图后填)
+ *   待标定  hall_events / ev_play / ev_target 模板 (缺 → 导航自动转采集模式)
+ *   待标定  FIGHT_STEPS (PLAY! 之后的 划轨/最右节点/PLAY, 真机截图后填)
  *   待标定  战斗开场脑子/速度泡坐标 (MuMu y*0.8 估算; 速度三模板没裁出来前不盲点)
  *
  * 安全规则: 模板/坐标未标定的界面一律不盲点 — 宁可停在安全点等人, 防止误触
@@ -49,6 +49,12 @@ var CARD_ROI = [475, 96, 330, 464];
 var SWIPE_FROM = [900, 320];
 var SWIPE_TO = [560, 320];
 
+/* 轮播目标卡: 划到该模板命中的居中卡才点 PLAY! (当前 = Pillow Talk 卡面/标题,
+ * 建议裁居中卡的活动标题字样, 避开相邻卡边缘)。换活动时重裁 ev_target.png 即可,
+ * 不用改代码; 置空 = 退回「任意可用 PLAY!」旧行为 */
+var TARGET_CARD = "ev_target";
+var TARGET_TH = 0.75;        // 目标卡模板阈值 (误命中调高 / 划不到调低)
+
 var PLAY_MIN_S = 80;         // PLAY 按钮饱和度均值下限: 彩色=可用 / 灰=禁用 (用户色彩规则)
 
 /* 战斗开场 AUTO/3x (MuMu y*0.8 估算, TODO 真机标定; 没裁出速度三模板前不会点击) */
@@ -58,18 +64,19 @@ var BRAIN_ON_V = 75;                 // V 均值 ≥75 = 亮 (pf_bot 实测亮~1
 var SPD_ROI = [600, 452, 90, 64];    // 速度泡 (MuMu 600,565,690,645)
 var SPD_XY = [640, 484];             // 点一下升一档 (1x→2x→3x)
 
-/* PLAY! 之后到 FIGHT 的步骤表 — 默认空 = 导航到 PLAY! 为止安全停。
- * 标定后示例 (坐标/模板名按真机截图填):
+/* PLAY! 之后到开打的步骤表 — Pillow Talk 链: 已选关卡 划轨/选最右战斗节点 → 点 PLAY 开打.
+ * 默认空 = 停在安全点; 真机截图标定后填 (坐标 1280x576 基准), 示例:
  *   var FIGHT_STEPS = [
- *     { note: "选单人节点", taps: [[640, 300]] },
- *     { note: "选人",       taps: [[400, 430]], waitMs: 2500 },
- *     { note: "FIGHT",      tpl: "vs_fight", roi: [500, 480, 280, 80] }
+ *     { note: "节点轨划到最右", swipe: [900, 300, 560, 300] },
+ *     { note: "选最右战斗节点", taps: [[1100, 300]] },
+ *     { note: "PLAY 开打",     taps: [[640, 460]], waitMs: 2500 }
  *   ];
- * taps = 固定坐标点击 (标定过的才许填); tpl = 模板点击 (模板缺失直接中止, 不盲点) */
+ * taps = 固定坐标点击 (标定过的才许填); tpl = 模板点击 (模板缺失直接中止, 不盲点);
+ * swipe = 一次滑动 [x1,y1,x2,y2,ms?] */
 var FIGHT_STEPS = [];
 
 /* 采集模式: 每 CAP_MS 存一帧到 /sdcard/sgm_settle/nav/, 共 CAP_FRAMES 帧,
- * 期间手动把流程走一遍 (大厅→EVENTS→角色场→PLAY→节点→选人→FIGHT→战斗开场) */
+ * 期间手动把流程走一遍 (大厅→EVENTS→划到 Pillow Talk→PLAY→最右节点→PLAY→战斗开场) */
 var CAP_FRAMES = 60;
 var CAP_MS = 2500;
 
@@ -84,7 +91,8 @@ var X_ROI = [950, 24, 290, 144];     // 促销弹窗右上 X (MuMu 950,30,1240,1
 
 /* 结算逃逸链复用的 settle 模板 (与 settle_bot 同名同目录) */
 var NAV_TPL_SETTLE = ["victory", "defeat", "btn_continue"];
-var NAV_TPL_REQUIRED = ["hall_events", "ev_play"].concat(NAV_TPL_SETTLE);
+var NAV_TPL_REQUIRED = ["hall_events", "ev_play"]
+    .concat(TARGET_CARD ? [TARGET_CARD] : []).concat(NAV_TPL_SETTLE);
 var NAV_TPL_OPTIONAL = ["scene_x", "vs_fight",
     "battle_spd_1x", "battle_spd_2x", "battle_spd_3x"];
 
@@ -135,6 +143,19 @@ function planCard(find) {
     if (find.play && !gray) return { act: "play", xy: find.play };
     if (find.swipes >= MAX_SWIPES) return { act: "fail" };
     return { act: "swipe", why: gray ? "PLAY 置灰 (不可用), 跳过该卡" : null };
+}
+
+/* 目标卡模式单帧处置 (划 PF 等同款翻卡, 只认目标卡): 居中卡 = 目标 → PLAY! 可用则点;
+ * 置灰/没 PLAY → 报错 (目标卡绝不跳过 — 划过去还得绕回来, 直接把原因报给人);
+ * 不是目标卡 → 翻卡 (翻够上限 → 失败) */
+function planTargetCard(find) {
+    if (find.card) {
+        if (!find.play) return { act: "fail", why: "目标卡居中但 ROI 里没有 PLAY! (模板/ROI 与实际不符?)" };
+        if (find.sat !== null && playAvailable(find.sat)) return { act: "play", xy: find.play };
+        return { act: "fail", why: "目标卡 PLAY! 置灰 (次数/能量用完?)" };
+    }
+    if (find.swipes >= MAX_SWIPES) return { act: "fail" };
+    return { act: "swipe" };
 }
 
 /* ---------- I/O 层 (AutoJs6 + Shizuku) ---------- */
@@ -316,34 +337,45 @@ function gotoEvents(logger, tpls, hallBox, shouldStop) {
     throw new Error(HUB_TIMEOUT + "s 未进入 EVENTS 轮播");
 }
 
-/* 轮播找一个 PLAY! 可用的角色场并点掉 (绝不点 SKIP!) */
+/* 轮播划到目标活动卡并点 PLAY! (绝不点 SKIP!):
+ * TARGET_CARD 模式 = 只点目标卡 (置灰报错不跳过); 目标模板不在 = 任意可用 PLAY! (旧行为) */
 function pickAndPlay(logger, tpls, shouldStop) {
+    var target = TARGET_CARD ? tpls[TARGET_CARD] : null;
     var swipes = 0;
     while (true) {
         chkStop(shouldStop);
         var snap = snapWork();
         if (!snap) { sleep(800); continue; }
         var play = find(snap.work, tpls.ev_play, CARD_ROI, EV_PLAY_TH);
+        var card = target ? find(snap.work, target, CARD_ROI, TARGET_TH) : null;
         var sat = null;
         if (play) {
             sat = sampleMean(snap.work, [play[0], play[1],
                 tpls.ev_play.getWidth(), tpls.ev_play.getHeight()], satOfArgb);
         }
-        var d = planCard({ play: play, sat: sat, swipes: swipes });
-        if (play) {
+        var d = target ? planTargetCard({ card: card, play: play, sat: sat, swipes: swipes })
+            : planCard({ play: play, sat: sat, swipes: swipes });
+        if (card) {
+            logger("[航] 目标卡居中 → " + d.act + (d.why ? " — " + d.why : "")
+                + (play && sat !== null ? " (PLAY! 饱和度 " + Math.round(sat)
+                    + ", 阈值 " + PLAY_MIN_S + ")" : ""));
+        } else if (play) {
             logger("[航] 居中卡 PLAY! 饱和度均值 " + Math.round(sat)
                 + " (阈值 " + PLAY_MIN_S + ") → " + d.act
                 + (d.why ? " — " + d.why : ""));
         }
         release(snap);
         if (d.act === "fail") {
-            throw new Error("翻了 " + swipes + " 张卡没有可用的 PLAY! (都置灰? 能量/次数用完?)");
+            throw new Error(d.why || (target
+                ? ("翻了 " + swipes + " 张卡没划到目标卡 (ev_target 模板不匹配, 或活动不在轮播?)")
+                : ("翻了 " + swipes + " 张卡没有可用的 PLAY! (都置灰? 能量/次数用完?)")));
         }
         if (d.act === "play") {
             var s2 = snapWork();
             if (s2) { tapCenterWork(s2, play, tpls.ev_play); release(s2); }
             logger("[航] 点 PLAY! → (" + (play[0] + tpls.ev_play.getWidth() / 2) + ","
-                + (play[1] + tpls.ev_play.getHeight() / 2) + "), 第 " + (swipes + 1) + " 张卡");
+                + (play[1] + tpls.ev_play.getHeight() / 2) + ")"
+                + (target ? ", 目标卡" : ", 第 " + (swipes + 1) + " 张卡"));
             sleep(2500);
             return;
         }
@@ -360,7 +392,7 @@ function swipeLeft() {
     release(s);
 }
 
-/* PLAY! 之后按标定表走 节点/选人/FIGHT; 空表 = 停在安全点 */
+/* PLAY! 之后按标定表走 划轨/选节点/点 PLAY; 空表 = 停在安全点 */
 function runFightSteps(logger, tpls, shouldStop) {
     if (!FIGHT_STEPS.length) {
         logger("[!!] FIGHT_STEPS 未标定 — 已停在 PLAY! 之后的安全点");
@@ -390,6 +422,16 @@ function runFightSteps(logger, tpls, shouldStop) {
             var s2 = snapWork();
             if (s2) { tapCenterWork(s2, hit, tpls[step.tpl]); release(s2); }
         } else {
+            if (step.swipe) {
+                var s4 = snapWork();
+                if (s4) {
+                    shizuku("input swipe "
+                        + Math.round(step.swipe[0] * s4.scale) + " " + Math.round(step.swipe[1] * s4.scale)
+                        + " " + Math.round(step.swipe[2] * s4.scale) + " " + Math.round(step.swipe[3] * s4.scale)
+                        + " " + (step.swipe[4] || SWIPE_MS));
+                    release(s4);
+                }
+            }
             for (var t = 0; t < (step.taps || []).length; t++) {
                 var s3 = snapWork();
                 if (s3) { tapWork(s3, step.taps[t]); release(s3); }
@@ -450,7 +492,7 @@ var tplCtx = { haveSpd: false };
 /* 采集模式: 手动走一遍流程, 每 CAP_MS 存一帧, 供电脑端裁模板/标坐标 */
 function runCapture(logger, shouldStop) {
     files.createWithDirs(CAP_DIR + "cap_000.png");
-    logger("[采] 采集开始: 请现在手动走一遍 大厅→EVENTS→角色场→PLAY→节点→选人→FIGHT→战斗开场");
+    logger("[采] 采集开始: 请现在手动走一遍 大厅→EVENTS→划到 Pillow Talk→PLAY!→最右节点→PLAY→战斗开场");
     for (var i = 0; i < CAP_FRAMES; i++) {
         chkStop(shouldStop);
         shizuku("screencap -p " + NAV_SHOT);
@@ -504,18 +546,21 @@ if (typeof module !== "undefined" && module.exports) {
         runCapture: runCapture,
         /* 以下导出仅供 test_nav.js 单测/仿真 */
         pickAndPlay: pickAndPlay,
+        runFightSteps: runFightSteps,
         loadNavTemplates: loadNavTemplates,
         missingRequired: missingRequired,
         playAvailable: playAvailable,
         planSpeed: planSpeed,
         decideHallFrame: decideHallFrame,
         planCard: planCard,
+        planTargetCard: planTargetCard,
         satOfArgb: satOfArgb,
         vOfArgb: vOfArgb,
         config: {
             PLAY_MIN_S: PLAY_MIN_S, MAX_SWIPES: MAX_SWIPES,
             FIRST_TAP: FIRST_TAP, CARD_ROI: CARD_ROI,
-            BRAIN_ON_V: BRAIN_ON_V, FIGHT_STEPS: FIGHT_STEPS
+            BRAIN_ON_V: BRAIN_ON_V, FIGHT_STEPS: FIGHT_STEPS,
+            TARGET_CARD: TARGET_CARD, TARGET_TH: TARGET_TH
         }
     };
 }
