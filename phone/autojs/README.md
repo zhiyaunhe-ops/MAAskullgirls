@@ -139,13 +139,18 @@ HyperOS 装第三方 APK 被拦时，按你平时装 pfwidget 的方式放行即
 点 **「导航」** 交给 `pf_nav.js` 执行，全链路：
 
 ```
-启动游戏 → 等大厅(促销弹窗X/结算残局逃逸/偶发点房子) → 点 EVENTS 菱形
+启动游戏 → 等大厅(促销弹窗X/通用弹窗X/结算残局逃逸/偶发点房子) → 点 EVENTS 菱形
   → 轮播翻卡划到目标活动卡 Pillow Talk (ev_target 模板命中居中卡才点;
     目标卡 PLAY! 置灰 = 报错不跳过, 绝不点 SKIP!)
-  → 点 PLAY! → 按 FIGHT_STEPS 划轨/选最右战斗节点/点 PLAY 开打
+  → 点 PLAY! → FIGHT_STEPS 王关链: 地图右移×2(右边界钳位)
+    → 最右绿✓颜色锚点定位王关(大小/平移不敏感) → 点 FIGHT!
   → 战斗开场 AUTO(脑子)+3x 速度自检 (同 pf_bot 逻辑)
-  → 无缝接结算循环 (VICTORY/DEFEAT → REMATCH/CONTINUE)
+  → 无缝接结算循环 (VICTORY/DEFEAT → CONTINUE→REMATCH; stall 时先试关弹窗)
 ```
+
+模板来源口径：`hall_events/ev_play/ev_target` 裁自 K70 真机帧（1280×576 基准）；
+`scene_x/modal_x` 由 PC MuMu 模板 ×0.8 双轴转换（2026-10-04 多尺度实测 0.98 分，
+PC→手机 UI 尺寸比 = 576/720）。
 
 ### 5.1 首次使用：采集 → 标定（当前状态）
 
@@ -165,11 +170,12 @@ HyperOS 装第三方 APK 被拦时，按你平时装 pfwidget 的方式放行即
 
 | 项 | 用途 | 现状 |
 |---|---|---|
-| `hall_events.png` / `ev_play.png` / `ev_target.png` 模板 | 认大厅 EVENTS 菱形 / 居中卡 PLAY! / 目标卡 (Pillow Talk) | 缺 → 自动采集 |
-| `FIGHT_STEPS` | PLAY! 之后的 划轨/最右战斗节点/点 PLAY 步骤表 (Pillow Talk 链) | 空 = 停在安全点不盲点 |
-| `HOME_XY` / `CARD_ROI` / `SWIPE_FROM/TO` | 回家按钮 / 居中卡区域 / 翻卡手势 | MuMu 坐标 y×0.8 估算 |
-| `BRAIN_BOX`/`BRAIN_XY`/`SPD_ROI`/`SPD_XY` | 战斗开场脑子+速度泡 | 同上；速度三模板没裁出前**只读不点** |
-| `pf_select.js GEOM` | 能量换人：出战槽/候选列黄钉读数 + 拖拽落点 | PC 1280×720 实测，手机粗估 y×0.8，未标定不接入（见 5.4） |
+| `hall_events.png` / `ev_play.png` / `ev_target.png` 模板 | 认大厅 EVENTS 菱形 / 居中卡 PLAY! / 目标卡 (Pillow Talk) | ✅ 真机帧已裁 (2026-10-04) |
+| `scene_x.png` / `modal_x.png` | 促销弹窗 X / 通用弹窗方 X (waitHall+轮播每帧关弹窗; settle stall 逃生) | ✅ PC 模板 ×0.8 转换 |
+| `FIGHT_STEPS` | 王关链: 地图右移×2 → 绿✓锚点 → FIGHT! | ✅ 真机走链标定, 重放逐像素可重复 |
+| `HOME_XY` / `CARD_ROI` / `SWIPE_FROM/TO` | 回家按钮 / 居中卡区域 / 翻卡手势 | ✅ K70 真机实测 |
+| `BRAIN_BOX`/`BRAIN_XY`/`SPD_ROI`/`SPD_XY` | 战斗开场脑子+速度泡 | ✅ 真机战斗帧实测 (HUD 屏幕居中锚定)；速度模板 1x/3x 判档 (0.95), 仅导航/自愈开场判一次 — 速度只在程序重启后重置 |
+| `pf_select.js GEOM` | 能量换人：出战槽/候选列黄钉读数 + 拖拽落点 | PC 1280×720 实测，手机粗估，未标定不接入（见 5.4） |
 
 安全规则：模板/坐标没标定的界面一律不盲点——宁可停在安全点等人，防误触
 SKIP!/购买等消耗资源的入口。`FIGHT_STEPS` 标定示例见 `pf_nav.js` 配置区注释。

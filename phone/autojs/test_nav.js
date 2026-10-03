@@ -37,28 +37,44 @@ ok(nav.playAvailable(207) && !nav.playAvailable(40), "橙可用 / 灰不可用")
 ok(nav.playAvailable(nav.config.PLAY_MIN_S)
     && !nav.playAvailable(nav.config.PLAY_MIN_S - 1), "饱和度阈值边界");
 
-/* planSpeed — pf_bot ensure_battle_auto 分支表 */
-var p = nav.planSpeed(3, true, true);
-ok(p.taps === 0 && !p.skip && !p.tapBrain, "3x 不动作");
-ok(nav.planSpeed(2, true, true).taps === 1, "2x 点一下");
-ok(nav.planSpeed(1, true, true).taps === 2, "1x 点两下");
-p = nav.planSpeed(0, true, true);
-ok(!p.tapBrain && p.taps === 0 && p.skip, "脑子亮但无泡 → 跳过提速");
-p = nav.planSpeed(0, false, true);
-ok(p.tapBrain && p.taps === 0, "脑子灭 → 先点脑子");
-p = nav.planSpeed(0, false, false);
-ok(!p.tapBrain && p.skip, "无速度模板 → 不盲点 (安全门)");
+/* planSpeed — 速度档位处置 (1x 点两下 / 2x 点一下 / 3x 不动 / 读不到跳过;
+ * 速度仅程序重启后重置, 重启必走导航 → 只在开场判一次, 用户拍板) */
+ok(nav.planSpeed(3).taps === 0 && !nav.planSpeed(3).skip, "3x 不动作");
+ok(nav.planSpeed(2).taps === 1, "2x 点一下");
+ok(nav.planSpeed(1).taps === 2, "1x 点两下");
+ok(nav.planSpeed(0).taps === 0 && nav.planSpeed(0).skip, "读不到速度泡 → 跳过不盲点");
 
-/* decideHallFrame — 优先级: 弹窗X → 结算先手 → CONTINUE → 大厅 → 回家 → 等待 */
+/* decideHallFrame — 优先级: 促销X → 通用X → 结算先手 → CONTINUE → 大厅 → 回家 → 等待 */
 var FT = JSON.stringify(nav.config.FIRST_TAP);
 ok(nav.decideHallFrame({ x: [1, 2], vic: true, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).act === "tapX", "弹窗 X 最高优先");
-ok(nav.decideHallFrame({ x: null, vic: true, def: false, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).act === "firstTap", "VICTORY 走右槽先手");
-ok(JSON.stringify(nav.decideHallFrame({ x: null, vic: false, def: true, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).xy) === FT, "DEFEAT 同样右槽先手");
-ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).act === "tapContinue", "CONTINUE 次之");
-ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: null, hall: [5, 6], n: 1, homeTries: 0 }).act === "hall", "大厅就绪");
-ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: null, hall: null, n: 4, homeTries: 1 }).act === "home", "无识别偶发回家");
-ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: null, hall: null, n: 4, homeTries: 3 }).act === "wait", "回家 3 次后只等待");
-ok(nav.decideHallFrame({ x: null, vic: false, def: false, cont: null, hall: null, n: 1, homeTries: 0 }).act === "wait", "非第 4 帧不回家");
+ok(nav.decideHallFrame({ x: null, modal: [7, 8], vic: true, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).act === "tapModal", "通用弹窗 X 次之");
+ok(nav.decideHallFrame({ x: null, modal: null, vic: true, def: false, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).act === "firstTap", "VICTORY 走右槽先手");
+ok(JSON.stringify(nav.decideHallFrame({ x: null, modal: null, vic: false, def: true, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).xy) === FT, "DEFEAT 同样右槽先手");
+ok(nav.decideHallFrame({ x: null, modal: null, vic: false, def: false, cont: [3, 4], hall: [5, 6], n: 1, homeTries: 0 }).act === "tapContinue", "CONTINUE 次之");
+ok(nav.decideHallFrame({ x: null, modal: null, vic: false, def: false, cont: null, hall: [5, 6], n: 1, homeTries: 0 }).act === "hall", "大厅就绪");
+ok(nav.decideHallFrame({ x: null, modal: null, vic: false, def: false, cont: null, hall: null, n: 4, homeTries: 1 }).act === "home", "无识别偶发回家");
+ok(nav.decideHallFrame({ x: null, modal: null, vic: false, def: false, cont: null, hall: null, n: 4, homeTries: 3 }).act === "wait", "回家 3 次后只等待");
+ok(nav.decideHallFrame({ x: null, modal: null, vic: false, def: false, cont: null, hall: null, n: 1, homeTries: 0 }).act === "wait", "非第 4 帧不回家");
+
+/* 锚点定位 (王关: 最右绿✓色团 → 质心+offset) */
+var A = { color: 0xFF7AC241, tol: 50, offset: [-72, 2], minTotal: 36, minCluster: 18 };
+ok(nav.anchorHit(0xFF7AC241, A) === true, "锚点色: 精确 ✓绿通过");
+ok(nav.anchorHit(0xFF48A900, A) === false, "锚点色: 暗边 (72,169,0) 拒绝");
+ok(nav.anchorHit(0xFFFF7830, A) === false, "锚点色: 橙 PLAY 拒绝");
+function blob(cx, cy, n, spread) {
+    var pts = [];
+    for (var i = 0; i < n; i++)
+        pts.push([cx + (i % 5 - 2) * (spread || 4), cy + Math.floor(i / 5) * 4]);
+    return pts;
+}
+var rA = nav.planAnchor(blob(1105, 400, 30).concat(blob(1253, 154, 35)), A);
+ok(rA.act === "tap" && Math.abs(rA.xy[0] - 1181) < 6 && Math.abs(rA.xy[1] - 168) < 6,
+    "锚点: 最右簇胜出, 质心(1253,166)+offset(-72,2) = 王关圆心 (1181,168)");
+ok(nav.planAnchor(blob(1105, 400, 30), A).act === "fail", "锚点: 样本不足 → fail 不盲点");
+rA = nav.planAnchor(blob(1253, 166, 10), A);
+ok(rA.act === "fail" && String(rA.why).indexOf("样本不足") >= 0, "锚点: 总量不足 → fail");
+rA = nav.planAnchor(blob(1253, 166, 40, 2), { color: 0xFF7AC241, tol: 50, minTotal: 36, minCluster: 60 });
+ok(rA.act === "fail" && String(rA.why).indexOf("太小") >= 0, "锚点: 最右簇过小 → fail");
 
 /* planCard — 轮播处置 (旧行为: 任意可用 PLAY!) */
 ok(nav.planCard({ play: [1, 2], sat: 207, swipes: 0 }).act === "play", "可用 PLAY → 点");
@@ -328,8 +344,9 @@ ok(!!threw && String(threw.message || threw).indexOf("没划到目标卡") >= 0,
 ok(cmds.filter(function (c) { return c.indexOf("input swipe") === 0; }).length === nav.config.MAX_SWIPES,
     "划卡次数正好等于上限 (" + nav.config.MAX_SWIPES + ")");
 
-/* ---------- 2.6 runFightSteps swipe 步骤 ---------- */
+/* ---------- 2.6 runFightSteps 步骤表 ---------- */
 section("runFightSteps 步骤表");
+var savedSteps = nav.config.FIGHT_STEPS.splice(0, nav.config.FIGHT_STEPS.length);
 nav.config.FIGHT_STEPS.push({ note: "节点轨划到最右", swipe: [900, 320, 560, 320] });
 cmds = [];
 var stepsOk = nav.runFightSteps(noop, {}, function () { return false; });
@@ -337,7 +354,24 @@ ok(stepsOk === true, "swipe 步骤表执行成功");
 var sw = cmds.filter(function (c) { return c.indexOf("input swipe") === 0; });
 ok(sw.length === 1 && sw[0] === "input swipe 1800 640 1120 640 600",
     "swipe 步骤按 scale 换算实机坐标 ((900,320)→(560,320) ×2)");
-nav.config.FIGHT_STEPS.length = 0;   // 还原空表 (安全规则: 未标定不盲点)
+
+/* 锚点步: stub 像素全橙 (非✓绿) → 找不到色团必须中止且零点击 */
+nav.config.FIGHT_STEPS.length = 0;
+nav.config.FIGHT_STEPS.push({ note: "锚点测试", anchor: { color: 0xFF7AC241, roi: [0, 0, 100, 100] } });
+cmds = [];
+threw = null;
+try { nav.runFightSteps(noop, {}, function () { return false; }); } catch (e) { threw = e; }
+ok(!!threw && String(threw.message || threw).indexOf("未找到目标色团") >= 0,
+    "锚点步无色团 → 中止不盲点");
+ok(cmds.filter(function (c) { return c.indexOf("input tap") === 0; }).length === 0,
+    "锚点失败不产生点击");
+
+nav.config.FIGHT_STEPS.length = 0;
+Array.prototype.push.apply(nav.config.FIGHT_STEPS, savedSteps);   // 还原王关链
+ok(nav.config.FIGHT_STEPS.length === 4 && !!nav.config.FIGHT_STEPS[2].anchor,
+    "真实王关 FIGHT_STEPS 已还原 (4 步含锚点)");
+ok(JSON.stringify(nav.config.FIGHT_STEPS[0].swipe) === "[960,288,320,288,700]",
+    "王关链 swipe 是 work 基准 (×1.875 = 真机 1800,540→600,540)");
 
 /* ---------- 3. runNav 控制流 ---------- */
 section("runNav 控制流");
@@ -351,11 +385,11 @@ global.files.exists = function () { return true; };
 /* ---------- 3.5 模板装载 ---------- */
 section("模板装载");
 var ctx = nav.loadNavTemplates();
-ok(!!ctx.tpls.victory && !!ctx.tpls.defeat && !!ctx.tpls.btn_continue,
+ok(!!ctx.victory && !!ctx.defeat && !!ctx.btn_continue,
     "逃逸链结算模板已装载 (waitHall 依赖, regression)");
-ok(!!ctx.tpls.hall_events && !!ctx.tpls.ev_play && !!ctx.tpls.ev_target,
+ok(!!ctx.hall_events && !!ctx.ev_play && !!ctx.ev_target,
     "导航必需模板已装载 (含目标卡 ev_target)");
-ok(ctx.haveSpd === true, "速度三模板齐 → 允许动脑子/速度泡");
+ok(!!ctx.battle_spd_1x && !!ctx.battle_spd_3x, "速度判档模板 (1x/3x) 已装载");
 ok(nav.missingRequired().length === 0, "模板齐 → missingRequired 为空");
 global.files.exists = function () { return false; };
 ok(nav.missingRequired().length === 6, "全缺 → 报 6 个必需模板 (多 ev_target)");

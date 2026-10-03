@@ -46,10 +46,12 @@ var BTN_ROIS = [                          // 按钮三槽位 (结算/奖励页�
 var FIRST_TAP = [903, 512];               // 右槽中心: 胜局=CONTINUE / 败局=REMATCH, 先手免匹配
 var TPL_NAMES = ["victory", "defeat", "btn_rematch", "btn_continue"];
 
+
 /* ---------- 运行状态 ---------- */
 var running = false;
 var worker = null;
 var runStart = 0;
+var tplX = null, tplM = null;   // 弹窗 X 模板 (loop 装载, stall 逃生用)
 var stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
              lastAct: 0, phase: 0, noHitRun: 0 };
 
@@ -127,10 +129,11 @@ function fmtDur(ms) {
     return h > 0 ? h + ":" + mm + ":" + ss : mm + ":" + ss;
 }
 
+
 function setStat(prefix) {
     ui.run(function () {
         w.tvStat.setText(prefix + " " + fmtDur(Date.now() - runStart)
-            + " " + dailyText() + " " + stat.wins + "胜" + stat.loses + "负");
+            + "\n" + dailyText() + "\n" + stat.wins + "胜" + stat.loses + "负");
     });
 }
 
@@ -138,12 +141,14 @@ function setStat(prefix) {
 
 var w = floaty.window(
     '<frame id="root" bg="#CC1E1E1E" padding="6">'
-    + '  <horizontal>'
-    + '    <button id="btnStart" text="开始" w="56" h="42" marginRight="4" textSize="13sp"/>'
-    + '    <button id="btnNav" text="导航" w="56" h="42" marginRight="4" textSize="13sp"/>'
-    + '    <button id="btnStop" text="停止" w="56" h="42" marginRight="6" textSize="13sp"/>'
-    + '    <text id="tvStat" text="待机" w="224" h="42" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
-    + '  </horizontal>'
+    + '  <vertical>'
+    + '    <horizontal>'
+    + '      <button id="btnStart" text="开始" w="60" h="42" marginRight="4" textSize="12sp"/>'
+    + '      <button id="btnNav" text="导航" w="60" h="42" marginRight="4" textSize="12sp"/>'
+    + '      <button id="btnStop" text="停止" w="60" h="42" textSize="12sp"/>'
+    + '    </horizontal>'
+    + '    <text id="tvStat" text="待机" w="192" h="132" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
+    + '  </vertical>'
     + '</frame>'
 );
 
@@ -178,6 +183,13 @@ var w = floaty.window(
 
 function loop() {
     var tpl = loadTemplates();
+    /* 弹窗 X 模板可选装载 (stall 逃生用; 缺文件不挡循环) */
+    if (tplX) { tplX.recycle(); tplX = null; }
+    if (tplM) { tplM.recycle(); tplM = null; }
+    try {
+        tplX = files.exists(TPL_DIR + "scene_x.png") ? images.read(TPL_DIR + "scene_x.png") : null;
+        tplM = files.exists(TPL_DIR + "modal_x.png") ? images.read(TPL_DIR + "modal_x.png") : null;
+    } catch (e) { tplX = tplM = null; }
     files.createWithDirs(SHOT_PATH);
     runStart = Date.now();
     stat.lastAct = Date.now();
@@ -259,7 +271,60 @@ function loop() {
         }
 
         if (Date.now() - stat.lastAct > STALL_SEC * 1000) {
-            log("[!!] " + STALL_SEC + "s 无识别 — 断线/非常规弹窗? 请人工查看");
+            /* stall 逃生 (pf_scene 同款思路): 弹窗X → 通用X → 三槽按钮, 都没有才告警;
+             * 连续 3 轮无解 → 重跑导航自愈 (断联回大厅/被丢到任意界面都能拉回来) */
+            var escaped = false;
+            var hitX = null, kindX = null;
+            if (tplX) {
+                hitX = images.findImage(work, tplX, { region: [600, 0, 560, 180], threshold: 0.8 });
+                kindX = "scene_x";
+            }
+            if (!hitX && tplM) {
+                hitX = images.findImage(work, tplM, { region: [480, 0, 480, 280], threshold: 0.9 });
+                kindX = "modal_x";
+            }
+            if (hitX) {
+                var tplHit = kindX === "scene_x" ? tplX : tplM;
+                shizuku("input tap "
+                    + Math.round((hitX.x + tplHit.getWidth() / 2) * scale) + " "
+                    + Math.round((hitX.y + tplHit.getHeight() / 2) * scale));
+                escaped = true;
+                log("[弹] stall 关弹窗 (" + kindX + ") → ("
+                    + Math.round(hitX.x + tplHit.getWidth() / 2) + ","
+                    + Math.round(hitX.y + tplHit.getHeight() / 2) + ")");
+            } else if (tpl) {
+                var rb = findAnySlot(work, tpl.btn_rematch);
+                var cb = rb ? null : findAnySlot(work, tpl.btn_continue);
+                var hb = rb || cb;
+                if (hb) {
+                    shizuku("input tap " + Math.round(hb.x * scale) + " " + Math.round(hb.y * scale));
+                    escaped = true;
+                    log("[弹] stall 点按钮 (" + (rb ? "REMATCH" : "CONTINUE") + ") → ("
+                        + Math.round(hb.x) + "," + Math.round(hb.y) + ")");
+                }
+            }
+            if (escaped) {
+                stat.stallRuns = 0;
+            } else {
+                stat.stallRuns = (stat.stallRuns || 0) + 1;
+                log("[!!] " + STALL_SEC + "s 无识别 (连续 " + stat.stallRuns + " 轮)"
+                    + (navBusy ? " — 自愈导航进行中" : " — 断线/非常规弹窗?"));
+                if (stat.stallRuns >= 3 && !navBusy) {
+                    navBusy = true;
+                    log("[救] 连续 3 轮无解 — 重跑导航自愈 (断联兜底)");
+                    try {
+                        if (!_pfNav) _pfNav = require("./pf_nav.js");
+                        var okNav = _pfNav.runNav(function (m) { log(m); },
+                            function () { return !running; });
+                        log(okNav ? "[救] 自愈导航完成, 回到王关继续循环"
+                            : "[救] 自愈导航未接棒 (停在安全点, 看日志)");
+                    } catch (e2) {
+                        log("[错] 自愈导航: " + e2);
+                    }
+                    navBusy = false;
+                    stat.stallRuns = 0;
+                }
+            }
             stat.lastAct = Date.now();
         }
 
@@ -268,6 +333,8 @@ function loop() {
         sleep(stat.phase === 0 ? BATTLE_MS : RESULT_MS);
     }
     for (var k in tpl) tpl[k].recycle();
+    if (tplX) { tplX.recycle(); tplX = null; }
+    if (tplM) { tplM.recycle(); tplM = null; }
 }
 
 function startBot() {

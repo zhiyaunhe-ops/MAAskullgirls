@@ -1,23 +1,25 @@
 /*
  * SGM 导航模块 — AutoJs6 版 (由 settle_bot.js 的「导航」按钮 require 调用, 不单独运行)
  *
- * 流程: 启动游戏 → 等大厅 (促销弹窗 X / 结算残局逃逸) → 点 EVENTS 菱形 → 轮播划到
- *       目标活动卡 (Pillow Talk, ev_target 模板命中居中卡才点) → 点 PLAY! (绝不点
- *       SKIP!) → 按 FIGHT_STEPS 标定 划轨/选最右战斗节点/点 PLAY 开打 → 战斗开场
+ * 流程: 启动游戏 → 等大厅 (促销弹窗X/通用弹窗X/结算残局逃逸) → 点 EVENTS 菱形 →
+ *       轮播划到目标活动卡 (Pillow Talk, ev_target 模板命中居中卡才点) → 点 PLAY! →
+ *       按 FIGHT_STEPS 地图右移×2 → 最右绿✓锚点定位王关 → 点 FIGHT! → 战斗开场
  *       AUTO+3x 自检 (同 pf_bot ensure_battle_auto) → 交棒 settle_bot 结算循环。
  *
  * 坐标基准 1280x576 (同 settle_bot: 帧缩放到高 576 再匹配, 点击按 scale 换算回实机)。
+ * PC(MuMu 720 基准)模板/坐标 → 手机: UI 尺寸 ×0.8 双轴 (2026-10-04 多尺度实测 0.98 分),
+ * 横向位置因宽高比不同不可靠, 只用宽 ROI + 真机实测坐标。
  *
- * 标定状态 (2026-10-03 改 Pillow Talk 目标链, 真机截图标定后启用):
+ * 标定状态 (2026-10-04 K70 真机走链标定):
  *   已标定  结算大字/三槽/右槽先手 (沿用 settle_bot 模板与 FIRST_TAP)
- *   待标定  hall_events / ev_play / ev_target 模板 (缺 → 导航自动转采集模式)
- *   待标定  FIGHT_STEPS (PLAY! 之后的 划轨/最右节点/PLAY, 真机截图后填)
- *   待标定  战斗开场脑子/速度泡坐标 (MuMu y*0.8 估算; 速度三模板没裁出来前不盲点)
+ *   已标定  hall_events / ev_play / ev_target (真机帧裁剪) + scene_x/modal_x (PC ×0.8 转换)
+ *   已标定  FIGHT_STEPS 王关链: 地图右移×2 + 绿✓锚点 + FIGHT! (真机走链验证可重复)
+ *   已标定  战斗开场脑子/速度泡 (真机战斗帧实测; 速度模板 1x/3x, 每场持久仅重启重置)
  *
  * 安全规则: 模板/坐标未标定的界面一律不盲点 — 宁可停在安全点等人, 防止误触
  *   SKIP!/购买/消耗资源的入口。
  *
- * 纯决策函数 (playAvailable/planSpeed/decideHallFrame/planCard/satOfArgb/vOfArgb)
+ * 纯决策函数 (playAvailable/decideHallFrame/planCard/planTargetCard/anchorHit/planAnchor)
  * 不碰 AutoJs6 全局, 可被 test_nav.js 在 Node 里单测; I/O 全在 run* 函数内。
  */
 
@@ -38,14 +40,13 @@ var HALL_TH = 0.72;
 var TITLE_TH = 0.72;
 var CONT_TH = 0.72;
 var X_TH = 0.8;
-var SPD_TH = 0.85;           // 速度泡三模板 (同 pf_bot)
 
 var FIRST_TAP = [903, 512];  // 右槽先手 (同 settle_bot): 胜=CONTINUE / 负=REMATCH
-var HOME_XY = [115, 30];     // 顶栏房子回大厅 (MuMu (115,37) y*0.8 估算, TODO 真机标定)
+var HOME_XY = [95, 32];      // 顶栏房子回大厅 (K70 真机 hub 实测 2026-10-04)
 
-/* EVENTS 居中卡区域 [x,y,w,h]: MuMu (475,120)-(805,700) → y*0.8, TODO 真机标定 */
+/* EVENTS 居中卡区域 [x,y,w,h]: K70 真机轮播实测, 居中卡 PLAY! 在内、相邻卡在外 */
 var CARD_ROI = [475, 96, 330, 464];
-/* 轮播左滑 (内容左移 = 翋下一张卡): MuMu swipe 900,400→560,400 → y*0.8 */
+/* 轮播左滑 (内容左移 = 翋下一张卡): K70 真机实测一步一卡 */
 var SWIPE_FROM = [900, 320];
 var SWIPE_TO = [560, 320];
 
@@ -57,23 +58,33 @@ var TARGET_TH = 0.75;        // 目标卡模板阈值 (误命中调高 / 划不�
 
 var PLAY_MIN_S = 80;         // PLAY 按钮饱和度均值下限: 彩色=可用 / 灰=禁用 (用户色彩规则)
 
-/* 战斗开场 AUTO/3x (MuMu y*0.8 估算, TODO 真机标定; 没裁出速度三模板前不会点击) */
-var BRAIN_BOX = [620, 536, 40, 32];  // 脑子图标 (MuMu 620,670-660,710)
+/* 战斗开场 AUTO/3x (K70 真机战斗帧标定 2026-10-04: 战斗 HUD 屏幕居中锚定)
+ * 脑子亮度判自动 (亮=已开); 速度泡模板判档位: 1x 点两下 / 3x 不动 / 读不到跳过。
+ * 速度只在程序重启后重置, 而重启必然走导航 → 只在此处 (和自愈导航) 判一次,
+ * 结算循环不再管速度 (用户拍板) */
+var BRAIN_BOX = [608, 536, 64, 36];  // 脑子图标 (V 均值判亮: 实测亮~108, pf_bot 灭~49)
 var BRAIN_XY = [640, 552];
-var BRAIN_ON_V = 75;                 // V 均值 ≥75 = 亮 (pf_bot 实测亮~101 灭~49)
-var SPD_ROI = [600, 452, 90, 64];    // 速度泡 (MuMu 600,565,690,645)
-var SPD_XY = [640, 484];             // 点一下升一档 (1x→2x→3x)
+var BRAIN_ON_V = 75;                 // V 均值 ≥75 = 亮
+var SPD_ROI = [580, 440, 120, 110];  // 速度泡区 (脑子上方; 模板 1x/3x, 0.95 区分档位)
+var SPD_TH = 0.95;
+var SPD_XY = [640, 482];             // 速度泡中心, 每点一档 1x→2x→3x
 
-/* PLAY! 之后到开打的步骤表 — Pillow Talk 链: 已选关卡 划轨/选最右战斗节点 → 点 PLAY 开打.
- * 默认空 = 停在安全点; 真机截图标定后填 (坐标 1280x576 基准), 示例:
- *   var FIGHT_STEPS = [
- *     { note: "节点轨划到最右", swipe: [900, 300, 560, 300] },
- *     { note: "选最右战斗节点", taps: [[1100, 300]] },
- *     { note: "PLAY 开打",     taps: [[640, 460]], waitMs: 2500 }
- *   ];
- * taps = 固定坐标点击 (标定过的才许填); tpl = 模板点击 (模板缺失直接中止, 不盲点);
- * swipe = 一次滑动 [x1,y1,x2,y2,ms?] */
-var FIGHT_STEPS = [];
+/* PLAY! 之后到开打的步骤表 — Pillow Talk 王关链 (2026-10-04 K70 真机走链标定,
+ * 重进+重放验证逐像素可重复):
+ *   地图右移×2 (到右边界钳位, 王关✓进入右半屏) → 绿✓锚点定位王关圆心 → FIGHT! */
+var FIGHT_STEPS = [
+    { note: "地图右移到右边界 (1/2)", swipe: [960, 288, 320, 288, 700], waitMs: 2200 },
+    { note: "地图右移到右边界 (2/2)", swipe: [960, 288, 320, 288, 700], waitMs: 2200 },
+    { note: "点王关 (最右绿✓锚点)",
+      anchor: { color: 0xFF7AC241, tol: 50, roi: [640, 40, 640, 500],
+                offset: [-72, 2], minTotal: 36, minCluster: 18, cell: 4 },
+      waitMs: 4000 },
+    { note: "FIGHT! 开打", taps: [[1175, 54]], waitMs: 2500 }
+];
+/* 步骤类型: taps=固定坐标点击; tpl=模板点击 (缺失即中止不盲点);
+ * swipe=一次滑动 [x1,y1,x2,y2,ms?]; anchor=颜色锚点定位点击 (大小/平移不敏感):
+ *   anchor.color 目标色 ARGB / tol 逐通道容差 / roi 网格扫描区 / cell 采样步距,
+ *   取「最靠右的 28px 簇」质心 + offset 落点; 找不到 → 中止不盲点。 */
 
 /* 采集模式: 每 CAP_MS 存一帧到 /sdcard/sgm_settle/nav/, 共 CAP_FRAMES 帧,
  * 期间手动把流程走一遍 (大厅→EVENTS→划到 Pillow Talk→PLAY→最右节点→PLAY→战斗开场) */
@@ -87,14 +98,16 @@ var WORK_H = 576;            // 同 settle_bot 模板基准高
 
 /* 大字/结算残局逃逸用的区域 (同 settle_bot 标定) */
 var ROI_TITLE = [400, 20, 480, 100];
-var X_ROI = [950, 24, 290, 144];     // 促销弹窗右上 X (MuMu 950,30,1240,180 → y*0.8)
+var X_ROI = [600, 0, 560, 180];      // 促销弹窗右上 X (PC ROI_SCENE_X ×0.8 后放宽, 容宽屏位移)
+var MODAL_ROI = [480, 0, 480, 280];  // 通用弹窗方 X (PC ROI_MODAL_X (700,0,1060,300) ×0.8 放宽)
+var MODAL_TH = 0.90;                 // popup_close_x 方 X 阈值 (PC 同款, 零误报口径)
 
 /* 结算逃逸链复用的 settle 模板 (与 settle_bot 同名同目录) */
 var NAV_TPL_SETTLE = ["victory", "defeat", "btn_continue"];
 var NAV_TPL_REQUIRED = ["hall_events", "ev_play"]
     .concat(TARGET_CARD ? [TARGET_CARD] : []).concat(NAV_TPL_SETTLE);
-var NAV_TPL_OPTIONAL = ["scene_x", "vs_fight",
-    "battle_spd_1x", "battle_spd_2x", "battle_spd_3x"];
+var NAV_TPL_OPTIONAL = ["scene_x", "modal_x", "vs_fight",
+    "battle_spd_1x", "battle_spd_3x"];
 
 /* ---------- 纯决策函数 (Node 可单测) ---------- */
 
@@ -114,22 +127,11 @@ function playAvailable(satMean) {
     return satMean >= PLAY_MIN_S;
 }
 
-/* 速度/脑子处置计划 (pf_bot ensure_battle_auto 的分支表):
- * allowTaps = 速度三模板已裁出 (坐标可信才允许点击), 否则只告警不动手 */
-function planSpeed(spd, brainOn, allowTaps) {
-    if (spd >= 3) return { taps: 0 };
-    if (spd === 0) {
-        if (!allowTaps) return { taps: 0, skip: "无速度模板, 不盲点脑子/速度泡" };
-        if (!brainOn) return { tapBrain: true, taps: 0 };
-        return { taps: 0, skip: "脑子亮但速度泡未识别, 跳过提速" };
-    }
-    return { taps: 3 - spd };
-}
-
-/* waitHall 单帧处置优先级 (同 pf_scene): 弹窗X → 结算大字先手 → CONTINUE
+/* waitHall 单帧处置优先级 (同 pf_scene): 促销X → 通用X → 结算大字先手 → CONTINUE
  * → 大厅(完成) → 偶尔回家 → 等待 */
 function decideHallFrame(f) {
     if (f.x) return { act: "tapX", xy: f.x };
+    if (f.modal) return { act: "tapModal", xy: f.modal };
     if (f.vic || f.def) return { act: "firstTap", xy: FIRST_TAP };
     if (f.cont) return { act: "tapContinue", xy: f.cont };
     if (f.hall) return { act: "hall", xy: f.hall };
@@ -158,6 +160,32 @@ function planTargetCard(find) {
     return { act: "swipe" };
 }
 
+/* 锚点色判定: 逐通道容差 (王关绿✓ 实测 ~(122,194,65), tol 50 连暗边 (72,169,0) 都拒) */
+function anchorHit(c, a) {
+    var r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+    var t = a.color, tol = a.tol || 50;
+    return Math.abs(r - ((t >> 16) & 255)) <= tol
+        && Math.abs(g - ((t >> 8) & 255)) <= tol
+        && Math.abs(b - (t & 255)) <= tol;
+}
+
+/* 颜色锚点聚合 (大小/平移不敏感的王关定位):
+ * pts = I/O 层网格采样命中的坐标; 取「最靠右的 band 簇」质心 + offset = 点击落点。
+ * 王关 = 地图最右的绿✓节点; 同屏更靠左的 ✓ (920/805) 不进簇。 */
+function planAnchor(pts, a) {
+    var minTotal = a.minTotal || 36, minCluster = a.minCluster || 18, band = a.band || 28;
+    if (pts.length < minTotal) return { act: "fail", why: "锚点色样本不足 (" + pts.length + ")" };
+    var xmax = -1, i;
+    for (i = 0; i < pts.length; i++) if (pts[i][0] > xmax) xmax = pts[i][0];
+    var cx = 0, cy = 0, n = 0;
+    for (i = 0; i < pts.length; i++) {
+        if (pts[i][0] > xmax - band) { cx += pts[i][0]; cy += pts[i][1]; n++; }
+    }
+    if (n < minCluster) return { act: "fail", why: "最右锚点簇太小 (" + n + ")" };
+    return { act: "tap", xy: [cx / n + (a.offset ? a.offset[0] : 0),
+                              cy / n + (a.offset ? a.offset[1] : 0)] };
+}
+
 /* ---------- I/O 层 (AutoJs6 + Shizuku) ---------- */
 
 var NAV_STOP = {};   // 哨兵: 用户按「停止」时抛出, run* 里静默收场
@@ -180,7 +208,7 @@ function missingRequired() {
     return miss;
 }
 
-/* 加载必需 + 存在的可选模板; 返回 {tpls, haveSpd} */
+/* 加载必需 + 存在的可选模板; 返回 {name: img} 字典 */
 function loadNavTemplates() {
     var tpls = {};
     var names = NAV_TPL_REQUIRED.concat(NAV_TPL_OPTIONAL);
@@ -197,8 +225,7 @@ function loadNavTemplates() {
             throw new Error("缺模板: " + NAV_TPL_REQUIRED[j] + ".png");
         }
     }
-    return { tpls: tpls, haveSpd: !!(tpls.battle_spd_1x && tpls.battle_spd_2x
-        && tpls.battle_spd_3x) };
+    return tpls;
 }
 
 /* 截屏并缩放到 576 基准; 返回 {work, frame, scale}, 用完 release() */
@@ -255,16 +282,6 @@ function sampleMean(img, box, fn) {
     return cnt ? total / cnt : 0;
 }
 
-function readSpeed(work, tpls) {
-    var order = [["battle_spd_3x", 3], ["battle_spd_2x", 2], ["battle_spd_1x", 1]];
-    for (var i = 0; i < order.length; i++) {
-        if (tpls[order[i][0]] && find(work, tpls[order[i][0]], SPD_ROI, SPD_TH)) {
-            return order[i][1];
-        }
-    }
-    return 0;
-}
-
 /* ---------- 各阶段 ---------- */
 
 /* 启动游戏并等到大厅, 返回 EVENTS 菱形中心 (work 坐标) */
@@ -280,6 +297,7 @@ function waitHall(logger, tpls, shouldStop) {
         var w = snap.work;
         var d = decideHallFrame({
             x: tpls.scene_x ? find(w, tpls.scene_x, X_ROI, X_TH) : null,
+            modal: tpls.modal_x ? find(w, tpls.modal_x, MODAL_ROI, MODAL_TH) : null,
             vic: find(w, tpls.victory, ROI_TITLE, TITLE_TH) !== null,
             def: find(w, tpls.defeat, ROI_TITLE, TITLE_TH) !== null,
             cont: find(w, tpls.btn_continue, null, CONT_TH),
@@ -292,11 +310,12 @@ function waitHall(logger, tpls, shouldStop) {
         release(snap);
         if (d.act === "hall") return d.xy;
         if (d.act === "tapX" || d.act === "tapContinue"
-            || d.act === "firstTap" || d.act === "home") {
+            || d.act === "firstTap" || d.act === "home" || d.act === "tapModal") {
             var s2 = snapWork();
             if (s2) {
                 if (d.act === "tapX") tapCenterWork(s2, d.xy, tpls.scene_x);
                 else if (d.act === "tapContinue") tapCenterWork(s2, d.xy, tpls.btn_continue);
+                else if (d.act === "tapModal") tapCenterWork(s2, d.xy, tpls.modal_x);
                 else tapWork(s2, d.xy);
                 release(s2);
             }
@@ -317,6 +336,7 @@ function gotoEvents(logger, tpls, hallBox, shouldStop) {
     var gone = 0, tapped = 0;
     while (Date.now() - t0 < HUB_TIMEOUT * 1000) {
         chkStop(shouldStop);
+        if (dismissPopups(logger, tpls)) { sleep(TAP_WAIT_MS); continue; }
         var snap = snapWork();
         if (!snap) { sleep(800); continue; }
         var play = find(snap.work, tpls.ev_play, CARD_ROI, EV_PLAY_TH);
@@ -344,6 +364,7 @@ function pickAndPlay(logger, tpls, shouldStop) {
     var swipes = 0;
     while (true) {
         chkStop(shouldStop);
+        if (dismissPopups(logger, tpls)) { sleep(TAP_WAIT_MS); continue; }
         var snap = snapWork();
         if (!snap) { sleep(800); continue; }
         var play = find(snap.work, tpls.ev_play, CARD_ROI, EV_PLAY_TH);
@@ -392,6 +413,28 @@ function swipeLeft() {
     release(s);
 }
 
+/* 关弹窗 (尽力一轮): 促销右上 X → 通用方 X, 命中就点。pf_scene 弹窗优先同款。
+ * 返回是否点过 (调用方自行决定要不要再扫)。 */
+function dismissPopups(logger, tpls) {
+    var s = snapWork();
+    if (!s) return false;
+    var hit = null, kind = null;
+    if (tpls.scene_x) {
+        hit = find(s.work, tpls.scene_x, X_ROI, X_TH);
+        kind = "scene_x";
+    }
+    if (!hit && tpls.modal_x) {
+        hit = find(s.work, tpls.modal_x, MODAL_ROI, MODAL_TH);
+        kind = "modal_x";
+    }
+    if (hit) {
+        tapCenterWork(s, hit, kind === "scene_x" ? tpls.scene_x : tpls.modal_x);
+        logger("[航] 关弹窗 (" + kind + ") → (" + hit[0] + "," + hit[1] + ")");
+    }
+    release(s);
+    return !!hit;
+}
+
 /* PLAY! 之后按标定表走 划轨/选节点/点 PLAY; 空表 = 停在安全点 */
 function runFightSteps(logger, tpls, shouldStop) {
     if (!FIGHT_STEPS.length) {
@@ -403,6 +446,7 @@ function runFightSteps(logger, tpls, shouldStop) {
         chkStop(shouldStop);
         var step = FIGHT_STEPS[i];
         logger("[航] 步骤 " + (i + 1) + "/" + FIGHT_STEPS.length + ": " + (step.note || "(未命名)"));
+        if (dismissPopups(logger, tpls)) sleep(TAP_WAIT_MS);
         if (step.tpl) {
             if (!tpls[step.tpl]) {
                 throw new Error("FIGHT_STEPS 第 " + (i + 1) + " 步要模板 " + step.tpl
@@ -421,6 +465,32 @@ function runFightSteps(logger, tpls, shouldStop) {
             if (!hit) throw new Error("第 " + (i + 1) + " 步模板 " + step.tpl + " 10s 未出现 — 界面与预期不符");
             var s2 = snapWork();
             if (s2) { tapCenterWork(s2, hit, tpls[step.tpl]); release(s2); }
+        } else if (step.anchor) {
+            var a = step.anchor, hitA = null;
+            for (var rr = 0; rr < 3 && !hitA; rr++) {
+                chkStop(shouldStop);
+                var sa = snapWork();
+                if (sa) {
+                    var pts = [];
+                    for (var gy = 2; gy < a.roi[3] - 2; gy += (a.cell || 4)) {
+                        for (var gx = 2; gx < a.roi[2] - 2; gx += (a.cell || 4)) {
+                            if (anchorHit(images.pixel(sa.work, a.roi[0] + gx, a.roi[1] + gy), a)) {
+                                pts.push([a.roi[0] + gx, a.roi[1] + gy]);
+                            }
+                        }
+                    }
+                    release(sa);
+                    var da = planAnchor(pts, a);
+                    if (da.act === "tap") hitA = da.xy;
+                    else logger("[航] 锚点未命中: " + da.why);
+                }
+                if (!hitA) sleep(2000);
+            }
+            if (!hitA) throw new Error("锚点步「" + (step.note || "")
+                + "」未找到目标色团 — 不盲点, 已中止");
+            var s5 = snapWork();
+            if (s5) { tapWork(s5, hitA); release(s5); }
+            logger("[航] 锚点命中 → (" + Math.round(hitA[0]) + "," + Math.round(hitA[1]) + ")");
         } else {
             if (step.swipe) {
                 var s4 = snapWork();
@@ -443,56 +513,62 @@ function runFightSteps(logger, tpls, shouldStop) {
     return true;
 }
 
-/* 战斗开场 AUTO+3x 自检 (pf_bot ensure_battle_auto 同款):
- * 开场介绍 ~2.5s 人物不动是安全窗口; 速度三模板没裁出来前只读不点 */
+/* 速度档位处置: 1x 点两下 / 2x 点一下 / 3x 不动 / 读不到跳过 (下一场导航再判) */
+function planSpeed(spd) {
+    if (spd === 3) return { taps: 0 };
+    if (spd === 2) return { taps: 1 };
+    if (spd === 1) return { taps: 2 };
+    return { taps: 0, skip: "速度泡未识别, 跳过提速" };
+}
+
+/* 战斗开场 AUTO+3x (pf_bot ensure_battle_auto 同款时机):
+ * 开场介绍 ~2.5s 人物不动是安全窗口。脑子亮度判自动; 速度泡模板判档位
+ * (1x=点两下 / 3x=不动 / 读不到=跳过)。速度仅程序重启后重置, 重启必走导航,
+ * 所以只在此处判一次。缺 1x/3x 模板 → 只判脑子不动速度 */
 function ensureBattleAuto(logger, tpls, shouldStop) {
     sleep(1800);
     chkStop(shouldStop);
     var snap = snapWork();
     if (!snap) { logger("[航] 战斗开场截屏失败, 跳过 AUTO/3x 检查"); return; }
-    var spd = readSpeed(snap.work, tpls);
     var brainOn = sampleMean(snap.work, BRAIN_BOX, vOfArgb) >= BRAIN_ON_V;
     release(snap);
-    var plan = planSpeed(spd, brainOn, tplCtx.haveSpd);
-    if (plan.tapBrain) {
+    if (!brainOn) {
         logger("[航] 自动战斗未开, 点脑子 (" + BRAIN_XY + ")");
         var s1 = snapWork();
         if (s1) { tapWork(s1, BRAIN_XY); release(s1); }
         sleep(600);
+    }
+    var spd = 0;
+    if (tpls.battle_spd_1x && tpls.battle_spd_3x) {
         snap = snapWork();
         if (snap) {
-            spd = readSpeed(snap.work, tpls);
-            brainOn = sampleMean(snap.work, BRAIN_BOX, vOfArgb) >= BRAIN_ON_V;
+            var order = [["battle_spd_3x", 3], ["battle_spd_1x", 1]];
+            for (var i = 0; i < order.length && !spd; i++) {
+                if (find(snap.work, tpls[order[i][0]], SPD_ROI, SPD_TH)) spd = order[i][1];
+            }
             release(snap);
         }
-        plan = planSpeed(spd, brainOn, tplCtx.haveSpd);
-    }
-    if (plan.skip) { logger("[航] " + plan.skip); return; }
-    for (var i = 0; i < plan.taps; i++) {
-        var s2 = snapWork();
-        if (s2) { tapWork(s2, SPD_XY); release(s2); }
-        sleep(450);
-    }
-    if (tplCtx.haveSpd) {
-        snap = snapWork();
-        if (snap) {
-            var spd2 = readSpeed(snap.work, tpls);
-            release(snap);
-            logger(spd2 === 3 ? "[航] 速度校验: 3x"
-                : "[!!] 速度校验: " + (spd2 || "未识别") + "x, 请留意");
+        var plan = planSpeed(spd);
+        for (var t = 0; t < plan.taps; t++) {
+            chkStop(shouldStop);
+            var s2 = snapWork();
+            if (s2) { tapWork(s2, SPD_XY); release(s2); }
+            sleep(450);
         }
+        logger("[航] 速度校验: " + (spd || "未识别") + "x → 点 " + plan.taps + " 下"
+            + (plan.skip ? " (" + plan.skip + ")" : ""));
+    } else {
+        logger("[航] 缺 battle_spd_1x/3x 模板 — 只判脑子, 不动速度");
     }
-    logger("[航] 战斗已开始 (脑子" + (brainOn ? "亮" : "?") + ", 速度 " + spd + "x)");
+    logger("[航] 战斗已开始 (脑子" + (brainOn ? "亮, 自动已开" : "已点开") + ")");
 }
 
 /* ---------- 入口 ---------- */
 
-var tplCtx = { haveSpd: false };
-
 /* 采集模式: 手动走一遍流程, 每 CAP_MS 存一帧, 供电脑端裁模板/标坐标 */
 function runCapture(logger, shouldStop) {
     files.createWithDirs(CAP_DIR + "cap_000.png");
-    logger("[采] 采集开始: 请现在手动走一遍 大厅→EVENTS→划到 Pillow Talk→PLAY!→最右节点→PLAY→战斗开场");
+    logger("[采] 采集开始: 请现在手动走一遍 大厅→EVENTS→划到 Pillow Talk→PLAY!→地图右移→王关→FIGHT→战斗开场");
     for (var i = 0; i < CAP_FRAMES; i++) {
         chkStop(shouldStop);
         shizuku("screencap -p " + NAV_SHOT);
@@ -519,9 +595,7 @@ function runNav(logger, shouldStop) {
                 + " — 自动转采集模式 (手动走一遍流程, 再裁模板)");
             return runCapture(logger, shouldStop);
         }
-        var ctx = loadNavTemplates();
-        tplCtx.haveSpd = ctx.haveSpd;
-        var tpls = ctx.tpls;
+        var tpls = loadNavTemplates();
 
         var appOk = false;
         try { appOk = app.launchPackage(GAME_PKG); } catch (e) { appOk = false; }
@@ -554,13 +628,16 @@ if (typeof module !== "undefined" && module.exports) {
         decideHallFrame: decideHallFrame,
         planCard: planCard,
         planTargetCard: planTargetCard,
+        anchorHit: anchorHit,
+        planAnchor: planAnchor,
         satOfArgb: satOfArgb,
         vOfArgb: vOfArgb,
         config: {
             PLAY_MIN_S: PLAY_MIN_S, MAX_SWIPES: MAX_SWIPES,
             FIRST_TAP: FIRST_TAP, CARD_ROI: CARD_ROI,
             BRAIN_ON_V: BRAIN_ON_V, FIGHT_STEPS: FIGHT_STEPS,
-            TARGET_CARD: TARGET_CARD, TARGET_TH: TARGET_TH
+            TARGET_CARD: TARGET_CARD, TARGET_TH: TARGET_TH,
+            HOME_XY: HOME_XY
         }
     };
 }
