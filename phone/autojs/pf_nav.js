@@ -30,8 +30,8 @@ var GAME_PKG = "com.autumn.skullgirls";
 var POLL_MS = 1200;          // 大厅/进入等待轮询间隔
 var TAP_WAIT_MS = 1500;      // 一般点击后的过场等待
 var SWIPE_WAIT_MS = 1800;    // 轮播翻卡等待 (吸附回弹)
-var LAUNCH_TIMEOUT = 150;    // 冷启动到大厅秒数 (含 CONNECTING, 同 pf_scene)
-var HUB_TIMEOUT = 40;        // 点 EVENTS 到进入活动轮播的秒数
+var LAUNCH_TIMEOUT = 300;    // 冷启动/断联重连到大厅秒数 — 5min, 服务器错误/慢加载等它自己恢复
+var HUB_TIMEOUT = 120;       // 点 EVENTS 到进入活动轮播的秒数 (2min, 网络差也等)
 var MAX_SWIPES = 18;         // 活动轮播最多翻卡数 (卡 20+ 张, 防死转)
 var SWIPE_MS = 600;          // input swipe 时长; 340px 大步防一次跳 2 卡 (pf_scene 实测)
 
@@ -40,9 +40,11 @@ var HALL_TH = 0.72;
 var TITLE_TH = 0.72;
 var CONT_TH = 0.72;
 var X_TH = 0.8;
+var SRV_TH = 0.75;           // 服务器错误弹窗 RETRY 按钮 (绿, 真机截图裁剪)
 
 var FIRST_TAP = [903, 512];  // 右槽先手 (同 settle_bot): 胜=CONTINUE / 负=REMATCH
-var HOME_XY = [95, 32];      // 顶栏房子回大厅 (K70 真机 hub 实测 2026-10-04)
+var HOME_XY = [95, 32];      // 顶栏房子回大厅 (轮播页实测; 地图页在 ~72,27 —
+var HOME_ROI = [0, 0, 180, 70];  // 优先 home.png 模板定位, 模板缺失才退固定坐标)
 
 /* EVENTS 居中卡区域 [x,y,w,h]: K70 真机轮播实测, 居中卡 PLAY! 在内、相邻卡在外 */
 var CARD_ROI = [475, 96, 330, 464];
@@ -106,7 +108,7 @@ var MODAL_TH = 0.90;                 // popup_close_x 方 X 阈值 (PC 同款, �
 var NAV_TPL_SETTLE = ["victory", "defeat", "btn_continue"];
 var NAV_TPL_REQUIRED = ["hall_events", "ev_play"]
     .concat(TARGET_CARD ? [TARGET_CARD] : []).concat(NAV_TPL_SETTLE);
-var NAV_TPL_OPTIONAL = ["scene_x", "modal_x", "vs_fight",
+var NAV_TPL_OPTIONAL = ["scene_x", "modal_x", "srv_retry", "home", "vs_fight",
     "battle_spd_1x", "battle_spd_3x"];
 
 /* ---------- 纯决策函数 (Node 可单测) ---------- */
@@ -127,9 +129,10 @@ function playAvailable(satMean) {
     return satMean >= PLAY_MIN_S;
 }
 
-/* waitHall 单帧处置优先级 (同 pf_scene): 促销X → 通用X → 结算大字先手 → CONTINUE
- * → 大厅(完成) → 偶尔回家 → 等待 */
+/* waitHall 单帧处置优先级 (同 pf_scene): 服务器错误RETRY → 促销X → 通用X
+ * → 结算大字先手 → CONTINUE → 大厅(完成) → 偶尔回家 → 等待 */
 function decideHallFrame(f) {
+    if (f.srv) return { act: "tapSrv", xy: f.srv };
     if (f.x) return { act: "tapX", xy: f.x };
     if (f.modal) return { act: "tapModal", xy: f.modal };
     if (f.vic || f.def) return { act: "firstTap", xy: FIRST_TAP };
@@ -296,6 +299,7 @@ function waitHall(logger, tpls, shouldStop) {
         if (!snap) { sleep(800); continue; }
         var w = snap.work;
         var d = decideHallFrame({
+            srv: tpls.srv_retry ? find(w, tpls.srv_retry, null, SRV_TH) : null,
             x: tpls.scene_x ? find(w, tpls.scene_x, X_ROI, X_TH) : null,
             modal: tpls.modal_x ? find(w, tpls.modal_x, MODAL_ROI, MODAL_TH) : null,
             vic: find(w, tpls.victory, ROI_TITLE, TITLE_TH) !== null,
@@ -309,17 +313,34 @@ function waitHall(logger, tpls, shouldStop) {
         }
         release(snap);
         if (d.act === "hall") return d.xy;
+        if (d.act === "home") {
+            /* 房子按钮在轮播页/地图页位置不同 — 有 home 模板就按模板找 */
+            var sh = snapWork();
+            var hxy = HOME_XY;
+            if (sh) {
+                var hh = tpls.home ? find(sh.work, tpls.home, HOME_ROI, 0.8) : null;
+                if (hh) hxy = [hh[0] + tpls.home.getWidth() / 2, hh[1] + tpls.home.getHeight() / 2];
+                release(sh);
+            }
+            var s3 = snapWork();
+            if (s3) { tapWork(s3, hxy); release(s3); }
+            if (tpls.home) logger("[航] 回家 → (" + Math.round(hxy[0]) + "," + Math.round(hxy[1]) + ")");
+            homeTries++;
+            sleep(TAP_WAIT_MS);
+            continue;
+        }
         if (d.act === "tapX" || d.act === "tapContinue"
-            || d.act === "firstTap" || d.act === "home" || d.act === "tapModal") {
+            || d.act === "firstTap" || d.act === "tapModal"
+            || d.act === "tapSrv") {
             var s2 = snapWork();
             if (s2) {
                 if (d.act === "tapX") tapCenterWork(s2, d.xy, tpls.scene_x);
                 else if (d.act === "tapContinue") tapCenterWork(s2, d.xy, tpls.btn_continue);
                 else if (d.act === "tapModal") tapCenterWork(s2, d.xy, tpls.modal_x);
+                else if (d.act === "tapSrv") tapCenterWork(s2, d.xy, tpls.srv_retry);
                 else tapWork(s2, d.xy);
                 release(s2);
             }
-            if (d.act === "home") homeTries++;
             sleep(d.act === "tapContinue" || d.act === "firstTap" ? 2500 : TAP_WAIT_MS);
             continue;
         }
@@ -419,7 +440,11 @@ function dismissPopups(logger, tpls) {
     var s = snapWork();
     if (!s) return false;
     var hit = null, kind = null;
-    if (tpls.scene_x) {
+    if (tpls.srv_retry) {
+        hit = find(s.work, tpls.srv_retry, null, SRV_TH);
+        kind = "srv_retry";
+    }
+    if (!hit && tpls.scene_x) {
         hit = find(s.work, tpls.scene_x, X_ROI, X_TH);
         kind = "scene_x";
     }

@@ -51,9 +51,9 @@ var TPL_NAMES = ["victory", "defeat", "btn_rematch", "btn_continue"];
 var running = false;
 var worker = null;
 var runStart = 0;
-var tplX = null, tplM = null;   // 弹窗 X 模板 (loop 装载, stall 逃生用)
+var tplX = null, tplM = null, tplS = null;   // 弹窗 X / 服务器错误模板 (loop 装载, stall 逃生用)
 var stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0 };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true };
 
 /* ---------- 今日场次 (数据层 pf_store.js, 这里注入手机 files 作存储后端) ---------- */
 
@@ -87,6 +87,20 @@ function dailyCount(win) {
 function dailyCapHit() {
     var lib = pfStoreLib();
     return !!(lib && lib.capReached(daily, DAILY_CAP));
+}
+
+/* 一局完成计数 (只在点 REMATCH/败局先手时调, 每局恰一次);
+ * 到上限不再点任何按钮, 留在结算页 (安全) */
+function countRound(win) {
+    dailyCount(win);
+    if (win) stat.wins++; else stat.loses++;
+    log("[计] 今日第 " + daily.rounds + " 场 (" + (win ? "胜" : "负") + ") 本次 "
+        + stat.wins + "胜" + stat.loses + "负");
+    if (dailyCapHit()) {
+        log("[停] " + dailyText() + " 已达每日上限 — 停止 (改 settle_bot.js 顶部 DAILY_CAP 调整)");
+        toast("今日上限 " + DAILY_CAP + " 场已到, 自动停止");
+        running = false;
+    }
 }
 function dailyText() {
     return "今日" + daily.rounds + (DAILY_CAP > 0 ? "/" + DAILY_CAP : "") + "场";
@@ -186,10 +200,12 @@ function loop() {
     /* 弹窗 X 模板可选装载 (stall 逃生用; 缺文件不挡循环) */
     if (tplX) { tplX.recycle(); tplX = null; }
     if (tplM) { tplM.recycle(); tplM = null; }
+    if (tplS) { tplS.recycle(); tplS = null; }
     try {
         tplX = files.exists(TPL_DIR + "scene_x.png") ? images.read(TPL_DIR + "scene_x.png") : null;
         tplM = files.exists(TPL_DIR + "modal_x.png") ? images.read(TPL_DIR + "modal_x.png") : null;
-    } catch (e) { tplX = tplM = null; }
+        tplS = files.exists(TPL_DIR + "srv_retry.png") ? images.read(TPL_DIR + "srv_retry.png") : null;
+    } catch (e) { tplX = tplM = tplS = null; }
     files.createWithDirs(SHOT_PATH);
     runStart = Date.now();
     stat.lastAct = Date.now();
@@ -213,19 +229,14 @@ function loop() {
             if (!vic && !def) {
                 stat.seen = false;                      // 无大字 = 战斗/过场, 允许下一场再计
             } else if (!stat.seen) {
+                /* 大字只更新上局胜负归属, 不在此计场 — 结算页两页都有 VICTORY 横幅,
+                 * 过场动画会重置 seen 造成重复计数 (2026-10-05 实测虚高 20 倍);
+                 * 计场统一挪到点 REMATCH / 败局先手那一刻 (一局只点一次) */
                 stat.seen = true;
                 stat.phase = 1;
                 stat.noHitRun = 0;
-                dailyCount(!!vic);
-                if (vic) { stat.wins++; log("[场] VICTORY (共 " + stat.wins + " 胜 " + stat.loses + " 负)"); }
-                else { stat.loses++; log("[场] DEFEAT (共 " + stat.wins + " 胜 " + stat.loses + " 负)"); }
-
-                if (dailyCapHit()) {
-                    log("[停] " + dailyText() + " 已达每日上限 — 停止, 留在结算页 (改 settle_bot.js 顶部 DAILY_CAP 调整)");
-                    toast("今日上限 " + DAILY_CAP + " 场已到, 自动停止");
-                    running = false;                 // 不再点任何按钮 (安全), 线程 finally 收尾
-                    break;
-                }
+                stat.lastVic = !!vic;
+                log("[场] " + (vic ? "VICTORY" : "DEFEAT"));
 
                 /* 先手点右槽固定位置, 免按钮匹配:
                    胜局该格是 CONTINUE (略过结算) / 败局该格是 REMATCH (直接再战) */
@@ -234,6 +245,7 @@ function loop() {
                 stat.lastAct = Date.now();
                 log("[动] 先手 (" + (vic ? "CONTINUE" : "REMATCH") + ") → (" + px + "," + py + ")");
                 setStat("运行");
+                if (!vic) countRound(false);     // 败局先手 = REMATCH 直接再战, 一局完成
                 sleep(TAP_DELAY_MS);
             }
         } else {
@@ -246,6 +258,7 @@ function loop() {
                 stat.lastAct = Date.now();
                 stat.noHitRun = 0;
                 stat.phase = 0;                          // REMATCH = 下一场开始, 回大字检测
+                countRound(stat.lastVic);                // 一局完成, 在此计场 (每局恰一次)
                 log("[动] REMATCH (第 " + stat.rematches + " 场) → (" + px2 + "," + py2 + ")");
                 setStat("运行");
                 sleep(TAP_DELAY_MS);
@@ -275,7 +288,11 @@ function loop() {
              * 连续 3 轮无解 → 重跑导航自愈 (断联回大厅/被丢到任意界面都能拉回来) */
             var escaped = false;
             var hitX = null, kindX = null;
-            if (tplX) {
+            if (tplS) {
+                hitX = images.findImage(work, tplS, { threshold: 0.75 });
+                kindX = "srv_retry";
+            }
+            if (!hitX && tplX) {
                 hitX = images.findImage(work, tplX, { region: [600, 0, 560, 180], threshold: 0.8 });
                 kindX = "scene_x";
             }
@@ -284,7 +301,8 @@ function loop() {
                 kindX = "modal_x";
             }
             if (hitX) {
-                var tplHit = kindX === "scene_x" ? tplX : tplM;
+                var tplHit = kindX === "scene_x" ? tplX
+                    : (kindX === "modal_x" ? tplM : tplS);
                 shizuku("input tap "
                     + Math.round((hitX.x + tplHit.getWidth() / 2) * scale) + " "
                     + Math.round((hitX.y + tplHit.getHeight() / 2) * scale));
@@ -335,6 +353,7 @@ function loop() {
     for (var k in tpl) tpl[k].recycle();
     if (tplX) { tplX.recycle(); tplX = null; }
     if (tplM) { tplM.recycle(); tplM = null; }
+    if (tplS) { tplS.recycle(); tplS = null; }
 }
 
 function startBot() {
@@ -350,7 +369,7 @@ function startBot() {
     }
     running = true;
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0 };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true };
     worker = threads.start(function () {
         try {
             loop();
@@ -394,7 +413,7 @@ function startNav() {
     running = true;
     runStart = Date.now();
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0 };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true };
     setStat("导航");
     worker = threads.start(function () {
         try {
