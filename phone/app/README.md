@@ -9,6 +9,23 @@
 apksigner + android-34 platform，**无 Gradle / 无 Android Studio**，`build.sh` 一键出签名 APK。
 本项目沿用（Java 而非 Kotlin，minSdk 21 / targetSdk 34 同款）。
 
+## 四条设计原则 (2026-10-05 用户拍板)
+
+1. **可配置** — 引擎零硬编码: 全部阈值/ROI/坐标/链路步骤在 `config.json`
+   (assets 内置默认 → `/sdcard/sgm_settle/config.json` 覆盖, adb push 即改即生效,
+   无需重装 APK)。FIGHT_STEPS 的 taps/tpl/swipe/anchor 四种步骤类型即数据协议。
+2. **可拓展** — 链路即数据: 导航链/战斗链/逃生链都是 config 里的步骤表, 新活动
+   = 新配置文件 (新模板 + 新坐标), 引擎不改; Vision 匹配器按 `matcher` 字段分发,
+   可加 OCR/新锚点类型。
+3. **可更新** — APK 只装引擎; `bundle/` (templates + config + characters.json)
+   走版本化更新: App 内检查 GitHub raw / TailShare 拉新包 → 校验 → 热加载。
+   模板重裁不用发版。
+4. **adb 可调试** — 三通道控制面:
+   - 文件: `/sdcard/sgm_settle/logs/app.log` (轮转) + `state.json` (当前状态机/计数);
+   - 广播: `adb shell am broadcast -a com.zhiyaunhe.sgmbot.CMD -e action start_nav|stop|reload`;
+   - HTTP: 本地调试服务 (127.0.0.1:8791, `adb forward tcp:8791 tcp:8791` 后 PC 可
+     GET /status /screencap, POST /reload /trigger) — PC 侧可完全接管调试。
+
 ## 架构
 
 ```
@@ -23,6 +40,10 @@ phone/app/
     ├── NavChain.java         # 移植 pf_nav: waitHall→EVENTS→目标卡→王关锚点→FIGHT→AUTO/3x
     ├── SettleLoop.java       # 移植 settle_bot: 两阶段状态机 + stall 逃生 + 自愈导航
     ├── OverlayBar.java       # 悬浮控制条 (WindowManager TYPE_APPLICATION_OVERLAY)
+    ├── Config.java           # config.json 装载/热重载 (assets 默认 + /sdcard 覆盖)
+    ├── DebugHttp.java        # 本地调试服务 (状态/截屏/重载/触发; adb forward 用)
+    ├── CtlReceiver.java      # 广播控制入口 (start_nav/stop/reload)
+    ├── BundleUpdater.java    # bundle 版本检查/拉取/校验/热加载 (GitHub raw / TailShare)
     ├── Store.java            # 今日场次 (对齐 pf_store: 日历天滚动/DAILY_CAP)
     ├── CharacterData.java    # 角色资料库: assets/characters.json, GitHub raw 拉取更新
     ├── RosterScan.java       # 扫仓库: 橱柜逐屏截图 → 头像模板/名字 OCR → owned 表
