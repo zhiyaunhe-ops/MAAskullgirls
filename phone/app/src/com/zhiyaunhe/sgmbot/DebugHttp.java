@@ -67,7 +67,7 @@ public final class DebugHttp {
             } else if (path.startsWith("/screencap")) {
                 Bitmap b = BotService.sh() != null ? BotService.sh().capture() : null;
                 if (b == null) {
-                    reply(s, "capt fail");
+                    body = "capt fail";
                 } else {
                     Bitmap w = Bitmap.createScaledBitmap(b,
                             Math.round(b.getWidth() * 576f / b.getHeight()), 576, true);
