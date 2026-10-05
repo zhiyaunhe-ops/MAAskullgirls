@@ -4,6 +4,8 @@ vendor/
 
 # 本机参数 (adb 路径/端口), 不随仓库分发
 config.json
+# phone/app/assets/config.json = App 默认阈值/链路配置 (无凭据, 与上面 PC config.json 无关)
+!phone/app/assets/config.json
 
 # 一次性迁移脚本
 tools/_patch_git.py

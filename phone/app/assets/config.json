@@ -1,0 +1,108 @@
+{
+ "thresholds": {
+  "min_sim": 0.72,
+  "ev_play": 0.78,
+  "target": 0.75,
+  "spd": 0.95,
+  "x": 0.8,
+  "modal": 0.9,
+  "srv": 0.75,
+  "hall": 0.72
+ },
+ "timing": {
+  "battle_ms": 800,
+  "result_ms": 350,
+  "tap_delay_ms": 1200,
+  "stall_sec": 30,
+  "launch_timeout_s": 300,
+  "hub_timeout_s": 120
+ },
+ "daily_cap": 0,
+ "target_card": "ev_target",
+ "max_swipes": 18,
+ "home_roi": [
+  0,
+  0,
+  180,
+  70
+ ],
+ "boss_anchor": {
+  "color": "#FF7AC241",
+  "tol": 50,
+  "roi": [
+   640,
+   40,
+   640,
+   500
+  ],
+  "offset": [
+   -72,
+   2
+  ],
+  "band": 28
+ },
+ "map_pan": {
+  "swipe": [
+   960,
+   288,
+   320,
+   288,
+   700
+  ],
+  "times": 2,
+  "wait_ms": 2200
+ },
+ "vs_fight_xy": [
+  1175,
+  54
+ ],
+ "brain": {
+  "box": [
+   608,
+   536,
+   64,
+   36
+  ],
+  "xy": [
+   640,
+   552
+  ],
+  "on_v": 75
+ },
+ "spd": {
+  "roi": [
+   580,
+   440,
+   120,
+   110
+  ],
+  "xy": [
+   640,
+   482
+  ]
+ },
+ "first_tap": [
+  903,
+  512
+ ],
+ "btn_rois": [
+  [
+   265,
+   478,
+   220,
+   68
+  ],
+  [
+   530,
+   478,
+   220,
+   68
+  ],
+  [
+   793,
+   478,
+   220,
+   68
+  ]
+ ]
+}

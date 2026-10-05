@@ -51,11 +51,13 @@ var TPL_NAMES = ["victory", "defeat", "btn_rematch", "btn_continue"];
 var running = false;
 var worker = null;
 var runStart = 0;
+var mode = "";                                // "nav"=导航接棒中 / "loop"=结算循环 (小状态用)
+var folded = false;                           // 面板是否已折成小箭头
 var tplX = null, tplM = null, tplS = null;   // 弹窗 X / 服务器错误模板 (loop 装载, stall 逃生用)
 var navBusy = false;                          // 自愈导航进行中 (stall 连发时防重复触发)
 var _pfNav;                                   // 惰性 require: 缺 pf_nav.js 只跳过自愈, 不挡循环
 var stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0 };
 
 /* ---------- 今日场次 (数据层 pf_store.js, 这里注入手机 files 作存储后端) ---------- */
 
@@ -95,6 +97,7 @@ function dailyCapHit() {
  * 到上限不再点任何按钮, 留在结算页 (安全) */
 function countRound(win) {
     dailyCount(win);
+    stat.rounds = (stat.rounds || 0) + 1;
     if (win) stat.wins++; else stat.loses++;
     log("[计] 今日第 " + daily.rounds + " 场 (" + (win ? "胜" : "负") + ") 本次 "
         + stat.wins + "胜" + stat.loses + "负");
@@ -146,26 +149,42 @@ function fmtDur(ms) {
 }
 
 
+var statPrefix = "待机";
 function setStat(prefix) {
-    ui.run(function () {
-        w.tvStat.setText(prefix + " " + fmtDur(Date.now() - runStart)
-            + "\n" + dailyText() + "\n" + stat.wins + "胜" + stat.loses + "负");
-    });
+    statPrefix = prefix;
+    ui.run(function () { w.tvStat.setText(statText()); });
+}
+/* 面板全文: 前缀 时长 · 小状态 / 今日 / 本次+每分钟场次 / 胜负。
+ * 保活定时器每 5s 重算一次, 时长与场/分随时走动 */
+function statText() {
+    var phase = "";
+    if (running) {
+        phase = " · " + (mode === "nav" ? "导航中" : navBusy ? "自愈中"
+            : stat.phase === 1 ? "结算页" : "战斗监测");
+    }
+    var min = runStart ? (Date.now() - runStart) / 60000 : 0;
+    var rpm = min > 0.5 ? (stat.rounds / min).toFixed(1) : "0.0";
+    return statPrefix + " " + fmtDur(runStart ? Date.now() - runStart : 0) + phase
+        + "\n" + dailyText()
+        + "\n本次 " + stat.rounds + " 场 · " + rpm + " 场/分"
+        + "\n" + stat.wins + "胜" + stat.loses + "负";
 }
 
 /* ---------- 悬浮窗 ---------- */
 
 var w = floaty.window(
     '<frame id="root" bg="#CC1E1E1E" padding="6">'
-    + '  <vertical>'
+    + '  <vertical id="panel">'
     + '    <horizontal>'
     + '      <button id="btnStart" text="开始" w="60" h="42" marginRight="4" textSize="12sp"/>'
     + '      <button id="btnNav" text="导航" w="60" h="42" marginRight="4" textSize="12sp"/>'
     + '      <button id="btnStop" text="停止" w="60" h="42" marginRight="4" textSize="12sp"/>'
-    + '      <button id="btnEnd" text="结束" w="60" h="42" textSize="12sp"/>'
+    + '      <button id="btnEnd" text="结束" w="60" h="42" marginRight="4" textSize="12sp"/>'
+    + '      <button id="btnFold" text="收" w="40" h="42" textSize="12sp"/>'
     + '    </horizontal>'
-    + '    <text id="tvStat" text="待机" w="252" h="132" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
+    + '    <text id="tvStat" text="待机" w="296" h="132" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
     + '  </vertical>'
+    + '  <button id="btnMini" text="◀" w="30" h="30" textSize="12sp" padding="0"/>'
     + '</frame>'
 );
 
@@ -173,10 +192,11 @@ var w = floaty.window(
 (function () {
     var PEEK = 26;    // 缩进后露出像素
     var SNAP = 70;    // 距边缘多近触发吸附
-    var winW = 0, dx = 0, dy = 0, wx = 0, wy = 0;
-    w.root.post(function () { winW = w.root.getWidth(); });
+    var dx = 0, dy = 0, wx = 0, wy = 0;
 
     function snapEdge() {
+        if (folded) return;                          // 小箭头不缩进 (本身已贴边)
+        var winW = w.root.getWidth();                // 折叠/展开会改宽度, 松手时现取
         if (winW <= 0) return;
         var x = w.getX(), y = w.getY(), sw = device.width;
         if (x + winW >= sw - SNAP) w.setPosition(sw - PEEK, y);          // 吸右, 露出左缘
@@ -195,6 +215,42 @@ var w = floaty.window(
         return true;   // 必须消费事件: 返回 false 时 DOWN 之后不再收到 MOVE/UP, 拖不动
     });
 })();
+
+/* ---------- 折叠: 面板 ↔ 小箭头 ---------- */
+
+function clampPos() {
+    /* 布局尺寸变化后把窗口拉回屏内 (折叠时窗口变小, 负坐标会让箭头整个消失在屏外) */
+    w.root.post(function () {
+        var ww = w.root.getWidth(), wh = w.root.getHeight();
+        var x = w.getX(), y = w.getY(), sw = device.width, sh = device.height;
+        if (x + ww > sw - 8) x = sw - ww - 8;
+        if (x < 8) x = 8;
+        if (y + wh > sh - 8) y = sh - wh - 8;
+        if (y < 8) y = 8;
+        w.setPosition(Math.round(x), Math.round(y));
+    });
+}
+
+function setFold(on) {
+    folded = on;
+    w.panel.setVisibility(on ? android.view.View.GONE : android.view.View.VISIBLE);
+    w.btnMini.setVisibility(on ? android.view.View.VISIBLE : android.view.View.GONE);
+    if (on) {
+        w.root.post(function () {                // 吸到近侧边缘, 箭头指向屏内
+            var ww = w.root.getWidth(), sw = device.width;
+            var toLeft = w.getX() + ww / 2 < sw / 2;
+            w.setPosition(Math.round(toLeft ? 8 : sw - ww - 8), Math.round(w.getY()));
+            w.btnMini.setText(toLeft ? "▶" : "◀");
+            clampPos();
+        });
+    } else {
+        w.btnMini.setText("◀");
+        clampPos();
+    }
+}
+w.btnMini.setVisibility(android.view.View.GONE);   // 初始只显示面板
+w.btnFold.on("click", function () { setFold(true); });
+w.btnMini.on("click", function () { setFold(false); });
 
 /* ---------- 主循环 (后台线程, 两阶段状态机) ---------- */
 
@@ -372,7 +428,7 @@ function startBot() {
     }
     running = true;
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0 };
     worker = threads.start(function () {
         try {
             loop();
@@ -423,7 +479,7 @@ function startNav() {
     running = true;
     runStart = Date.now();
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0 };
     setStat("导航");
     worker = threads.start(function () {
         try {
