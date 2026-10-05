@@ -53,4 +53,5 @@ docs/screenshots/
 /phone/*
 !/phone/autojs/
 # phone/app/ = 原生挂机 App (2026-10-05 起入库, 构建链复用 vendor)
+/phone/app/build/
 !/phone/app/

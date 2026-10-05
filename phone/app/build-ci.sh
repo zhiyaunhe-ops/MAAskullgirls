@@ -15,18 +15,25 @@ OUT=build
 rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex"
 
+VENDOR=vendor
+CP="$PLAT:$VENDOR/api-classes.jar:$VENDOR/provider-classes.jar:$VENDOR/annotation-1.7.1.jar"
+
+echo "== aidl =="
+mkdir -p "$OUT/gen"
+"$BT/aidl" -o "$OUT/gen" aidl/com/zhiyaunhe/sgmbot/shizuku/IShellService.aidl
+
 echo "== aapt2 compile/link =="
 "$BT/aapt2" compile --dir res -o "$OUT/res.zip"
 "$BT/aapt2" link -o "$OUT/base.apk" -I "$PLAT" \
     --manifest AndroidManifest.xml -A assets "$OUT/res.zip"
 
 echo "== javac =="
-find src -name '*.java' > "$OUT/sources.txt"
-javac -encoding UTF-8 -classpath "$PLAT" -d "$OUT/classes" @"$OUT/sources.txt"
+{ find src "$OUT/gen" -name '*.java'; } > "$OUT/sources.txt"
+javac -encoding UTF-8 -classpath "$CP" -d "$OUT/classes" @"$OUT/sources.txt"
 
 echo "== d8 =="
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
-"$BT/d8" --min-api 21 --lib "$PLAT" --output "$OUT/dex" @"$OUT/classes.txt"
+"$BT/d8" --min-api 21 --lib "$PLAT" --output "$OUT/dex" @"$OUT/classes.txt"     "$VENDOR/api-classes.jar" "$VENDOR/provider-classes.jar" "$VENDOR/annotation-1.7.1.jar"
 
 echo "== pack =="
 (cd "$OUT/dex" && zip -q ../base.apk classes.dex)

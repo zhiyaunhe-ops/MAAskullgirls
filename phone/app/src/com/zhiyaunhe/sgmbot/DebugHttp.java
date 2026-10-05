@@ -5,21 +5,21 @@ import android.graphics.Bitmap;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 
 /**
  * adb 控制面之 HTTP 通道 — 本地调试服务 (只绑 127.0.0.1, 对外不可达):
  *   PC: adb forward tcp:8791 tcp:8791  然后即可
  *     GET  /status    — 引擎状态 JSON (running/mode/计数/state.json 内容)
  *     GET  /log       — app.log 全文
- *     GET  /screencap — 当前帧 JPEG (PC 侧直接看手机画面, 不用截图)
+ *     GET  /screencap — 当前帧 JPEG (PC 侧直接看手机画面)
+ *     GET  /tap?x=&y= — work 坐标(1280x576)点击 (PC 遥控"手", 验证/接管用)
  *     POST /reload    — 热读 config.json
- *     POST /trigger?action=start_nav — 同广播
- * 我 (ZCode) 调试时经 adb forward 完全接管, 不再需要点悬浮条。
+ *     POST /trigger?action=start_nav|start|stop|reload — 同广播
  */
 public final class DebugHttp {
     private static final int PORT = 8791;
@@ -27,9 +27,7 @@ public final class DebugHttp {
 
     public void start() {
         if (worker != null) return;
-        worker = new Thread(new Runnable() {
-            @Override public void run() { serve(); }
-        }, "debug-http");
+        worker = new Thread(this::serve, "debug-http");
         worker.setDaemon(true);
         worker.start();
         SgmLog.i("http", "debug server on 127.0.0.1:" + PORT);
@@ -37,7 +35,8 @@ public final class DebugHttp {
 
     private void serve() {
         try {
-            ServerSocket ss = new ServerSocket(PORT, 4, java.net.InetAddress.getByName("127.0.0.1"));
+            ServerSocket ss = new ServerSocket(PORT, 4,
+                    java.net.InetAddress.getByName("127.0.0.1"));
             while (true) {
                 Socket s = ss.accept();
                 try {
@@ -45,7 +44,7 @@ public final class DebugHttp {
                 } catch (Exception e) {
                     SgmLog.i("http", "req err: " + e);
                 } finally {
-                    s.close();
+                    try { s.close(); } catch (Exception ignored) { }
                 }
             }
         } catch (Exception e) {
@@ -54,50 +53,76 @@ public final class DebugHttp {
     }
 
     private void handle(Socket s) throws Exception {
-        BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()));
-        String line = in.readLine();
-        if (line == null) return;
-        String[] parts = line.split(" ");
+        String req = readRequest(s);
+        String[] parts = req.split(" ");
         String method = parts.length > 0 ? parts[0] : "";
-        String path = parts.length > 1 ? parts[1] : "";
-        // 读完请求头 (简单协议不需要 body)
-        while ((line = in.readLine()) != null && !line.isEmpty()) { }
-
+        String path = parts.length > 1 ? parts[1] : "/";
         String body;
-        if (path.startsWith("/status")) {
-            body = status();
-        } else if (path.startsWith("/log")) {
-            body = readFile(SgmLog.DIR + "app.log", "(empty)");
-        } else if (path.startsWith("/screencap")) {
-            Bitmap b = BotService.sh().capture();
-            if (b == null) { body = "capt fail"; }
-            else {
-                Bitmap w = Bitmap.createScaledBitmap(b,
-                        Math.round(b.getWidth() * 576f / b.getHeight()), 576, true);
-                ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                w.compress(Bitmap.CompressFormat.JPEG, 70, bo);
-                s.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                        + bo.size() + "\r\n\r\n").getBytes());
-                s.getOutputStream().write(bo.toByteArray());
-                s.getOutputStream().flush();
-                return;
+
+        try {
+            if (path.startsWith("/status")) {
+                body = status();
+            } else if (path.startsWith("/log")) {
+                body = readFile(SgmLog.DIR + "app.log", "(empty)");
+            } else if (path.startsWith("/screencap")) {
+                Bitmap b = BotService.sh() != null ? BotService.sh().capture() : null;
+                if (b == null) {
+                    reply(s, "capt fail");
+                } else {
+                    Bitmap w = Bitmap.createScaledBitmap(b,
+                            Math.round(b.getWidth() * 576f / b.getHeight()), 576, true);
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    w.compress(Bitmap.CompressFormat.JPEG, 70, bo);
+                    s.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                            + bo.size() + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+                    s.getOutputStream().write(bo.toByteArray());
+                    s.getOutputStream().flush();
+                    return;
+                }
+            } else if (path.startsWith("/tap") && "GET".equals(method)) {
+                float wx = Float.parseFloat(query(path, "x"));
+                float wy = Float.parseFloat(query(path, "y"));
+                Bitmap b = BotService.sh() != null ? BotService.sh().capture() : null;
+                if (b == null) { reply(s, "capt fail"); return; }
+                BotService.sh().tapWork(b, wx, wy);
+                body = "tapped " + wx + "," + wy;
+                SgmLog.i("http", body);
+            } else if (path.startsWith("/reload")) {
+                BotService.trigger("reload");
+                body = "reloaded";
+            } else if (path.startsWith("/trigger")) {
+                String action = query(path, "action");
+                BotService.trigger(action);
+                body = "trigger:" + action;
+            } else {
+                body = "routes: /status /log /screencap /tap?x=&y= /reload /trigger?action=";
             }
-        } else if (path.startsWith("/reload")) {
-            BotService.cfg().read();
-            body = "reloaded";
-        } else if (path.startsWith("/trigger")) {
-            String action = query(path, "action");
-            body = "trigger:" + action;
-            SgmLog.i("http", "trigger " + action);
-            BotService.trigger(action);
-        } else {
-            body = "routes: /status /log /screencap /reload /trigger?action=";
+        } catch (Exception e) {
+            body = "ERR: " + e;
         }
-        byte[] out = body.getBytes("UTF-8");
+        reply(s, body);
+    }
+
+    private static void reply(Socket s, String body) throws Exception {
+        byte[] out = body.getBytes(StandardCharsets.UTF_8);
         s.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
-                + "Content-Length: " + out.length + "\r\n\r\n").getBytes());
+                + "Content-Length: " + out.length + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
         s.getOutputStream().write(out);
         s.getOutputStream().flush();
+    }
+
+    /** 读请求首行 (简单协议, 忽略头/body) */
+    private static String readRequest(Socket s) throws Exception {
+        InputStream in = s.getInputStream();
+        StringBuilder sb = new StringBuilder(128);
+        int prev = -1, c;
+        while ((c = in.read()) != -1) {
+            if (prev == '\r' && c == '\n') break;   // 首行结束 (\r\n)
+            if (c != '\r') sb.append((char) c);
+            prev = c;
+            if (sb.length() > 2048) break;
+        }
+        return sb.toString();
     }
 
     private static String status() throws Exception {

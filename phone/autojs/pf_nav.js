@@ -13,6 +13,7 @@
  * 标定状态 (2026-10-04 K70 真机走链标定):
  *   已标定  结算大字/三槽/右槽先手 (沿用 settle_bot 模板与 FIRST_TAP)
  *   已标定  hall_events / ev_play / ev_target (真机帧裁剪) + scene_x/modal_x (PC ×0.8 转换)
+ *   已标定  vs_fight (VS 页右上 FIGHT!, 2026-10-06; runNav 开头快速接棒 + settle 逃生链共用)
  *   已标定  FIGHT_STEPS 王关链: 地图右移×2 + 绿✓锚点 + FIGHT! (真机走链验证可重复)
  *   已标定  战斗开场脑子/速度泡 (真机战斗帧实测; 速度模板 1x/3x, 每场持久仅重启重置)
  *
@@ -41,6 +42,8 @@ var TITLE_TH = 0.72;
 var CONT_TH = 0.72;
 var X_TH = 0.8;
 var SRV_TH = 0.75;           // 服务器错误弹窗 RETRY 按钮 (绿, 真机截图裁剪)
+var FIGHT_TH = 0.75;         // VS 页/地图右上 FIGHT! 按钮 (橙, 2026-10-06 自愈失败帧裁剪)
+var FIGHT_ROI = [1020, 0, 260, 130];   // 右上 FIGHT! 搜索区 (576 系; VS 页与地图页同位)
 
 var FIRST_TAP = [903, 512];  // 右槽先手 (同 settle_bot): 胜=CONTINUE / 负=REMATCH
 var HOME_XY = [95, 32];      // 顶栏房子回大厅 (轮播页实测; 地图页在 ~72,27 —
@@ -209,6 +212,28 @@ function missingRequired() {
         }
     }
     return miss;
+}
+
+/* 供 settle_bot 战斗超时拉回用: 居中卡区找可用 (彩色) PLAY!, 命中返回中心 [x,y] (576 系)。
+ * 只依赖 ev_play 一张模板 (惰性装载, 缺文件返回 null 不抛); work 由调用方给 (576 基准帧)。 */
+var _playTpl = null;
+function findPlay(work) {
+    try {
+        if (!_playTpl) {
+            var p = tplDir() + "ev_play.png";
+            if (!files.exists(p)) return null;
+            _playTpl = images.read(p);
+            if (!_playTpl) return null;
+        }
+        var hit = find(work, _playTpl, CARD_ROI, EV_PLAY_TH);
+        if (!hit) return null;
+        var s = sampleMean(work, [hit[0], hit[1], _playTpl.getWidth(), _playTpl.getHeight()],
+            satOfArgb);
+        if (!playAvailable(s)) return null;          // 置灰 PLAY 不点 (次数/能量用完)
+        return [hit[0] + _playTpl.getWidth() / 2, hit[1] + _playTpl.getHeight() / 2];
+    } catch (e) {
+        return null;
+    }
 }
 
 /* 加载必需 + 存在的可选模板; 返回 {name: img} 字典 */
@@ -622,6 +647,29 @@ function runNav(logger, shouldStop) {
         }
         var tpls = loadNavTemplates();
 
+        /* 快速接棒 (pf_scene "认场景→做动作" 同款思路): 已在 VS 对战页/地图 FIGHT! 页 →
+         * 直接点右上 FIGHT! 开打, 不绕大厅/EVENTS (整条链会白等到超时)。
+         * 自愈常见场景: 断联/网络错误后正好停在 VS 页 (2026-10-06 01:55 实例) */
+        var snap0 = snapWork();
+        if (snap0) {
+            var fightHit = tpls.vs_fight
+                ? find(snap0.work, tpls.vs_fight, FIGHT_ROI, FIGHT_TH) : null;
+            release(snap0);
+            if (fightHit) {
+                logger("[航] VS/FIGHT 页直接开打 (右上 FIGHT!)");
+                var sf = snapWork();
+                if (sf) {
+                    tapWork(sf, [fightHit[0] + tpls.vs_fight.getWidth() / 2,
+                                 fightHit[1] + tpls.vs_fight.getHeight() / 2]);
+                    release(sf);
+                }
+                sleep(2600);                         // VS→战斗转场 (与正常链 waitMs 同量级)
+                ensureBattleAuto(logger, tpls, shouldStop);
+                logger("[航] 导航完成, 交棒结算循环");
+                return true;
+            }
+        }
+
         var appOk = false;
         try { appOk = app.launchPackage(GAME_PKG); } catch (e) { appOk = false; }
         if (!appOk) logger("[!!] app.launchPackage 返回失败, 仍尝试等大厅 (游戏可能已开着)");
@@ -643,6 +691,7 @@ if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         runNav: runNav,
         runCapture: runCapture,
+        findPlay: findPlay,
         /* 以下导出仅供 test_nav.js 单测/仿真 */
         pickAndPlay: pickAndPlay,
         runFightSteps: runFightSteps,

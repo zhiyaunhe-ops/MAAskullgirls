@@ -28,6 +28,8 @@ var BATTLE_MS = 800;         // 战斗阶段轮询间隔 (只查 2 个大字, �
 var RESULT_MS = 350;         // 结算/奖励阶段轮询间隔 (要快速点按钮)
 var TAP_DELAY_MS = 1200;     // 点击后过场动画等待
 var STALL_SEC = 30;          // 连续无识别告警阈值
+var BATTLE_STALL_SEC = 180;  // 战斗检测无结果上限: 超时走 PLAY 拉回, 连续 3 跳失败走导航自愈
+var OK_OFFSET = [210, 188];  // srv_ok 模板左上 → OK 按钮中心 (576 系, 2026-10-06 用户截图标定)
 var RESULT_FALLBACK = 3;     // 结算阶段连续 N 帧无按钮命中 → 判定已入战斗, 回大字检测
 var DAILY_CAP = 0;           // 今日场数上限 (0=不限): 判完这局到限自动停; 0 点日历天自动归零
 
@@ -53,11 +55,12 @@ var worker = null;
 var runStart = 0;
 var mode = "";                                // "nav"=导航接棒中 / "loop"=结算循环 (小状态用)
 var folded = false;                           // 面板是否已折成小箭头
-var tplX = null, tplM = null, tplS = null;   // 弹窗 X / 服务器错误模板 (loop 装载, stall 逃生用)
+var tplX = null, tplM = null, tplS = null, tplE = null, tplF = null;   // 弹窗X/RETRY/网络错误OK/VS页FIGHT 模板 (stall 逃生用)
 var navBusy = false;                          // 自愈导航进行中 (stall 连发时防重复触发)
 var _pfNav;                                   // 惰性 require: 缺 pf_nav.js 只跳过自愈, 不挡循环
 var stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0 };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0,
+             battleT0: 0, battleStalls: 0 };
 
 /* ---------- 今日场次 (数据层 pf_store.js, 这里注入手机 files 作存储后端) ---------- */
 
@@ -139,6 +142,23 @@ function findAnySlot(work, tpl) {
         if (p) return { x: p.x + tpl.getWidth() / 2, y: p.y + tpl.getHeight() / 2 };
     }
     return null;
+}
+
+/* 导航自愈 (断联兜底): 重跑整条导航链, 完成后回结算循环; 结算 stall 满 3 轮与
+ * 战斗超时 3 跳共用这条失败路线 */
+function selfHealNav() {
+    navBusy = true;
+    log("[救] 重跑导航自愈 (断联兜底)");
+    try {
+        if (!_pfNav) _pfNav = require("./pf_nav.js");
+        var okNav = _pfNav.runNav(function (m) { log(m); },
+            function () { return !running; });
+        log(okNav ? "[救] 自愈导航完成, 回到王关继续循环"
+            : "[救] 自愈导航未接棒 (停在安全点, 看日志)");
+    } catch (e2) {
+        log("[错] 自愈导航: " + e2);
+    }
+    navBusy = false;
 }
 
 function fmtDur(ms) {
@@ -269,15 +289,19 @@ w.btnFold.on("click", function () { setFold(true); });   // 箭头的点击/拖�
 function loop() {
     mode = "loop";                               // 导航接棒后状态行切到 战斗监测/结算页
     var tpl = loadTemplates();
-    /* 弹窗 X 模板可选装载 (stall 逃生用; 缺文件不挡循环) */
+    /* 弹窗模板可选装载 (stall 逃生用; 缺文件不挡循环) */
     if (tplX) { tplX.recycle(); tplX = null; }
     if (tplM) { tplM.recycle(); tplM = null; }
     if (tplS) { tplS.recycle(); tplS = null; }
+    if (tplE) { tplE.recycle(); tplE = null; }
+    if (tplF) { tplF.recycle(); tplF = null; }
     try {
         tplX = files.exists(TPL_DIR + "scene_x.png") ? images.read(TPL_DIR + "scene_x.png") : null;
         tplM = files.exists(TPL_DIR + "modal_x.png") ? images.read(TPL_DIR + "modal_x.png") : null;
         tplS = files.exists(TPL_DIR + "srv_retry.png") ? images.read(TPL_DIR + "srv_retry.png") : null;
-    } catch (e) { tplX = tplM = tplS = null; }
+        tplE = files.exists(TPL_DIR + "srv_ok.png") ? images.read(TPL_DIR + "srv_ok.png") : null;
+        tplF = files.exists(TPL_DIR + "vs_fight.png") ? images.read(TPL_DIR + "vs_fight.png") : null;
+    } catch (e) { tplX = tplM = tplS = tplE = tplF = null; }
     files.createWithDirs(SHOT_PATH);
     runStart = Date.now();
     stat.lastAct = Date.now();
@@ -307,6 +331,7 @@ function loop() {
                 stat.seen = true;
                 stat.phase = 1;
                 stat.noHitRun = 0;
+                stat.battleStalls = 0;               // 见到大字 = 游戏活着, 战斗超时计数清零
                 stat.lastVic = !!vic;
                 log("[场] " + (vic ? "VICTORY" : "DEFEAT"));
 
@@ -330,6 +355,7 @@ function loop() {
                 stat.lastAct = Date.now();
                 stat.noHitRun = 0;
                 stat.phase = 0;                          // REMATCH = 下一场开始, 回大字检测
+                stat.battleT0 = Date.now();              // 下一场战斗计时起点 (超时链用)
                 countRound(stat.lastVic);                // 一局完成, 在此计场 (每局恰一次)
                 log("[动] REMATCH (第 " + stat.rematches + " 场) → (" + px2 + "," + py2 + ")");
                 setStat("运行");
@@ -349,6 +375,7 @@ function loop() {
                     stat.noHitRun++;
                     if (stat.noHitRun >= RESULT_FALLBACK) {
                         stat.phase = 0;                  // 连续无按钮 → 已入战斗, 回大字检测
+                        stat.battleT0 = Date.now();
                         log("[转] 进入战斗监测");
                     }
                 }
@@ -356,11 +383,16 @@ function loop() {
         }
 
         if (Date.now() - stat.lastAct > STALL_SEC * 1000) {
-            /* stall 逃生 (pf_scene 同款思路): 弹窗X → 通用X → 三槽按钮, 都没有才告警;
-             * 连续 3 轮无解 → 重跑导航自愈 (断联回大厅/被丢到任意界面都能拉回来) */
+            /* stall 逃生 (pf_scene 同款思路): 网络错误OK → 服务器RETRY → 弹窗X → VS页FIGHT! → 三槽按钮。
+             * 战斗阶段卡死另有超时链: 超 BATTLE_STALL_SEC 无大字 → PLAY 拉回,
+             * 连续 3 跳仍无结果 → 导航自愈 (2026-10-06 用户规则) */
             var escaped = false;
             var hitX = null, kindX = null;
-            if (tplS) {
+            if (tplE) {
+                hitX = images.findImage(work, tplE, { threshold: 0.75 });
+                kindX = "srv_ok";
+            }
+            if (!hitX && tplS) {
                 hitX = images.findImage(work, tplS, { threshold: 0.75 });
                 kindX = "srv_retry";
             }
@@ -372,16 +404,28 @@ function loop() {
                 hitX = images.findImage(work, tplM, { region: [480, 0, 480, 280], threshold: 0.9 });
                 kindX = "modal_x";
             }
+            if (!hitX && tplF) {
+                /* VS 对战页/地图页右上 FIGHT!: 直接开打 (pf_scene 认场景做动作同款思路) */
+                hitX = images.findImage(work, tplF, { region: [1020, 0, 260, 130], threshold: 0.75 });
+                kindX = "vs_fight";
+            }
             if (hitX) {
-                var tplHit = kindX === "scene_x" ? tplX
-                    : (kindX === "modal_x" ? tplM : tplS);
+                var offX, offY;
+                if (kindX === "srv_ok") {
+                    offX = OK_OFFSET[0]; offY = OK_OFFSET[1];   // OK 不在模板内: 标定偏移直点
+                } else {
+                    var tplHit = kindX === "scene_x" ? tplX
+                        : kindX === "modal_x" ? tplM
+                        : kindX === "vs_fight" ? tplF
+                        : tplS;
+                    offX = tplHit.getWidth() / 2; offY = tplHit.getHeight() / 2;
+                }
                 shizuku("input tap "
-                    + Math.round((hitX.x + tplHit.getWidth() / 2) * scale) + " "
-                    + Math.round((hitX.y + tplHit.getHeight() / 2) * scale));
+                    + Math.round((hitX.x + offX) * scale) + " "
+                    + Math.round((hitX.y + offY) * scale));
                 escaped = true;
                 log("[弹] stall 关弹窗 (" + kindX + ") → ("
-                    + Math.round(hitX.x + tplHit.getWidth() / 2) + ","
-                    + Math.round(hitX.y + tplHit.getHeight() / 2) + ")");
+                    + Math.round(hitX.x + offX) + "," + Math.round(hitX.y + offY) + ")");
             } else if (tpl) {
                 var rb = findAnySlot(work, tpl.btn_rematch);
                 var cb = rb ? null : findAnySlot(work, tpl.btn_continue);
@@ -395,23 +439,42 @@ function loop() {
             }
             if (escaped) {
                 stat.stallRuns = 0;
+            } else if (stat.phase === 0) {
+                /* 战斗阶段无大字 ≠ 卡死 (战斗本身耗时), 不走 stallRuns;
+                 * 战斗计时从 battleT0 (点 REMATCH/入战斗) 起, 超时才逐跳拉回 */
+                var overMs = Date.now() - (stat.battleT0 || stat.lastAct);
+                if (overMs >= BATTLE_STALL_SEC * 1000) {
+                    stat.battleStalls = (stat.battleStalls || 0) + 1;
+                    log("[!!] 战斗 " + Math.round(overMs / 6000) / 10 + "min 无结果 (超时第 "
+                        + stat.battleStalls + " 跳)" + (navBusy ? " — 自愈导航进行中" : ""));
+                    if (stat.battleStalls >= 3 && !navBusy) {
+                        selfHealNav();
+                        stat.battleStalls = 0;
+                        stat.battleT0 = Date.now();
+                    } else if (!navBusy) {
+                        /* PLAY 拉回: 居中卡区有可用 (彩色) PLAY! 才点, 没有就不动 */
+                        try {
+                            if (!_pfNav) _pfNav = require("./pf_nav.js");
+                            var playHit = _pfNav.findPlay(work);
+                            if (playHit) {
+                                shizuku("input tap " + Math.round(playHit[0] * scale) + " "
+                                    + Math.round(playHit[1] * scale));
+                                log("[救] PLAY 拉回 → (" + Math.round(playHit[0]) + ","
+                                    + Math.round(playHit[1]) + ") 等入战斗");
+                            } else {
+                                log("[救] PLAY 场景没找到 (不在活动卡页?) — 下一跳再试");
+                            }
+                        } catch (e3) {
+                            log("[错] PLAY 拉回: " + e3);
+                        }
+                    }
+                }
             } else {
                 stat.stallRuns = (stat.stallRuns || 0) + 1;
                 log("[!!] " + STALL_SEC + "s 无识别 (连续 " + stat.stallRuns + " 轮)"
                     + (navBusy ? " — 自愈导航进行中" : " — 断线/非常规弹窗?"));
                 if (stat.stallRuns >= 3 && !navBusy) {
-                    navBusy = true;
-                    log("[救] 连续 3 轮无解 — 重跑导航自愈 (断联兜底)");
-                    try {
-                        if (!_pfNav) _pfNav = require("./pf_nav.js");
-                        var okNav = _pfNav.runNav(function (m) { log(m); },
-                            function () { return !running; });
-                        log(okNav ? "[救] 自愈导航完成, 回到王关继续循环"
-                            : "[救] 自愈导航未接棒 (停在安全点, 看日志)");
-                    } catch (e2) {
-                        log("[错] 自愈导航: " + e2);
-                    }
-                    navBusy = false;
+                    selfHealNav();
                     stat.stallRuns = 0;
                 }
             }
@@ -426,6 +489,8 @@ function loop() {
     if (tplX) { tplX.recycle(); tplX = null; }
     if (tplM) { tplM.recycle(); tplM = null; }
     if (tplS) { tplS.recycle(); tplS = null; }
+    if (tplE) { tplE.recycle(); tplE = null; }
+    if (tplF) { tplF.recycle(); tplF = null; }
 }
 
 function startBot() {
@@ -441,7 +506,8 @@ function startBot() {
     }
     running = true;
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0 };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0,
+             battleT0: 0, battleStalls: 0 };
     worker = threads.start(function () {
         try {
             loop();
@@ -494,7 +560,8 @@ function startNav() {
     mode = "nav";
     runStart = Date.now();
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
-             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0 };
+             lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0,
+             battleT0: 0, battleStalls: 0 };
     setStat("导航");
     worker = threads.start(function () {
         try {

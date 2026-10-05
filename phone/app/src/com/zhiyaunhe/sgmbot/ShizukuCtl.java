@@ -1,24 +1,88 @@
 package com.zhiyaunhe.sgmbot;
 
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.IBinder;
+
+import com.zhiyaunhe.sgmbot.shizuku.IShellService;
 
 import java.io.File;
 
+import rikka.shizuku.Shizuku;
+
 /**
- * Shizuku 通路 — 与 autojs 版同一条权限链 (shell uid):
- *   截屏: shizuku exec "screencap -p /sdcard/sgm_settle/frame.png" → BitmapFactory
- *   点击: shizuku exec "input tap x y" / "input swipe ..."
- * Shizuku API (rikka.shizuku) AAR 待 M1 接入 vendor; 这里先隔离成单类,
- * 上层 (NavChain/SettleLoop) 只认 capture()/tap() 两个原语。
+ * 截屏/点击的单一入口 — 全部经 Shizuku UserService (shell uid) 执行。
  *
- * 坐标口径: 模板/决策一律 1280x576 (WORK_H), 这里负责 work→实机换算 (scale = H/576)。
+ * 生命周期: App 进程内常驻; binder 收到后 + 权限 GRANTED 后自动 bindUserService,
+ * 绑定完成前 exec() 返回 "" (上层按帧丢失/无操作处理, 不炸)。
+ *
+ * 权限流: MainActivity 里 checkSelfPermission() != GRANTED → requestPermission(REQ) →
+ *         addRequestPermissionResultListener 回调 → tryBind()。
  */
 public final class ShizukuCtl {
     public static final int WORK_H = 576;
     public static final String SHOT = "/sdcard/sgm_settle/frame.png";
+    public static final int REQ_PERMISSION = 7001;
 
-    /** 截屏并返回实机分辨率 Bitmap; 失败返回 null (上层按帧丢失处理, 不中断循环) */
+    private static volatile IShellService svc;
+    private static volatile boolean bound;
+    private static ServiceConnection conn;
+
+    /* ---- 状态机 (MainActivity/BotService 轮询显示) ---- */
+
+    /** Shizuku server 在不在 (binder 拿没拿到) */
+    public static boolean serverUp() {
+        try { return Shizuku.pingBinder(); } catch (Throwable t) { return false; }
+    }
+
+    /** 权限是否已授 */
+    public static boolean granted() {
+        try { return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED; }
+        catch (Throwable t) { return false; }
+    }
+
+    /** UserService 是否绑定完成 (exec 可用) */
+    public static boolean ready() { return svc != null; }
+
+    /** binder 收到 + 已授权 → 绑 UserService (幂等) */
+    public static void tryBind(Context ctx) {
+        if (bound || !serverUp() || !granted()) return;
+        bound = true;
+        conn = new ServiceConnection() {
+            @Override public void onServiceConnected(ComponentName n, IBinder b) {
+                svc = IShellService.Stub.asInterface(b);
+                SgmLog.i("shizuku", "UserService bound — 截屏/点击可用");
+            }
+            @Override public void onServiceDisconnected(ComponentName n) {
+                svc = null;
+                SgmLog.i("shizuku", "UserService disconnected");
+            }
+        };
+        Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
+                new ComponentName(ctx, com.zhiyaunhe.sgmbot.shizuku.ShellService.class))
+                .version(1).tag("v1");
+        Shizuku.bindUserService(args, conn);
+        SgmLog.i("shizuku", "bindUserService...");
+    }
+
+    /* ---- 原语 ---- */
+
+    /** sh -c 执行, 返回 stdout (UserService 未绑定/异常返回 "") */
+    public static String exec(String cmd) {
+        IShellService s = svc;
+        if (s == null) return "";
+        try { return s.exec(cmd); }
+        catch (Throwable t) {
+            SgmLog.i("shizuku", "exec err: " + t);
+            return "";
+        }
+    }
+
+    /** 截屏 → 实机分辨率 Bitmap; 失败 null (上层丢帧继续) */
     public Bitmap capture() {
         exec("screencap -p " + SHOT);
         File f = new File(SHOT);
@@ -28,26 +92,15 @@ public final class ShizukuCtl {
         return b;
     }
 
-    /** work 坐标点击 (1280x576 基准, 与 autojs 版 tapWork 同口径) */
+    /** work 坐标点击 (1280x576 基准 → 实机 scale 换算, 同 autojs tapWork) */
     public void tapWork(Bitmap frame, float wx, float wy) {
         float s = frame.getHeight() / (float) WORK_H;
         exec("input tap " + Math.round(wx * s) + " " + Math.round(wy * s));
     }
 
-    /** work 坐标滑动 (x1,y1 → x2,y2, ms) */
     public void swipeWork(Bitmap frame, float x1, float y1, float x2, float y2, long ms) {
         float s = frame.getHeight() / (float) WORK_H;
         exec("input swipe " + Math.round(x1 * s) + " " + Math.round(y1 * s)
                 + " " + Math.round(x2 * s) + " " + Math.round(y2 * s) + " " + ms);
-    }
-
-    public boolean alive() {
-        return "ok".equals(exec("echo ok").trim());
-    }
-
-    /** M1: 经 rikka.shizuku.Shizuku 用户态 binder 转发 shell 命令 (与 autojs shizuku() 同效) */
-    static String exec(String cmd) {
-        // TODO(M1): Shizuku.newProcess("sh", "-c", cmd) 读 stdout; 超时 5s
-        return "";
     }
 }

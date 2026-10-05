@@ -83,7 +83,9 @@ HyperOS 装第三方 APK 被拦时，按你平时装 pfwidget 的方式放行即
     ├── btn_continue.png # 紫蓝 CONTINUE 按钮
     ├── btn_quit.png     # 紫色 QUIT 按钮
     ├── hall_events.png  # (导航用, 待采集) 大厅 EVENTS 菱形文字标签
-    ├── ev_play.png      # (导航用, 待采集) 活动居中卡橙色 PLAY! 按钮
+    ├── ev_play.png      # (导航用) 活动居中卡橙色 PLAY! 按钮
+    ├── srv_ok.png        # (stall 逃生) 网络错误弹窗文字框 — 点 OK 用 OK_OFFSET 固定偏移
+    ├── vs_fight.png      # (stall 逃生/自愈) VS 页右上 FIGHT! — 直接开打, 不绕大厅
     └── ev_target.png    # (导航用, 待采集) 目标活动卡模板 (当前=Pillow Talk, 换活动重裁此图)
 ```
 
@@ -244,6 +246,9 @@ AutoJs6 内置打包：文件列表长按 `sgm_settle` 文件夹（或脚本）�
 | 点「开始」提示 Shizuku 未连接 | 同上；另外确认手机没开「禁止 Shizuku 后台启动」类限制 |
 | 悬浮条出现又立刻消失 | AutoJs6 后台被杀 → 省电策略无限制 + 最近任务锁定；通知栏 Acquire wakelock |
 | 日志狂刷 `[!!] 无识别` | 游戏不在结算页属正常；一直刷 = 模板对不上 → 第 5 步调参/重裁 |
+| 战斗 3 分钟+无大字 | 长战斗属正常不动作；超 `BATTLE_STALL_SEC`(180s) 后每 30s 一跳：先试 PLAY 拉回（不在活动卡页只记日志不盲点），连续 3 跳 → 导航自愈。网络错误弹窗（Beep. Boop.../Error Code OK）任何阶段出现都会被 `srv_ok` 模板点掉 |
+| 日志出现 `[弹] stall 关弹窗 (srv_ok)` | 网络错误弹窗被点掉，等游戏自己恢复回循环；反复出现 = 服务器/网络真有问题 |
+| 自愈导航停在 VS 对战页不动 | 旧版没这个场景的处置。已修：`vs_fight` 模板（2026-10-06 失败帧裁剪）——runNav 开头检测右上 FIGHT! 直接开打接 AUTO/3x，结算逃生链也会点它 |
 | 点了 REMATCH 但没进下一场 | 偶发：延迟不足。`TAP_DELAY_MS` 加到 1800；或该局弹出的是别的对话框（人工看一眼） |
 | 手机重启后不工作 | 三件事：无线调试重开、Shizuku 重新启动、AutoJs6 重新运行脚本 |
 | 点「导航」转采集/提示缺模板 | 正常——导航模板还没标定（见 5.1）；走完采集→裁模板→填坐标即可 |
@@ -256,8 +261,9 @@ AutoJs6 内置打包：文件列表长按 `sgm_settle` 文件夹（或脚本）�
 
 - 识别走 `images.findImage`（AutoJs6 内置 OpenCV），与 PC 侧 `phone/settle_bot.py` 同源
   模板/阈值，但分数口径略有差异——以你手机实测微调 `MIN_SIM` 为准。
-- 断线重连、维护弹窗等非常规页面：当前只告警不处理（`STALL_SEC` 触发），遇到多了就把
-  截图加进 `make_templates.py` 扩一个模板（Python 侧标定后两边共用）。
+- 断线重连、维护弹窗等非常规页面：网络错误弹窗已自动点掉（`srv_ok`/`srv_retry` 模板，
+  stall 逃生链最优先），其余仍只告警（`STALL_SEC` 触发）；遇到多了就把截图裁成新模板
+  扩进逃生链（Python 侧标定后两边共用）。
 - **能量墙**：REMATCH 连刷每场耗能，队伍能量耗尽（数场后）会撞「能量不足」弹窗——
   当前只告警不处理，人肉接管换队或先用 DAILY_CAP 限场兜底；换人逻辑已备，见 5.4。
 - 息屏后 screencap 截到黑屏、input 仍生效但游戏可能暂停——挂机请保持亮屏
