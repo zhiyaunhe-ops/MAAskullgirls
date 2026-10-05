@@ -52,6 +52,8 @@ var running = false;
 var worker = null;
 var runStart = 0;
 var tplX = null, tplM = null, tplS = null;   // 弹窗 X / 服务器错误模板 (loop 装载, stall 逃生用)
+var navBusy = false;                          // 自愈导航进行中 (stall 连发时防重复触发)
+var _pfNav;                                   // 惰性 require: 缺 pf_nav.js 只跳过自愈, 不挡循环
 var stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
              lastAct: 0, phase: 0, noHitRun: 0, lastVic: true };
 

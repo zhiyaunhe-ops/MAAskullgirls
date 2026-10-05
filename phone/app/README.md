@@ -58,6 +58,7 @@ phone/app/
 | 点击/滑动 | shizuku("input tap/swipe") | Shizuku shell input tap/swipe |
 | 找图 | images.findImage (OpenCV) | Vision.java 纯 Java NCC (同模板 PNG, 同 1280×576 基准) |
 | 悬浮条 | floaty XML | WindowManager overlay (同布局: 三键 + 三行统计) |
+| 多指/捏合 | input CLI 单指（捏合无解） | v2 injectInputEvent 多指注入（ShizukuBinderWrapper 走 shell 权限 binder，scrcpy 同路径）——地图开场捏合缩小 → 全图固定视野 |
 | 常驻 | AutoJs6 前台服务 | 自有前台服务 (通知栏状态, 可开机自启) |
 | 模板 | templates/*.png | assets/templates/*.png (直接复用, 不重裁) |
 
@@ -67,6 +68,9 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
 ## 里程碑
 
 - **M1 通路**：build.sh 出包 + ShizukuCtl 截屏/点击 + OverlayBar — 手机上装上就能点。
+  控制面四件套（Config/SgmLog/CtlReceiver/DebugHttp:8791）已写完并过 javac 编译校验
+  （vendor android-34 + jdk8，2026-10-06）；缺 ShizukuCtl.exec 的 Shizuku binder 接线
+  与 aapt2 打包脚本。
 - **M2 结算循环**：SettleLoop 移植（VICTORY/DEFEAT → CONTINUE/REMATCH，计数=REMATCH 驱动，
   stall 逃生: srv_retry/scene_x/modal_x/三槽按钮 → 3 轮无解重跑导航）。
 - **M3 导航链**：NavChain 移植（目标卡 Pillow Talk、地图右移×2、绿✓锚点、FIGHT!、

@@ -12,6 +12,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
+        android:name=".App"
         android:label="SGM挂机"
         android:icon="@drawable/ic_bot"
         android:allowBackup="false">
