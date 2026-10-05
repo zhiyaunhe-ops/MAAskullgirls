@@ -193,6 +193,7 @@ var w = floaty.window(
     var PEEK = 26;    // 缩进后露出像素
     var SNAP = 70;    // 距边缘多近触发吸附
     var dx = 0, dy = 0, wx = 0, wy = 0;
+    var miniMoved = false;
 
     function snapEdge() {
         if (folded) return;                          // 小箭头不缩进 (本身已贴边)
@@ -214,6 +215,26 @@ var w = floaty.window(
         }
         return true;   // 必须消费事件: 返回 false 时 DOWN 之后不再收到 MOVE/UP, 拖不动
     });
+
+    /* 小箭头自带手势: btnMini 是 Button 会吃掉触摸, root 的拖动监听收不到。
+     * 位移 <10px 视为点击 → 展开; 拖动松手 → 贴回近侧边缘 */
+    w.btnMini.setOnTouchListener(function (view, event) {
+        var act = event.getAction();
+        if (act === event.ACTION_DOWN) {
+            dx = event.getRawX(); dy = event.getRawY();
+            wx = w.getX(); wy = w.getY();
+            miniMoved = false;
+        } else if (act === event.ACTION_MOVE) {
+            if (!miniMoved && Math.abs(event.getRawX() - dx) < 10
+                    && Math.abs(event.getRawY() - dy) < 10) return true;
+            miniMoved = true;
+            w.setPosition(Math.round(wx + event.getRawX() - dx),
+                          Math.round(wy + event.getRawY() - dy));
+        } else if (act === event.ACTION_UP) {
+            if (miniMoved) { miniSnapX(); clampPos(); } else { setFold(false); }
+        }
+        return true;
+    });
 })();
 
 /* ---------- 折叠: 面板 ↔ 小箭头 ---------- */
@@ -231,26 +252,28 @@ function clampPos() {
     });
 }
 
+function miniSnapX() {
+    /* 箭头贴到近侧左右缘 (y 不动), 箭头指向屏内; 展开态/拖动松手/转屏都复用 */
+    var ww = w.root.getWidth(), sw = device.width;
+    if (ww <= 0) return;
+    var toLeft = w.getX() + ww / 2 < sw / 2;
+    w.setPosition(Math.round(toLeft ? 8 : sw - ww - 8), Math.round(w.getY()));
+    w.btnMini.setText(toLeft ? "▶" : "◀");
+}
+
 function setFold(on) {
     folded = on;
     w.panel.setVisibility(on ? android.view.View.GONE : android.view.View.VISIBLE);
     w.btnMini.setVisibility(on ? android.view.View.VISIBLE : android.view.View.GONE);
     if (on) {
-        w.root.post(function () {                // 吸到近侧边缘, 箭头指向屏内
-            var ww = w.root.getWidth(), sw = device.width;
-            var toLeft = w.getX() + ww / 2 < sw / 2;
-            w.setPosition(Math.round(toLeft ? 8 : sw - ww - 8), Math.round(w.getY()));
-            w.btnMini.setText(toLeft ? "▶" : "◀");
-            clampPos();
-        });
+        w.root.post(function () { miniSnapX(); clampPos(); });   // post: 等布局收完再取小窗宽度
     } else {
         w.btnMini.setText("◀");
         clampPos();
     }
 }
 w.btnMini.setVisibility(android.view.View.GONE);   // 初始只显示面板
-w.btnFold.on("click", function () { setFold(true); });
-w.btnMini.on("click", function () { setFold(false); });
+w.btnFold.on("click", function () { setFold(true); });   // 箭头的点击/拖动在 btnMini 触摸监听里
 
 /* ---------- 主循环 (后台线程, 两阶段状态机) ---------- */
 
@@ -518,6 +541,12 @@ setStat("待机");
 if (!checkShizuku()) {
     log("[!!] Shizuku 未连接 — 仍可打开悬浮条, 但点「开始」前需先连上");
 }
+var lastDims = "";                     // 转屏检测: 屏幕尺寸变了就把窗口拉回贴边
 setInterval(function () {              // 保活 + 面板随时刷新 (时长/每分钟场次/小状态)
+    var dims = device.width + "x" + device.height;
+    if (lastDims && dims !== lastDims) {
+        if (folded) { miniSnapX(); clampPos(); } else { clampPos(); }
+    }
+    lastDims = dims;
     if (running) setStat(statPrefix);
 }, 5000);
