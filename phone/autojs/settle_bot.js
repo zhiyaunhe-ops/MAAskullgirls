@@ -11,7 +11,7 @@
  * (Pillow Talk, ev_target 模板) PLAY!→最右战斗节点→PLAY→AUTO/3x 自检, 完成后无缝接
  * 本结算循环 (缺模板会自动转采集模式)。
  *
- * 悬浮条: 运行中随时可拖动; 松手时靠近屏幕边缘会自动缩进, 只留一小条, 拖出即恢复。
+ * 悬浮条: 随时可拖动 (按住空白处); 「◀」折成贴边小箭头隐藏面板, 点箭头展开。
  * 场次: 今日场数/胜负持久化到 store.json (pf_store.js), DAILY_CAP 可设每日上限, 到限自动停。
  *
  * 运行前提:
@@ -180,7 +180,7 @@ var w = floaty.window(
     + '      <button id="btnNav" text="导航" w="60" h="42" marginRight="4" textSize="12sp"/>'
     + '      <button id="btnStop" text="停止" w="60" h="42" marginRight="4" textSize="12sp"/>'
     + '      <button id="btnEnd" text="结束" w="60" h="42" marginRight="4" textSize="12sp"/>'
-    + '      <button id="btnFold" text="收" w="40" h="42" textSize="12sp"/>'
+    + '      <button id="btnFold" text="◀" w="40" h="42" textSize="12sp"/>'
     + '    </horizontal>'
     + '    <text id="tvStat" text="待机" w="296" h="132" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
     + '  </vertical>'
@@ -188,33 +188,10 @@ var w = floaty.window(
     + '</frame>'
 );
 
-/* 拖动 + 贴边缩进: 运行中随时可拖; 松手时距屏幕左/右缘 70px 内自动缩进, 只留一小条 */
+/* 拖动移动面板: 按住空白处拖, 松手拉回屏内 (旧的贴边缩进已删 — 隐藏走「◀」折箭头) */
 (function () {
-    var PEEK = 26;    // 缩进后露出像素
-    var SNAP = 70;    // 距边缘多近触发吸附
     var dx = 0, dy = 0, wx = 0, wy = 0;
     var miniMoved = false;
-
-    function snapEdge() {
-        if (folded) return;                          // 小箭头不缩进 (本身已贴边)
-        var winW = w.root.getWidth();                // 折叠/展开会改宽度, 松手时现取
-        if (winW <= 0) return;
-        var x = w.getX(), y = w.getY(), sw = device.width;
-        if (x + winW >= sw - SNAP) w.setPosition(sw - PEEK, y);          // 吸右, 露出左缘
-        else if (x <= SNAP) w.setPosition(-(winW - PEEK), y);            // 吸左, 露出右缘
-    }
-
-    w.root.setOnTouchListener(function (view, event) {
-        if (event.getAction() === event.ACTION_DOWN) {
-            dx = event.getRawX(); dy = event.getRawY();
-            wx = w.getX(); wy = w.getY();
-        } else if (event.getAction() === event.ACTION_MOVE) {
-            w.setPosition(wx + (event.getRawX() - dx), wy + (event.getRawY() - dy));
-        } else if (event.getAction() === event.ACTION_UP) {
-            snapEdge();
-        }
-        return true;   // 必须消费事件: 返回 false 时 DOWN 之后不再收到 MOVE/UP, 拖不动
-    });
 
     /* 小箭头自带手势: btnMini 是 Button 会吃掉触摸, root 的拖动监听收不到。
      * 位移 <10px 视为点击 → 展开; 拖动松手 → 贴回近侧边缘 */
@@ -234,6 +211,18 @@ var w = floaty.window(
             if (miniMoved) { miniSnapX(); clampPos(); } else { setFold(false); }
         }
         return true;
+    });
+
+    w.root.setOnTouchListener(function (view, event) {
+        if (event.getAction() === event.ACTION_DOWN) {
+            dx = event.getRawX(); dy = event.getRawY();
+            wx = w.getX(); wy = w.getY();
+        } else if (event.getAction() === event.ACTION_MOVE) {
+            w.setPosition(wx + (event.getRawX() - dx), wy + (event.getRawY() - dy));
+        } else if (event.getAction() === event.ACTION_UP) {
+            clampPos();      // 松手拉回屏内: 没有缩进逻辑后, 面板不应被拖丢在屏外
+        }
+        return true;   // 必须消费事件: 返回 false 时 DOWN 之后不再收到 MOVE/UP, 拖不动
     });
 })();
 
@@ -535,7 +524,7 @@ w.btnEnd.on("click", endBot);
 
 /* ---------- 入口 ---------- */
 toast("SGM 结算挂机: 开始=直接结算循环 / 导航=自动进一场再开跑 / 停止=暂停可再开 / 结束=退出脚本"
-    + " / 收=折成小箭头 (拖动空白处移动, 靠边缩进)");
+    + " / ◀=折成小箭头 (拖动空白处移动)");
 dailyLoad();
 setStat("待机");
 if (!checkShizuku()) {

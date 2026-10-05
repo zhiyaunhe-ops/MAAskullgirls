@@ -42,5 +42,5 @@ jobs:
           git tag -f "$TAG" "$GITHUB_SHA"
           git push -f origin "$TAG"
           NOTES="auto build ${GITHUB_SHA::7} — $(git log -1 --pretty=%s)"
-          gh release create "$TAG" --title "SGM挂机 debug 构建" --notes "$NOTES" --prerelease 2>/dev/null || true
+          gh release create "$TAG" --title "SGM挂机 debug 构建" --notes "$NOTES" 2>/dev/null || true
           gh release upload "$TAG" phone/app/build/sgmbot.apk --clobber
