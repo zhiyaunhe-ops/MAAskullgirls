@@ -1,0 +1,32 @@
+name: build-apk
+
+on:
+  push:
+    branches: [main]
+    paths: ["phone/app/**", ".github/workflows/build-apk.yml"]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK pieces
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      - name: Build APK (aapt2 + javac + d8 + apksigner)
+        run: bash phone/app/build-ci.sh
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sgmbot-debug-apk
+          path: phone/app/build/sgmbot.apk

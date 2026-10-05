@@ -161,9 +161,10 @@ var w = floaty.window(
     + '    <horizontal>'
     + '      <button id="btnStart" text="开始" w="60" h="42" marginRight="4" textSize="12sp"/>'
     + '      <button id="btnNav" text="导航" w="60" h="42" marginRight="4" textSize="12sp"/>'
-    + '      <button id="btnStop" text="停止" w="60" h="42" textSize="12sp"/>'
+    + '      <button id="btnStop" text="停止" w="60" h="42" marginRight="4" textSize="12sp"/>'
+    + '      <button id="btnEnd" text="结束" w="60" h="42" textSize="12sp"/>'
     + '    </horizontal>'
-    + '    <text id="tvStat" text="待机" w="192" h="132" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
+    + '    <text id="tvStat" text="待机" w="252" h="132" textSize="13sp" textColor="#FFFFFF" gravity="center"/>'
     + '  </vertical>'
     + '</frame>'
 );
@@ -392,6 +393,13 @@ function stopBot() {
         + " 场 " + stat.wins + "胜" + stat.loses + "负 | CONTINUE×" + stat.continues);
 }
 
+/* 结束 = 停止 + 退出整个脚本 (悬浮窗/保活定时器/worker 一并收掉; 停止只停循环, 窗口留着可再开) */
+function endBot() {
+    running = false;          // worker 循环与自愈导航的 abort 判据都吃这个标志
+    stopBot();                // 复用统计 toast
+    exit();                   // 引擎级退出: 悬浮窗随之消失
+}
+
 /* 导航: pf_nav.js 走完 启动→大厅→EVENTS→角色场→FIGHT 后, 在同一线程直接接结算循环 */
 function startNav() {
     if (running) { toast("已在运行"); return; }
@@ -440,9 +448,11 @@ function startNav() {
 w.btnStart.on("click", startBot);
 w.btnNav.on("click", startNav);
 w.btnStop.on("click", stopBot);
+w.btnEnd.on("click", endBot);
 
 /* ---------- 入口 ---------- */
-toast("SGM 结算挂机: 开始=直接结算循环 / 导航=自动进一场再开跑 (拖动空白处移动, 靠边缩进)");
+toast("SGM 结算挂机: 开始=直接结算循环 / 导航=自动进一场再开跑 / 停止=暂停可再开 / 结束=退出脚本"
+    + " (拖动空白处移动, 靠边缩进)");
 dailyLoad();
 ui.run(function () { w.tvStat.setText("待机 " + dailyText()); });
 if (!checkShizuku()) {

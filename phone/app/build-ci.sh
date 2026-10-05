@@ -1,0 +1,40 @@
+#!/bin/bash
+# SGM挂机 App CI/本地构建 — 与 vendor/android-build (pfwidget) 同工艺, 无 Gradle:
+#   aapt2 compile/link → javac → d8 → zip classes.dex → zipalign → apksigner
+# CI: ubuntu-latest 自带 ANDROID_HOME, workflow 里 sdkmanager 装 platforms;android-34
+# 本地: 也可用 vendor/android-build 的 bt/platforms 换 SDK 变量跑
+# 产物: build/sgmbot.apk (debug.keystore 签名 — 已入库, 保证可覆盖安装=可更新)
+set -e
+cd "$(dirname "$0")"
+
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+BT="$SDK/build-tools/34.0.0"
+PLAT="$SDK/platforms/android-34/android.jar"
+OUT=build
+
+rm -rf "$OUT"
+mkdir -p "$OUT/classes" "$OUT/dex"
+
+echo "== aapt2 compile/link =="
+"$BT/aapt2" compile --dir res -o "$OUT/res.zip"
+"$BT/aapt2" link -o "$OUT/base.apk" -I "$PLAT" \
+    --manifest AndroidManifest.xml -A assets "$OUT/res.zip"
+
+echo "== javac =="
+find src -name '*.java' > "$OUT/sources.txt"
+javac -encoding UTF-8 -classpath "$PLAT" -d "$OUT/classes" @"$OUT/sources.txt"
+
+echo "== d8 =="
+find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
+"$BT/d8" --min-api 21 --output "$OUT/dex" @"$OUT/classes.txt"
+
+echo "== pack =="
+(cd "$OUT/dex" && zip -q "$OUT/base.apk" classes.dex)
+"$BT/zipalign" -f 4 "$OUT/base.apk" "$OUT/aligned.apk"
+
+echo "== sign =="
+"$BT/apksigner" sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android \
+    --out "$OUT/sgmbot.apk" "$OUT/aligned.apk"
+"$BT/apksigner" verify "$OUT/sgmbot.apk"
+
+echo "APK: $OUT/sgmbot.apk ($(stat -c%s "$OUT/sgmbot.apk") bytes)"
