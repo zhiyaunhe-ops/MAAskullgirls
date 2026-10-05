@@ -26,10 +26,10 @@ javac -encoding UTF-8 -classpath "$PLAT" -d "$OUT/classes" @"$OUT/sources.txt"
 
 echo "== d8 =="
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
-"$BT/d8" --min-api 21 --output "$OUT/dex" @"$OUT/classes.txt"
+"$BT/d8" --min-api 21 --lib "$PLAT" --output "$OUT/dex" @"$OUT/classes.txt"
 
 echo "== pack =="
-(cd "$OUT/dex" && zip -q "$OUT/base.apk" classes.dex)
+(cd "$OUT/dex" && zip -q ../base.apk classes.dex)
 "$BT/zipalign" -f 4 "$OUT/base.apk" "$OUT/aligned.apk"
 
 echo "== sign =="

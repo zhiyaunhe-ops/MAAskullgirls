@@ -255,6 +255,7 @@ w.btnMini.on("click", function () { setFold(false); });
 /* ---------- 主循环 (后台线程, 两阶段状态机) ---------- */
 
 function loop() {
+    mode = "loop";                               // 导航接棒后状态行切到 战斗监测/结算页
     var tpl = loadTemplates();
     /* 弹窗 X 模板可选装载 (stall 逃生用; 缺文件不挡循环) */
     if (tplX) { tplX.recycle(); tplX = null; }
@@ -437,7 +438,8 @@ function startBot() {
             toast("脚本异常: " + e + " (看日志页)");
         } finally {
             running = false;
-            ui.run(function () { w.tvStat.setText("已停止"); });
+            mode = "";
+            setStat("已停止");
         }
     });
 }
@@ -477,6 +479,7 @@ function startNav() {
         return;
     }
     running = true;
+    mode = "nav";
     runStart = Date.now();
     stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
              lastAct: 0, phase: 0, noHitRun: 0, lastVic: true, rounds: 0 };
@@ -496,7 +499,8 @@ function startNav() {
             toast("导航异常: " + e + " (看日志页)");
         } finally {
             running = false;
-            ui.run(function () { w.tvStat.setText("已停止"); });
+            mode = "";
+            setStat("已停止");
         }
     });
 }
@@ -508,10 +512,12 @@ w.btnEnd.on("click", endBot);
 
 /* ---------- 入口 ---------- */
 toast("SGM 结算挂机: 开始=直接结算循环 / 导航=自动进一场再开跑 / 停止=暂停可再开 / 结束=退出脚本"
-    + " (拖动空白处移动, 靠边缩进)");
+    + " / 收=折成小箭头 (拖动空白处移动, 靠边缩进)");
 dailyLoad();
-ui.run(function () { w.tvStat.setText("待机 " + dailyText()); });
+setStat("待机");
 if (!checkShizuku()) {
     log("[!!] Shizuku 未连接 — 仍可打开悬浮条, 但点「开始」前需先连上");
 }
-setInterval(function () { }, 10000);   // 保活: 脚本不退出悬浮窗才常驻
+setInterval(function () {              // 保活 + 面板随时刷新 (时长/每分钟场次/小状态)
+    if (running) setStat(statPrefix);
+}, 5000);
