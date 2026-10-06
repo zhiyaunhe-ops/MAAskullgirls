@@ -24,6 +24,9 @@ public class MainActivity extends Activity {
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
+            if (ShizukuCtl.serverUp() && ShizukuCtl.granted() && !ShizukuCtl.ready()) {
+                ShizukuCtl.tryBind(MainActivity.this);   // 授权弹窗点完允许后, 轮询自动接上
+            }
             status.setText(statusText());
             h.postDelayed(this, 1000);
         }
@@ -54,13 +57,9 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
-        Shizuku.addBinderReceivedListenerSticky(this::onBinderReceived);
-        Shizuku.addRequestPermissionResultListener((requestCode, grantResult) -> {
-            if (requestCode == ShizukuCtl.REQ_PERMISSION
-                    && grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                ShizukuCtl.tryBind(this);
-            }
-        });
+        /* Shizuku binder 获取走 provider (manifest 已注册), 不用 sticky listener
+         * (那需要 IShizukuApplication AIDL 桩 — HyperOS 实测缺类闪退); 绑定时机由
+         * 下面的 1s 轮询驱动: serverUp && granted && 未绑定 → tryBind */
         h.postDelayed(refresh, 500);
     }
 
@@ -71,10 +70,6 @@ public class MainActivity extends Activity {
         b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         b.setOnClickListener(l);
         return b;
-    }
-
-    private void onBinderReceived() {
-        if (ShizukuCtl.granted()) ShizukuCtl.tryBind(this);
     }
 
     private void connectShizuku() {
@@ -105,6 +100,5 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         h.removeCallbacks(refresh);
-        try { Shizuku.removeRequestPermissionResultListener(null); } catch (Throwable ignored) { }
     }
 }
