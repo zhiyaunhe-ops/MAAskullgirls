@@ -25,7 +25,7 @@ import rikka.shizuku.Shizuku;
  *         addRequestPermissionResultListener 回调 → tryBind()。
  */
 public final class ShizukuCtl {
-    public static final int WORK_H = 576;
+    public static final int WORK_H = Vision.WORK_H;   // 真身归 Vision (离线探针好单独编译)
     /* 截屏落盘路径不写死 — 见 Paths (分区存储下 /sdcard 根目录默认读不到) */
     public static final int REQ_PERMISSION = 7001;
 

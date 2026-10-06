@@ -12,9 +12,12 @@ import android.graphics.Bitmap;
  */
 public final class Vision {
 
+    /** 模板基准高 (素材源 1280x576), 帧先缩放到此高度再匹配 */
+    public static final int WORK_H = 576;
+
     /** 缩放帧到 WORK_H 高, 返回 ARGB 像素 + 尺寸 */
     public static Frame toWork(Bitmap b) {
-        int h = ShizukuCtl.WORK_H;
+        int h = WORK_H;
         int w = Math.round(b.getWidth() * (float) h / b.getHeight());
         Bitmap s = Bitmap.createScaledBitmap(b, w, h, true);
         int[] px = new int[w * h];
@@ -33,7 +36,11 @@ public final class Vision {
         if (rw < tpl.w || rh < tpl.h) return null;
         double inv = 1.0 / (tpl.w * tpl.h);
         double tMean = 0;
-        for (int v : tpl.px) tMean += v & 0xFF;      // 灰度口径 (与 match.py 一致)
+        // ⚠️ v & 0xFF = ARGB 低字节 = **蓝通道**, 不是灰度! 别"纠正"成灰度 ——
+        // 真机结算页实测 (tools/VisionProbe.java, 2026-10-07): REMATCH 橙按钮跨帧
+        // 蓝通道 NCC 0.95+, 灰度只有 0.65~0.70 < 0.72 会漏识别; 反例两侧都干净。
+        // 与 Python match.py 的 to_gray 不是一口径, 是**故意的**。
+        for (int v : tpl.px) tMean += v & 0xFF;
         tMean *= inv;
         double tVar = 0;
         for (int v : tpl.px) { double d = (v & 0xFF) - tMean; tVar += d * d; }
