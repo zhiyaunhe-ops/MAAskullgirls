@@ -57,9 +57,15 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
-        /* Shizuku binder 获取走 provider (manifest 已注册), 不用 sticky listener
-         * (那需要 IShizukuApplication AIDL 桩 — HyperOS 实测缺类闪退); 绑定时机由
-         * 下面的 1s 轮询驱动: serverUp && granted && 未绑定 → tryBind */
+        /* Shizuku binder 获取走 provider (manifest 已注册): server 通过
+         * ShizukuProvider.call(SEND_BINDER) 把 binder 推给本进程 → Shizuku.onBinderReceived
+         * → attachApplication → server 回调 bindApplication 置 serverUp/granted。
+         *
+         * 不用 addBinderReceivedListenerSticky 是因为回调需 Activity 存活; 这里改由
+         * 1s 轮询驱动: serverUp && granted && 未绑定 → tryBind。
+         * (注: 早期版本 uninstall sticky 是因为触碰 Shizuku 类就 NoClassDefFoundError —
+         *  那是本机 classpath 漏编 moe.shizuku.server.* 桩所致, 已随 libs/aidl-src 编入,
+         *  不是 HyperOS 的限制。此处保留轮询仅为生命周期简单。) */
         h.postDelayed(refresh, 500);
     }
 

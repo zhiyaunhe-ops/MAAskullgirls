@@ -28,7 +28,10 @@ echo "== aapt2 compile/link =="
     --manifest AndroidManifest.xml -A assets "$OUT/res.zip"
 
 echo "== javac =="
-{ find src "$OUT/gen" -name '*.java'; } > "$OUT/sources.txt"
+# libs/aidl-src: Shizuku AIDL 生成桩 (moe.shizuku.server.*) — api 构件只发 sources,
+# 没有 classes jar, 故按源码编进 dex。缺它们时 Shizuku 类的静态字段
+# SHIZUKU_APPLICATION 无法初始化, 触碰 Shizuku.* 即 NoClassDefFoundError (表现为闪退)。
+{ find src "$OUT/gen" libs/aidl-src -name '*.java'; } > "$OUT/sources.txt"
 javac -encoding UTF-8 -classpath "$CP" -d "$OUT/classes" @"$OUT/sources.txt"
 
 echo "== d8 =="
