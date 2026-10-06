@@ -613,6 +613,16 @@ function ruleLabel(rule) {
   const c = RULE_CLASSES.find(x => x[0] === rule.value);
   return '类别·' + (c ? c[1] : rule.value);
 }
+/* 场次 tag (2026-10-06 起条件按 tag 取, 见 tools/pf_artag.py):
+   场次列表要显示"这一场属于哪一类", 否则用户只看到数字条件, 不知道它按什么
+   归类来的; hover 看tag_basis(判定依据) —— 判不出的场次是 unknown+最保守条件,
+   看到unknown 才知道该人工确认。*/
+const TAG_LABELS = {
+  character: '角色场', element: '元素场', rift: '裂缝元素',
+  monthly_character: '角色月场', monthly_element: '元素月场',
+  gold: '金币场', assist: '星场', move: '招式场', unknown: '未归类',
+};
+function tagLabel(tag) { return TAG_LABELS[tag] || (tag || '未归类'); }
 function buildRulePicker(container, opts = {}) {
   const sizeCls = opts.compact ? ' compact' : '';
   let html = `<button class="rbtn${sizeCls}" data-type="" data-value="">关</button><span class="vdiv"></span>`;
@@ -942,9 +952,15 @@ async function renderModal() {
     const meta = scoreTxt + (s.count ? s.count + ' 条 · ' : '无数据') + (s.last_ts ? fmtDayTs(s.last_ts) : '') + rest;
     const del = s.id === 'default' ? '' :
       `<button class="s-act${delArmId === s.id ? ' arm' : ''}" data-del="${s.id}">${delArmId === s.id ? '确认?' : '✕'}</button>`;
-    const badges = `<span class="rule-badge">${ruleLabel(s.rule)}</span>` +
+    const badges = `<span class="rule-badge tag-badge${s.tag ? '' : ' unknown'}"` +
+      ` title="归类依据: ${esc(s.tag_basis || '未记录(未迁移或人工建场)')}">${esc(tagLabel(s.tag))}</span>` +
+      `<span class="rule-badge">${ruleLabel(s.rule)}</span>` +
       `<span class="rule-badge">能量${s.energy_cost != null ? s.energy_cost : 4}</span>` +
-      (s.score_target != null ? `<span class="rule-badge">≤${fmtN(s.score_target)}</span>` : '') +
+      // score_target=null 是「无上限」(月场口径, 打到手动停), 不是漏填 ——
+      // 两种情况都显示徽章, 否则用户分不清"无上限"和"没填"。
+      `<span class="rule-badge${s.score_target == null ? ' nolimit' : ''}"` +
+      ` title="${s.score_target == null ? '无上限: 一直打到手动停' : '分数上限: 达标即停场'}">` +
+      `${s.score_target != null ? '≤' + fmtN(s.score_target) : '≤∞'}</span>` +
       (s.scene ? `<span class="rule-badge" title="场地绑定: 开始时自动识别并居中该场">📍${esc(s.scene)}</span>` : '') +
       (kids[s.id] ? `<span class="rule-badge parent-badge">${kids[s.id].length}期</span>` : '');
     const isChildRow = isChild.has(s.id);
@@ -1007,7 +1023,17 @@ document.getElementById('sess-list').addEventListener('click', async e => {
   }
   if (e.target.closest('#rn-input')) return;   // 改名输入中, 不切换选择
   const row = e.target.closest('.sess-row');
-  if (row) { modalSel = row.dataset.id; renamingId = null; renderModal(); }
+  // 单击 = 选中**并立即落盘**(2026-10-06 用户口径: 选中后关掉界面也该保持选中)。
+  // 改前这里只改前端 modalSel, 实际场次没变 —— 关掉弹窗再开又回到旧的。
+  if (row) { await selectSession(row.dataset.id, { keepModal: true }); }
+});
+/* 双击 = 选中并直接开始 (省一次点「开始」)。用dblclick 而非两次 click:
+   两次 click 会先触发上面的单击落盘 + renderModal 重绘, 行元素被替换后
+   dblclick 未必落在同一行上 —— 所以这里靠 dblclick 的原生语义, 元素不变。*/
+document.getElementById('sess-list').addEventListener('dblclick', async e => {
+  if (e.target.closest('#rn-input')) return;
+  const row = e.target.closest('.sess-row');
+  if (row) { await selectSession(row.dataset.id); await startSession(); }
 });
 document.getElementById('queue-strip').addEventListener('click', async e => {
   const up = e.target.closest('[data-qup]'), down = e.target.closest('[data-qdown]');
@@ -1063,16 +1089,35 @@ document.getElementById('new-sess-btn').addEventListener('click', async () => {
   renderModal();
 });
 document.getElementById('sess-start').addEventListener('click', async () => {
-  if (!modalSel) return;
+  // 先落盘选中再开始: 否则 /api/start 跑的是服务端**旧 active** 场次,
+  // 与用户在这弹窗里点选的那场不一致。
+  await selectSession(modalSel, { keepModal: true });
+  await startSession();
+});
+/* 选中场次**并落盘**(2026-10-06): 单击行即走这里, 关掉弹窗后仍是选中状态。
+   改前单击只改前端 modalSel, 服务端 active没动 —— 关窗再开就弹回旧场次。
+   keepModal=true 时不关窗(单击只高亮); 双击走默认 false, 顺带开跑。
+   ⚠️ 错误提示交给 api() 统一弹(它见到 data.error 会自己 showNotice),
+      这里不要重复判断/再弹一次。*/
+async function selectSession(sid, opts = {}) {
+  if (!sid || running) return;
+  modalSel = sid; renamingId = null;
+  const ok = await api('/api/sessions/select', { id: sid });   // 参数名是 id
+  if (ok === undefined) return;                // api 抛异常(已提示过), 不往下走
+  activeSess = sid;                       // 前端同步, 否则顶栏仍显示旧场次
+  renderModal();
+  if (!opts.keepModal) closeModal();
+  pollState();
+}
+/* 双击=选中并直接开始。运行中不响应(后端也拒), 与「开始」按钮同语义。*/
+async function startSession() {
+  if (!modalSel || running) return;
   await api('/api/start', { session_id: modalSel });
   closeModal();
   pollState();
-});
+}
 document.getElementById('sess-pick').addEventListener('click', async () => {
-  if (!modalSel) return;
-  await api('/api/sessions/select', { id: modalSel });
-  closeModal();
-  pollState();
+  await selectSession(modalSel);
 });
 document.getElementById('sess-child').addEventListener('click', async () => {
   if (!modalSel) return;
@@ -1221,7 +1266,111 @@ async function loadJJC(force) {
     document.getElementById('jjc-src').innerHTML =
       '<span class="stale">读取失败: ' + esc(String(e)) + '</span>';
   }
+  loadConditions();
 }
+
+/* ================= 场次默认条件 (可配置界面, 2026-10-06) =================
+   条件表原本是代码常量, 改一次要动代码重启 bot; 现在落
+   debug/pf/tag_conditions.json, 这里是它的编辑器。
+   ⚠️ 改的是**新建场次**的取值; 已在跑的场次条件已写进 sessions.json,
+      不受这里影响 (要改已建场次得去场次列表逐个改)。                      */
+const COND_RULES = [['', '无规则'], ['class', '角色(防守队限定)'], ['element', '元素']];
+let condTable = null, condDirty = false;
+
+function renderConditions() {
+  const box = document.getElementById('cond-table');
+  if (!condTable) { box.innerHTML = '<div style="color:var(--faint);padding:12px;">读取中…</div>'; return; }
+  const rows = Object.keys(condTable).sort().map(tag => {
+    const e = condTable[tag];
+    const unlimited = e.score_target == null;
+    return `<div class="cond-row" data-tag="${esc(tag)}">
+      <span class="cond-name">${esc(e.label || tag)}<span class="cond-key">${esc(tag)}</span></span>
+      <input class="inp cond-tgt" type="number" min="0" step="1000000"
+             placeholder="留空=无上限" value="${unlimited ? '' : e.score_target}">
+      <input class="inp cond-ec" type="number" min="1" max="10" step="1" value="${e.energy_cost}">
+      <select class="inp cond-rule">${COND_RULES.map(([v, n]) =>
+        `<option value="${v}"${e.rule === (v || null) ? ' selected' : ''}>${n}</option>`).join('')}</select>
+      <button class="s-act cond-del" title="删除该条(该类别将走未识别兜底)">✕</button>
+    </div>`;
+  }).join('');
+  const u = condTable.unknown || { score_target: 40000000, energy_cost: 4, label: '未识别兜底' };
+  box.innerHTML = `<div class="cond-head">
+      <span>类别</span><span>分数上限</span><span>能量</span><span>队伍规则</span><span></span>
+    </div>` + rows + `
+    <div class="cond-row fixed">
+      <span class="cond-name">${esc(u.label)}<span class="cond-key">固定</span></span>
+      <span class="cond-val">${fmtN(u.score_target)}</span>
+      <span class="cond-val">${u.energy_cost}</span>
+      <span class="cond-val">无规则</span><span></span>
+    </div>`;
+
+  const names = document.getElementById('cond-names');
+  if (names && window.__CN_RULES) {
+    names.innerHTML = window.__CN_RULES.map(([pat, tag]) =>
+      `<span class="chip" title="${esc(pat)}">${esc(pat)} → <b>${esc(tag)}</b></span>`).join('');
+  }
+}
+
+function collectConditions() {
+  const out = {};
+  document.querySelectorAll('#cond-table .cond-row[data-tag]').forEach(row => {
+    const tag = row.dataset.tag;
+    const tgtRaw = row.querySelector('.cond-tgt').value.trim();
+    out[tag] = {
+      score_target: tgtRaw === '' ? null : Number(tgtRaw),
+      energy_cost: Number(row.querySelector('.cond-ec').value) || 4,
+      rule: row.querySelector('.cond-rule').value || null,
+      label: (condTable[tag] || {}).label || tag,
+    };
+  });
+  return out;
+}
+function markCondDirty(on) {
+  condDirty = on;
+  document.getElementById('cond-save').disabled = !on;
+  document.getElementById('cond-note').textContent = on ? '有未保存的修改' : '';
+}
+
+async function loadConditions() {
+  try {
+    const d = await (await uiFetch('/api/conditions')).json();
+    condTable = d.conditions;
+    window.__CN_RULES = d.cn_rules || [];
+    renderConditions();
+    markCondDirty(false);
+    document.getElementById('cond-note').textContent =
+      '落盘: ' + (d.path || '');
+  } catch (e) {
+    document.getElementById('cond-table').innerHTML =
+      '<div class="stale" style="padding:12px;">读取失败: ' + esc(String(e)) + '</div>';
+  }
+}
+document.getElementById('cond-table').addEventListener('input', e => {
+  if (e.target.closest('.cond-row[data-tag]')) markCondDirty(true);
+});
+document.getElementById('cond-table').addEventListener('click', e => {
+  const b = e.target.closest('.cond-del');
+  if (!b) return;
+  const row = b.closest('.cond-row');
+  if (!confirm(`删除「${row.querySelector('.cond-name').childNodes[0].textContent}」？该类别将走未识别兜底条件。`)) return;
+  const tag = row.dataset.tag;
+  const snap = condTable[tag];
+  delete condTable[tag];
+  renderConditions();
+  markCondDirty(true);
+  condTable['_undo_' + tag] = snap;          // 供本次会话内误删找回
+});
+document.getElementById('cond-reload').addEventListener('click', loadConditions);
+document.getElementById('cond-save').addEventListener('click', async () => {
+  const table = collectConditions();
+  const r = await api('/api/conditions', { conditions: table });
+  if (r && r.ok) {
+    condTable = r.conditions;
+    renderConditions();
+    markCondDirty(false);
+    document.getElementById('cond-note').textContent = r.message || '已保存';
+  }
+});
 document.getElementById('jjc-refresh')
   .addEventListener('click', () => loadJJC(true));
 

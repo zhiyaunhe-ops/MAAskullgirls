@@ -592,6 +592,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", body)
         elif path == "/api/jjc":
             self._send(200, "application/json", _jjc_payload().encode("utf-8"))
+        elif path == "/api/conditions":
+            # 场次默认条件表 (2026-10-06 用户口径「能配置的界面」), 只读。
+            # 落盘在 do_POST 的同名分支 —— GET 里**不能**处理 POST, 否则
+            # 那个分支永远进不去(2026-10-06 踩过: POST 返回 404)。
+            import pf_artag as _T
+            self._send(200, "application/json", json.dumps(
+                {"conditions": _T.conditions_cached(),
+                 "path": str(_T.CONDITIONS_PATH),
+                 "seed": _T.SEED_CONDITIONS,
+                 "cn_rules": [[p.pattern, t] for p, t in _T._CN_TAG_RULES],
+                 "unknown": {"score_target": _T.DEFAULT_SCORE_TARGET,
+                             "energy_cost": _T.DEFAULT_ENERGY_COST,
+                             "label": "未识别兜底"}},
+                ensure_ascii=False).encode("utf-8"))
         elif path.startswith("/static/"):
             try:
                 fp = (STATIC_DIR / path[len("/static/"):]).resolve()
@@ -940,6 +954,28 @@ class _Handler(BaseHTTPRequestHandler):
                            json.dumps({"ok": False, "mumu_dir": "", "adb_path": "",
                                        "address": "", "notes": ["探测异常: %s" % e]},
                                       ensure_ascii=False).encode("utf-8"))
+        elif self.path == "/api/conditions":
+            # 场次默认条件表落盘 (2026-10-06 用户口径「能配置的界面」)。
+            # 运行中也允许改: 它只影响**之后新建**的场次 —— 已在跑的场次条件
+            # 已写进 sessions.json, 不受影响 (要改已建场次去场次列表逐个改)。
+            import pf_artag as _T
+            try:
+                body = self._read_json()
+            except json.JSONDecodeError as e:
+                self._json_err(400, str(e))
+                return
+            table = body.get("conditions")
+            if not isinstance(table, dict):
+                self._json_err(400, "缺 conditions 对象")
+                return
+            ok, msg = _T.save_conditions(table)
+            if not ok:
+                self._json_err(400, msg)      # 非法条目 -> 400 + 哪一条错
+                return
+            self._send(200, "application/json",
+                       json.dumps({"ok": True, "message": msg,
+                                   "conditions": _T.load_conditions()},
+                                  ensure_ascii=False).encode("utf-8"))
         elif self.path == "/api/jjc/refresh":
             # 唯一允许触网的 JJC 入口 —— 用户显式点「刷新快照」才走
             try:

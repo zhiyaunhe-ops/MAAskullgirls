@@ -178,6 +178,21 @@
       <div class="jjc-grid" id="jjc-grid"></div>
     </div>
     <div class="jpanel">
+      <div class="sect-title">场次默认条件
+        <span style="letter-spacing:0;color:var(--faint);">— 按归类标签取值，新建场次时套用；分数上限留空 = 无上限（打到手动停）</span>
+      </div>
+      <div id="cond-table" class="cond-table"><div style="color:var(--faint);padding:12px;">读取中…</div></div>
+      <div class="cond-actions">
+        <button id="cond-save" class="mini-btn primary" disabled>保存</button>
+        <button id="cond-reload" class="mini-btn">放弃修改</button>
+        <span id="cond-note" class="hint"></span>
+      </div>
+      <div class="sect-title" style="margin-top:14px;">归类名称
+        <span style="letter-spacing:0;color:var(--faint);">— 自起中文名里含这些词就直接归类，不依赖外部数据源</span>
+      </div>
+      <div id="cond-names" class="cond-names"></div>
+    </div>
+    <div class="jpanel">
       <div class="sect-title">场次 × 规则 版本账本
         <span style="letter-spacing:0;color:var(--faint);">— 仅记录配置变更，重复保存同值不产生版本</span>
       </div>

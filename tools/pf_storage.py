@@ -95,12 +95,18 @@ class ScoreStore:
         return next((s for s in self.sessions if s.get("id") == sid), None)
 
     def list_sessions(self) -> list:
-        """带数据量/最近活动的场次列表 (WebUI 展示用)。"""
+        """带数据量/最近活动的场次列表 (WebUI 展示用)。
+
+        带 tag / tag_basis: 场次条件按 tag 取(WebUI 要显示"这一场属于哪一类"),
+        否则用户只看到数字条件, 不知道它是按什么归类来的。
+        """
         out = []
         for s in self.sessions:
             pts = self.history_by.get(s["id"], [])
             out.append({"id": s["id"], "name": s["name"], "rule": s.get("rule"),
                         "parent": s.get("parent"),
+                        "tag": s.get("tag"),
+                        "tag_basis": s.get("tag_basis"),
                         "scene": s.get("scene"),
                         "score": s.get("score"),
                         "score_target": s.get("score_target"),

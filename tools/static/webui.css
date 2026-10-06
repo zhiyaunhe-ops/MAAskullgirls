@@ -119,6 +119,30 @@
   .sess-row .s-act.arm { color:var(--red); }
   .rule-badge { font-size:11px; color:var(--dim); border:1px solid var(--line);
                 border-radius:999px; padding:2px 8px; white-space:nowrap; }
+  /* 场次 tag 徽章 (2026-10-06): 条件按 tag 取, 列表里要能一眼看出这一场属哪类 */
+  .tag-badge { color:var(--txt); border-color:var(--line); font-weight:600; }
+  .tag-badge.unknown { color:var(--gold); border-color:rgba(255,196,84,.5); }
+  /* 无上限: 月场口径(score_target=null), 与"没填"不同, 故仍显示徽章 */
+  .rule-badge.nolimit { color:var(--green); border-color:rgba(90,220,150,.45); }
+
+  /* ===== 场次默认条件编辑器 (2026-10-06, 条件表改为可配置) ===== */
+  .cond-table { display:flex; flex-direction:column; gap:4px; }
+  .cond-head, .cond-row {
+    display:grid; grid-template-columns:minmax(120px,1.4fr) 130px 70px 150px 34px;
+    gap:8px; align-items:center;
+  }
+  .cond-head { font-size:11px; color:var(--faint); padding:0 4px 4px;
+              border-bottom:1px solid var(--line); }
+  .cond-row { padding:5px 4px; border-radius:8px; }
+  .cond-row:not(.fixed):hover { background:var(--hover, rgba(255,255,255,.03)); }
+  .cond-row.fixed { opacity:.72; border-top:1px dashed var(--line); margin-top:4px; }
+  .cond-name { font-size:13px; display:flex; flex-direction:column; }
+  .cond-key { font-size:10px; color:var(--faint); font-family:ui-monospace,monospace; }
+  .cond-tgt, .cond-ec, .cond-rule { width:100%; }
+  .cond-val { font-size:12px; color:var(--dim); padding-left:4px; }
+  .cond-actions { display:flex; align-items:center; gap:8px; margin-top:12px; }
+  .cond-names { display:flex; flex-wrap:wrap; gap:5px; }
+  .cond-names .chip { font-size:11px; }
   .sess-new { display:flex; align-items:center; gap:8px; margin-top:12px; padding-top:12px;
               border-top:1px dashed var(--line); flex-wrap:wrap; }
   .sess-new .inp { width:150px; }
