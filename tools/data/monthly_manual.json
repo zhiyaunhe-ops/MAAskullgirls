@@ -1,0 +1,65 @@
+{
+ "_说明": [
+  "★ 月场人工补充配置 (2026-10-06 用户口径, A 级)。",
+  "",
+  "背景: sgmnow (Krazete 的 SGM Score Cutoffs 表 now 页) 的 Monthly PF 只有",
+  "**一个** holi 条目, 只给场次名 —— 既不区分「角色月场」还是「元素月场」,",
+  "也不给元素名。而游戏里月场实际有两类(2026-09-16 用户确认):",
+  "  角色月场 = A CLASS OF ONE'S OWN  (rule=null, 无上限)",
+  "  元素月场 = AGAINST THE WIND      (rule=element:<元素>, 无上限)",
+  "⇒ sgmnow 缺的那部分(类别 + 元素)由本文件人工补, pf_artag 读它。",
+  "",
+  "★ 为什么不用 arena_rules.json: 那张表的kind 是「读场地名猜」的 (B/C级,",
+  "  表内注释自认), 而 sgmnow 按官方口径给名字。本文件只补 sgmnow **确实没给**",
+  "  的字段, 不重复造类别 —— 避免两处都写类别又互相矛盾。",
+  "",
+  "★★ 无上限 (2026-10-06 用户口径): 角色月场与元素月场 score_target=None,",
+  "  打到手动停为止。依据 A 级: sessions.json 里两类的 tgt 本来就全是 None,",
+  "  实测总分 1.5~1.9 亿量级 (202609角色月场 188,331,229 / 202609元素月场",
+  "  191,962,012), 任何具体上限都会提前截断。",
+  "",
+  "★ 匹配方式: 场地名与 key 互为子串(两边都归一为大写字母数字)即命中 ——",
+  "  承 pf_nav 已实证的 OCR 残串形态('ASHOTINTHEDARK' / 'IGBENSBEATDOWN'),",
+  "  且不要求全等。",
+  "",
+  "★ valid_until = 该配置失效的**游戏日**(YYYY-MM-DD)。过期的条目不再生效,",
+  "  月场归类落 unknown + 最保守条件 + 留痕 —— 宁可漏跑不错跑, 不让3 月的",
+  "  手工配置在 4 月悄悄继续生效。",
+  "  monthly = 仅在「当前 sgmnow 快照的 Monthly PF 名字」== key 时匹配;",
+  "  null表示该项当前不适用(如角色月场那期没有元素)。",
+  "",
+  "★ 依据等级沿用 arena_rules.json 的 A/B/C:",
+  "  A = 用户明确口径或自己的场次配置可直接印证; B = 语义推定; C = 无依据。",
+  "",
+  "★ 改动方式: 月场开新一期(每月1日)时, 人工加一条新条目并给上一条填",
+  "  valid_until。**不要直接改旧条目的 valid_until 为 null** —— 那是让它永不过期,",
+  "  一年后谁也说不清它还该不该生效。"
+ ],
+ "arenas": {
+  "A CLASS OF ONE'S OWN": {
+   "tag": "monthly_character",
+   "monthly": true,
+   "element": null,
+   "valid_from": "2026-09-01",
+   "valid_until": "2026-10-01",
+   "依据": "A 用户2026-09-16 确认 = 角色月场; 202609角色月场场次(rule=null, tgt=None, 实测 188,331,229) 已实证。10-01 起 sgmnow 的 Monthly PF 换成 Costume Party, 本条过期"
+  },
+  "AGAINST THE WIND": {
+   "tag": "monthly_element",
+   "monthly": true,
+   "element": "wind",
+   "valid_from": "2026-09-01",
+   "valid_until": "2026-10-01",
+   "依据": "A 用户 2026-09-16 确认 = 元素月场且本月 wind; 202609元素月场场次 rule=element:wind (2026-09-06 建的与 10-02 建的都实测过)"
+  },
+  "COSTUMEPARTY": {
+   "tag": "monthly_element",
+   "monthly": true,
+   "element": "dark",
+   "valid_from": "2026-10-01",
+   "valid_until": "2026-11-01",
+   "依据": "A 用户 2026-10-06 口径「元素月场这个月是暗」。⚠️ sgmnow 只给名字 'Costume Party', **不给类别也不给元素** —— 类别(元素月场)与元素(dark) 两项都靠用户口述。独立佐证: sessions.json 的「202609元素月场 09-06 10-02」已被手工从 rule=wind 改成 rule=dark(2026-10-02 建), 与本条一致",
+   "备注": "本条是 sgmnow 缺信息的直接补丁 —— 若sgmnow 之后自己补上分类/元素, 应改为以 sgmnow 为准并删除本条"
+  }
+ }
+}

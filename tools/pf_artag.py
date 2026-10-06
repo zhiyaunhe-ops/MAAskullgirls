@@ -13,18 +13,28 @@ score_target/energy_cost/rule, 父子一断就无处取值; 本模块把「这�
   Fire。**官方分类优先于人工猜名字。** arena_rules.json 退化为纯 OCR 纠错字库。
 
 数据流:
-    jjc_store 快照 (entries: {key: {kind, name, active, scope}})
-        ↓  build_tag_index()      建 tag -> 场地名 索引 (只收 active 的)
+    jjc_store 快照 (entries: {key: {name, active, scope}})
+        ↓  build_tag_index()      建 tag -> 场地名 索引 (只收 active; 月场除外)
+    月场人工补丁 tools/data/monthly_manual.json (类别 + 元素名, 带有效期)
+        ↓  _manual_match()        名字命中 -> 直接定 monthly_character/element
     hub 扫出的 arenas [{idx, title, score}]
         ↓  classify_arena()        名称相似度比对过阈值 -> 定tag
-    条件表 (score_target, energy_cost, rule)          assign_conditions()  按 tag 取值
+    条件表 (score_target, energy_cost, rule)          按 tag 取值
+
+★ 月场为什么必须人工补 (2026-10-06 用户口径):
+  sgmnow 的 Monthly PF 只有**一个** holi 条目、只给名字(实测 14 天快照: holi
+  恒为 name+active、无类别字段), 既不区分「角色月场/元素月场」也不给元素名。
+  而游戏里月场有两类, 且**两类都无上限**(用户 2026-10-06 口径: score_target
+  =None, 打到手动停)。类别与元素只能人工给 => monthly_manual.json。
+  补丁带 valid_until, 过期即失效 —— 不让某月的手工配置在次月悄悄继续生效。
 
 本模块刻意**不import pf_store / pf_vision / pf_nav**: 它是纯决策逻辑, 要能被
 单测直接跑, 也不能因为被bot 进程 import 就带上I/O 副作用 (pf_store import即
 重写 sessions.json)。
 
 铁律(承 PF_BOT/arena_rules.json, 2026-09-16/20用户口径, 不可放宽):
-  - **只有元素场限定队伍元素**。角色/金币/星/月/招式场 rule 一律 None。
+  - **只有元素场限定队伍元素**。角色/金币/星/招式场 rule 一律 None;
+    **元素月场例外** —— 它就是元素场, 同样挂 element 限制(2026-10-06 口径)。
   - 角色场的 class 规则只约束**防守队**, 出战队不受限 (2026-09-29 用户口径);
     pf_bot.judge_rule() 对 type=class 直接 return True, 不影响出战队筛选。
     ⚠️ 绝不能给非元素场填 rule={"type":"class"} —— 那是另一个含义 (见下)。
@@ -33,13 +43,20 @@ score_target/energy_cost/rule, 父子一断就无处取值; 本模块把「这�
 from __future__ import annotations
 
 import difflib
+import json
 import re
+from pathlib import Path
 
 # ---------------------------------------------------------------- 条件表
 
 # score_target / energy_cost 口径 (用户 2026-10-06 确认, 覆盖 2026-09-19 的旧值:
-# 旧口径是 角色周场 8kw / 光元素场 6kw, 本表为新口径为准):
+# 旧口径是角色周场 8kw / 光元素场 6kw, 本表为新口径为准):
 #   角色场 5kw + 5 能量 · 元素场 5kw + 4 能量 + 对应元素限制 · 其余一律 4kw + 4 能量
+#   **月场两类(角色月场/元素月场)均无上限** (score_target=None, 打到手动停)
+# ⚠️ None 不是"漏填": pf_bot 的判定是 `if score_target is not None and
+#   val >= score_target` (pf_bot.py:571), None 直接跳过上界判定 = 不限量。
+#   A 级依据: sessions.json 里两类月场的 tgt 本来就全是 None, 实测总分
+#   188,331,229 / 191,962,012 (1.5~1.9 亿量级), 任何具体上限都会提前截断。
 DEFAULT_SCORE_TARGET = 40_000_000     # 4kw —— 未归类场次的兜底
 DEFAULT_ENERGY_COST = 4# 其余场次统一 4 能量
 
@@ -47,18 +64,22 @@ CHAR_SCORE_TARGET = 50_000_000        # 5kw
 CHAR_ENERGY_COST = 5
 ELEM_SCORE_TARGET = 50_000_000        # 5kw (与角色场同量级, 用户 2026-10-06 口径)
 ELEM_ENERGY_COST = 4
+MONTHLY_SCORE_TARGET = None# 月场无上限
+MONTHLY_ENERGY_COST = 4
 
 # tag -> (score_target, energy_cost, 是否需要附加规则)
-#   need_rule=True 的两类才产出 rule: 角色场挂 class(防守角色), 元素场挂 element。
+#   need_rule=True 的三类才产出 rule: 角色场挂 class(防守角色), 元素场挂 element。
 #   其余一律 None —— 见文件头铁律。
 TAG_CONDITIONS = {
-    "character": (CHAR_SCORE_TARGET, CHAR_ENERGY_COST, "class"),
-    "element":   (ELEM_SCORE_TARGET, ELEM_ENERGY_COST, "element"),
-    "rift":      (ELEM_SCORE_TARGET, ELEM_ENERGY_COST, "element"),
-    "gold":      (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
-    "move":      (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
-    "assist":    (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
-    "monthly":   (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
+    "character":        (CHAR_SCORE_TARGET, CHAR_ENERGY_COST, "class"),
+    "element":          (ELEM_SCORE_TARGET, ELEM_ENERGY_COST, "element"),
+    "rift":             (ELEM_SCORE_TARGET, ELEM_ENERGY_COST, "element"),
+    # 月场两类: 无上限; 元素月场挂 element 限制(与元素场同一条铁律), 角色月场不挂。
+    "monthly_character": (MONTHLY_SCORE_TARGET, MONTHLY_ENERGY_COST, None),
+    "monthly_element":   (MONTHLY_SCORE_TARGET, MONTHLY_ENERGY_COST, "element"),
+    "gold":             (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
+    "move":             (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
+    "assist":           (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
 }
 
 # 未知/未开放类别的 tag —— 归类失败落到这里, 取最保守条件(不猜元素)
@@ -70,6 +91,13 @@ UNKNOWN_TAG = "unknown"
 # ('NFINITYAND'/'IGBENS', 2026-09-22/25), 这类残串与原名的ratio 落在 0.8~0.95;
 # 而不同场次之间 ('NIGHT' vs 'MIGHT') 明显更低。0.75 留了余量又不跨场。
 MATCH_THRESHOLD = 0.75
+
+# 子串匹配的长度下限: 较短一方至少这么多字母才允许子串命中。
+# 承 pf_nav._kw_hit 的既有门槛(「<4 字母只认全等」)—— 2026-10-06 实测,
+# 月场补丁若无此门槛, 1 字母残串 'M' 会因是 'COSTUMEPARTY' 的子串而被
+# 判成元素月场。相似度路径本身不吃短串, 但补丁路径吃, 两处门槛必须一致,
+# 否则等于给相似度那道防线开了个后门。
+MIN_SUBSTR_LEN = 4
 
 # sgmnow 角色名 -> 游戏内角色标识。与 webui.js 的 CHARACTER_ICON_FILES 同一份
 # 白名单, 但那边是给图标文件名的; 这里要的是 pf_bot 防守队用的角色键。
@@ -92,6 +120,82 @@ NON_ARENA_NAMES = {"ACTIVE", "ACTIVEPF", "INACTIVE", "NONE", "NA", "LOADING"}
 def _is_placeholder(name: str) -> bool:
     """该名字是不是"占位符"而非真场名(见 NON_ARENA_NAMES)。"""
     return _key(name) in NON_ARENA_NAMES
+
+
+# ------------------------------------------------------------ 月场人工补丁表
+
+# sgmnow 的 Monthly PF 只有**一个** holi 条目, 只给名字 —— 既不区分「角色月场」
+# 还是「元素月场」, 也不给元素名(实测 14 天快照: holi 恒为名字+active, 无类别)。
+# 月场恰好每月一次 ⇒ 这类信息只能人工补, 见 tools/data/monthly_manual.json。
+# ⚠️ 读不存在的键/坏JSON 一律当"没有补丁", 不抛 —— 本模块是纯决策逻辑,
+# 配置文件坏了不该让整个归类链崩(最坏退化成 unknown + 最保守条件, 有痕可查)。
+MANUAL_PATH = Path(__file__).resolve().parent / "data" / "monthly_manual.json"
+
+
+def _load_manual(path=None) -> dict:
+    """读月场人工补丁表 -> {归一key: spec}。读不了返回空表。"""
+    try:
+        with open(path or MANUAL_PATH, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+    out = {}
+    for name, spec in (raw.get("arenas") or {}).items():
+        if isinstance(spec, dict) and name:
+            out[_key(name)] = dict(spec, _name=name)
+    return out
+
+
+def _manual_valid(spec: dict, day: str = None) -> bool:
+    """该补丁在 day(游戏日 YYYY-MM-DD)是否有效。缺 day=无法判有效期 -> 认有效
+    (调用方通常已确认快照新鲜度; 而宁可用一条人工配置, 也不要把用户明确
+    给的口径判成无效)。"""
+    if not day:
+        return True
+    frm = spec.get("valid_from")
+    until = spec.get("valid_until")
+    if frm and day < frm:
+        return False
+    if until and day >= until:
+        return False
+    return True
+
+
+def _manual_match(name: str, manual: dict, day: str = None) -> dict | None:
+    """场地名 -> 命中的月场补丁 spec; 没命中返回 None。
+
+    匹配: monthly=True 的条目, 名字双向子串命中(承 pf_nav OCR 残串实证:
+    'ASHOTINTHEDARK'/'IGBENSBEATDOWN'), 且在有效期内。
+
+    ⚠️ **子串必须有长度下限** (2026-10-06 单测抓出): 短 OCR 残串 'M' 是
+    'COSTUMEPARTY' 的子串, 无下限就会把一个 1 字母残串判成元素月场。
+    pf_nav 早就为此定过「<4 字母只认全等」, 这里沿用同一条门槛 ——
+    否则相似度路径有防护、补丁路径没有, 等于从后门绕过了既有防线。
+    """
+    k = _key(name)
+    if not k:
+        return None
+    best = None
+    for spec in (manual or {}).values():
+        if not spec.get("monthly") or not _manual_valid(spec, day):
+            continue
+        mk = _key(spec.get("_name"))
+        if not mk:
+            continue
+        if mk == k:
+            hit = True
+        elif (mk in k) or (k in mk):
+            # 确实是子串关系后, 再要求**较短的一方**够长(>=4):
+            # 'ASHOTINTHEDARK' vs 'A SHOT IN THE DARK' 短方 14 -> 放行;
+            # 'M' vs 'COSTUMEPARTY' 短方 1 -> 拒绝。
+            # ⚠️ 顺序不能反: 先比长度再判子串会把「两个长名字」一律放行,
+            #   哪怕它们毫无包含关系(2026-10-06 实测踩过)。
+            hit = min(len(mk), len(k)) >= MIN_SUBSTR_LEN
+        else:
+            hit = False
+        if hit and (best is None or len(mk) > len(_key(best.get("_name")))):
+            best = spec          # 多个命中取名字最长的(最具体那个)
+    return best
 
 
 def _key(name: str) -> str:
@@ -154,6 +258,11 @@ def build_tag_index(snapshot: dict, *, only_active: bool = True) -> list:
             continue
         # key 认不出 -> kind 落unknown 而不是猜一个 (错 tag 会套错条件)
         kind = kinds.get(e.get("key"), "unknown")
+        # 月场**不进索引**: sgmnow 的 holi 只有名字, 没有"角色月场还是元素月场"
+        # 也没有元素名 —— 归类交由 monthly_manual.json 人工补(build 时就会被
+        # 覆盖), 否则只能给出 monthly 这一无法再分的 tag。
+        if kind == "monthly":
+            continue
         out.append({
             "tag": kind,
             "kind": kind,
@@ -183,7 +292,8 @@ def match_score(a: str, b: str) -> float:
 # hub 上只有一张该名的卡, 但快照里两条都 active —— 同名时按此序取一个, 并在
 # note 里记明撞车, 不让日志看起来像"本来就只有一个元素场")。
 #取值上两者本就相同(都是 5kw/4能量/element 规则), 所以这是可读性问题而非跑批问题。
-_TAG_PRIORITY = ("character", "element", "rift", "gold", "monthly",
+_TAG_PRIORITY = ("character", "element", "rift", "gold",
+                 "monthly_character", "monthly_element",
                  "assist", "move", "unknown")
 
 
@@ -194,8 +304,33 @@ def _pick(cands: list) -> tuple:
     return ranked[0], ranked[1:]
 
 
+def _from_manual(title: str, spec: dict) -> dict:
+    """月场人工补丁 -> 与 classify_arena 同形状的结果。
+
+    与相似度路径的差别只有两点: tag/元素来自人工表而非推断, 且note 里写明
+    「人工配置」—— 事后翻日志时能立刻分清哪些归类是查出来的、哪些是口述的。
+    """
+    tag = spec.get("tag") or UNKNOWN_TAG
+    tgt, energy, rule_kind = TAG_CONDITIONS.get(
+        tag, (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None))
+    rule = None
+    if rule_kind == "element":
+        elem = norm_element(spec.get("element"))
+        # 元素月场必须给元素名 (用户 2026-10-20 口径: 本月是暗)。给不出 ->
+        # 不猜元素, rule=None 并留痕。
+        rule = {"type": "element", "value": elem} if elem else None
+    note = (f"tag={tag} <- 人工配置monthly_manual.json[{spec.get('_name')!r}]"
+            f" (sgmnow 不给月场类别/元素; 依据={spec.get('依据','?')})")
+    if rule_kind == "element" and not rule:
+        note += " |⚠️ 人工表缺元素名, 未挂 element 限制"
+    return {"tag": tag, "matched": True, "name": spec.get("_name"),
+            "score": 1.0, "rule": rule, "score_target": tgt,
+            "energy_cost": energy, "note": note}
+
+
 def classify_arena(title: str, index: list,
-                   threshold: float = MATCH_THRESHOLD) -> dict:
+                   threshold: float = MATCH_THRESHOLD,
+                   manual: dict = None, day: str = None) -> dict:
     """hub 扫出的一个场地名 -> tag 与取值条件。
 
     返回 {tag, matched, name, score, rule, score_target, energy_cost, note}。
@@ -207,7 +342,20 @@ def classify_arena(title: str, index: list,
     相似度判据不足以区分两个长名相近的场次, 硬挑一个等于伪造依据 —— 但完全
     同名(rit/element 同为 Dark)不是相似度不足, 而是源表两条指同一张卡, 按
     优先级取一是唯一合理解。
+
+    manual = monthly_manual.json 的人工补丁(默认自动读盘)。**月场补丁优先于
+    相似度判定**: 人工配置是明确依据, 名字匹配只是猜测 —— 且月场名字
+    ('Costume Party') 根本不含元素线索, 走相似度只会得到 monthly 这种没法再分
+    的 tag。补丁表只按名字覆盖, 不影响非月场归类。
     """
+    # ① 月场人工补丁 (sgmnow 缺的那部分: 类别 + 元素名)
+    if manual is None:
+        manual = _load_manual()
+    mspec = _manual_match(title, manual, day)
+    if mspec is not None:
+        return _from_manual(title, mspec)
+
+    # ② sgmnow 索引 + 名称相似度
     best_score, cands = 0.0, []
     for item in index or []:
         s = match_score(title, item["name"])
@@ -248,16 +396,21 @@ def classify_arena(title: str, index: list,
 
 def classify_all(arenas: list, snapshot: dict, *,
                  threshold: float = MATCH_THRESHOLD,
-                 only_active: bool = True) -> list:
+                 only_active: bool = True, day: str = None) -> list:
     """hub 扫出的全部场地 [{idx,title,score}] -> 逐个归类, 顺序不变。
 
     snapshot 为 None/无匹配时全部落 unknown —— 不因数据源缺失就静默套用
     默认条件当成已归类, 那会让「归类失败」在日志里长得像「归类成功」。
+
+    day = 游戏日(YYYY-MM-DD), 用于判人工补丁有效期。缺省时快照里的 day
+    自动取(snapshot 本身带 day 字段); 都没有则补丁一律认有效。
     """
     index = build_tag_index(snapshot, only_active=only_active)
+    if day is None:
+        day = (snapshot or {}).get("day")
     out = []
     for a in arenas or []:
-        r = classify_arena(a.get("title"), index, threshold)
+        r = classify_arena(a.get("title"), index, threshold, day=day)
         r["idx"] = a.get("idx")
         r["title"] = a.get("title")
         r["hub_score"] = a.get("score")
