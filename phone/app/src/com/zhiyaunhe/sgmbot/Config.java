@@ -28,7 +28,6 @@ import java.io.InputStream;
  * }
  */
 public final class Config {
-    public static final String OVERRIDE = "/sdcard/sgm_settle/config.json";
     private final Context ctx;
     private volatile JSONObject cur;
 
@@ -51,7 +50,7 @@ public final class Config {
     /** 每次调用重新读 override 文件 — 热更新点 (adb push 后 POST /reload 或下帧生效) */
     public JSONObject read() {
         try {
-            File f = new File(OVERRIDE);
+            File f = new File(Paths.config());
             if (f.exists() && f.length() > 0) {
                 cur = merge(defaults(), load(new FileInputStream(f)));
             } else {

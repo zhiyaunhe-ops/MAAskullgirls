@@ -12,8 +12,10 @@ apksigner + android-34 platform，**无 Gradle / 无 Android Studio**，`build.s
 ## 四条设计原则 (2026-10-05 用户拍板)
 
 1. **可配置** — 引擎零硬编码: 全部阈值/ROI/坐标/链路步骤在 `config.json`
-   (assets 内置默认 → `/sdcard/sgm_settle/config.json` 覆盖, adb push 即改即生效,
+   (assets 内置默认 → 外部根 `config.json` 覆盖, adb push 即改即生效,
    无需重装 APK)。FIGHT_STEPS 的 taps/tpl/swipe/anchor 四种步骤类型即数据协议。
+   外部根默认 `/sdcard/sgm_settle`, 未授「所有文件访问」时自动退到 App 私有目录
+   (见 `docs/phone-app-shizuku.md`)。
 2. **可拓展** — 链路即数据: 导航链/战斗链/逃生链都是 config 里的步骤表, 新活动
    = 新配置文件 (新模板 + 新坐标), 引擎不改; Vision 匹配器按 `matcher` 字段分发,
    可加 OCR/新锚点类型。
@@ -21,7 +23,7 @@ apksigner + android-34 platform，**无 Gradle / 无 Android Studio**，`build.s
    走版本化更新: App 内检查 GitHub raw / TailShare 拉新包 → 校验 → 热加载。
    模板重裁不用发版。
 4. **adb 可调试** — 三通道控制面:
-   - 文件: `/sdcard/sgm_settle/logs/app.log` (轮转) + `state.json` (当前状态机/计数);
+   - 文件: 外部根 `logs/app.log` + `state.json` (当前状态机/计数) — 路径见上;
    - 广播: `adb shell am broadcast -a com.zhiyaunhe.sgmbot.CMD -e action start_nav|stop|reload`;
    - HTTP: 本地调试服务 (127.0.0.1:8791, `adb forward tcp:8791 tcp:8791` 后 PC 可
      GET /status /screencap, POST /reload /trigger) — PC 侧可完全接管调试。

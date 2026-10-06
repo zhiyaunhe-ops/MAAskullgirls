@@ -11,6 +11,7 @@ import android.os.IBinder;
 import com.zhiyaunhe.sgmbot.shizuku.IShellService;
 
 import java.io.File;
+import java.io.FileInputStream;
 
 import rikka.shizuku.Shizuku;
 
@@ -25,7 +26,7 @@ import rikka.shizuku.Shizuku;
  */
 public final class ShizukuCtl {
     public static final int WORK_H = 576;
-    public static final String SHOT = "/sdcard/sgm_settle/frame.png";
+    /* 截屏落盘路径不写死 — 见 Paths (分区存储下 /sdcard 根目录默认读不到) */
     public static final int REQ_PERMISSION = 7001;
 
     private static volatile IShellService svc;
@@ -85,14 +86,59 @@ public final class ShizukuCtl {
         }
     }
 
-    /** 截屏 → 实机分辨率 Bitmap; 失败 null (上层丢帧继续) */
+    /**
+     * 截屏 → 实机分辨率 Bitmap; 失败 null (上层丢帧继续)。
+     *
+     * 两个坑 (2026-10-07 实测):
+     *  - 目录不存在时 screencap 直接 "Error opening file" 不自建目录 ⇒ 先 mkdir -p;
+     *  - 分区存储: 文件存在且非 0, 但 App 侧 FileInputStream 抛 EACCES
+     *    ⇒ 必须自己读字节才知道是真失败还是权限被拒 (decodeFile 只回 null, 不给原因)。
+     */
     public Bitmap capture() {
-        exec("screencap -p " + SHOT);
-        File f = new File(SHOT);
-        if (!f.exists() || f.length() == 0) return null;
-        Bitmap b = BitmapFactory.decodeFile(SHOT);
-        f.delete();
-        return b;
+        String[] dirs = dirs();
+        for (String d : dirs) {
+            String p = d + "/frame.png";
+            // mkdir -p: 目录不存在时 screencap 报 "Error opening file" 且不自建目录
+            String out = exec("mkdir -p \"" + d + "\" && screencap -p \"" + p + "\"");
+            Bitmap b = decode(p);
+            if (b != null) { capFails = 0; return b; }
+            capOut = out;
+        }
+        if (capFails++ % 20 == 0) {   // 每 20 次报一次, 别刷屏
+            StringBuilder sb = new StringBuilder("截屏失败 尝试=");
+            for (String d : dirs) sb.append(d).append(' ');
+            SgmLog.i("cap", sb.append("| err=").append(capErr)
+                    .append(" | out=").append(capOut == null ? "" : capOut.trim()).toString());
+        }
+        return null;
+    }
+
+    /** 候选落盘目录: 先 Paths 根 (私有目录或已授权的 /sdcard/sgm_settle), 再兜 /sdcard/sgm_settle */
+    private static String[] dirs() {
+        String a = Paths.root();
+        return a.equals(Paths.LEGACY) ? new String[]{a} : new String[]{a, Paths.LEGACY};
+    }
+
+    private String capErr = "";
+    private String capOut = "";
+    private int capFails;
+
+    private Bitmap decode(String path) {
+        try {
+            File f = new File(path);
+            if (!f.exists() || f.length() == 0) { capErr = "no-file"; return null; }
+            capErr = "";
+            byte[] data = new byte[(int) f.length()];
+            FileInputStream in = new FileInputStream(f);
+            int n = 0, off = 0;
+            while (off < data.length && (n = in.read(data, off, data.length - off)) > 0) off += n;
+            in.close();
+            f.delete();
+            return BitmapFactory.decodeByteArray(data, 0, off);
+        } catch (Throwable t) {
+            capErr = t.toString();     // 典型: "java.io.FileNotFoundException: ... EACCES (Permission denied)"
+            return null;
+        }
     }
 
     /** work 坐标点击 (1280x576 基准 → 实机 scale 换算, 同 autojs tapWork) */

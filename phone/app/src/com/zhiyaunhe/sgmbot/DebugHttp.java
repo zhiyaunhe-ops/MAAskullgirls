@@ -63,7 +63,7 @@ public final class DebugHttp {
             if (path.startsWith("/status")) {
                 body = status();
             } else if (path.startsWith("/log")) {
-                body = readFile(SgmLog.DIR + "app.log", "(empty)");
+                body = readFile(Paths.logDir() + "app.log", "(empty)");
             } else if (path.startsWith("/screencap")) {
                 Bitmap b = BotService.sh() != null ? BotService.sh().capture() : null;
                 if (b == null) {
@@ -126,7 +126,7 @@ public final class DebugHttp {
     }
 
     private static String status() throws Exception {
-        JSONObject st = readFileJson(SgmLog.DIR + "state.json");
+        JSONObject st = readFileJson(Paths.logDir() + "state.json");
         st.put("http_ts", System.currentTimeMillis());
         return st.toString();
     }

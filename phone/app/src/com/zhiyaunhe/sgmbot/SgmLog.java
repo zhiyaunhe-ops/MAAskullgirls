@@ -10,20 +10,23 @@ import java.util.Locale;
 
 /**
  * 调试三通道之文件通道 (四原则之四: adb 可调试)。
- *   /sdcard/sgm_settle/logs/app.log   — 时间戳日志 (adb pull / tail)
- *   /sdcard/sgm_settle/logs/state.json — 状态机快照 (当前链/阶段/计数/最近动作)
+ *   <Paths.logDir()>app.log     — 时间戳日志 (adb pull / tail)
+ *   <Paths.logDir()>state.json  — 状态机快照 (当前链/阶段/计数/最近动作)
  * adb 侧: `adb shell cat .../app.log | tail` 或 pull; Logcat 同步镜像一份。
+ *
+ * 目录走 Paths (分区存储: /sdcard 根目录未授"所有文件访问"时写不进去,
+ * 会退化到 App 私有目录) —— 别再写死 /sdcard/sgm_settle。
  */
 public final class SgmLog {
-    public static final String DIR = "/sdcard/sgm_settle/logs/";
     private static final SimpleDateFormat TS = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US);
     private static final Object LOCK = new Object();
+    private static File dir;
     private static File logFile;
 
     public static void init() {
-        File d = new File(DIR);
-        if (!d.exists()) d.mkdirs();
-        logFile = new File(DIR, "app.log");
+        dir = new File(Paths.logDir());
+        if (!dir.exists()) dir.mkdirs();
+        logFile = new File(dir, "app.log");
     }
 
     public static void i(String tag, String msg) {
@@ -43,7 +46,7 @@ public final class SgmLog {
     public static void state(JSONObject snapshot) {
         synchronized (LOCK) {
             try {
-                File f = new File(DIR, "state.json");
+                File f = new File(dir, "state.json");
                 FileWriter w = new FileWriter(f, false);
                 w.write(snapshot.toString());
                 w.close();

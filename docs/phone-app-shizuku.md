@@ -40,3 +40,22 @@
 - 授权（"始终允许"）持久化在 server 侧，重装 App 不用重授。
 - `/screencap` 在引擎未启动时返回 `capt fail` 属预期（`BotService.sh()==null`），
   不是 Shizuku 故障。
+
+## 存储根：分区存储下 `/sdcard/sgm_settle` 默认读不到（2026-10-07）
+
+**结论**：`config/templates/store/logs/frame` 五个落盘点的根统一由 `Paths` 决定 ——
+已授「所有文件访问」(`MANAGE_EXTERNAL_STORAGE`) 用 `/sdcard/sgm_settle`；
+未授则退到 App 私有目录 `/sdcard/Android/data/<pkg>/files`。
+
+| 症状 | 根因 | 处理 |
+|---|---|---|
+| 循环每帧"截屏失败"，但手动 `screencap` 成功 | Android 11+ 分区存储：文件在、非 0，App 侧 `FileInputStream` 抛 `EACCES`（FUSE 拒，不是 POSIX 权限，`chmod` 不管用）；`BitmapFactory.decodeFile` 只回 null 不给原因 | `capture()` 自己读字节并记 `err=`，一眼分辨 `no-file` / `EACCES` |
+| 目录不存在 → screencap 报 `Error opening file` | `screencap` 不自建目录 | 每次截屏前 `mkdir -p`（两个候选目录都试） |
+
+**排障**：`adb shell logcat -d -s sgmbot | grep -E '外部根|截屏失败'`
+`外部根=` 一行告诉你当前走哪条路；`err=` 告诉你卡在写还是读。
+
+**注意**：Shizuku server 在实机上跑的是**应用 uid**（`u0_a250`，非 adb shell），
+写不进别的包的 `Android/data` ⇒ 未授权时私有目录这条路多半也不通，
+**「所有文件访问」实质是必授项**（主页按「③ 授权所有文件访问」跳设置页）。
+已连 adb 时也可 `adb shell cmd appops set com.zhiyaunhe.sgmbot MANAGE_EXTERNAL_STORAGE allow`。

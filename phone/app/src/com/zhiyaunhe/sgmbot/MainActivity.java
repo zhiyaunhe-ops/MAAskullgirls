@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
@@ -27,6 +28,7 @@ public class MainActivity extends Activity {
             if (ShizukuCtl.serverUp() && ShizukuCtl.granted() && !ShizukuCtl.ready()) {
                 ShizukuCtl.tryBind(MainActivity.this);   // 授权弹窗点完允许后, 轮询自动接上
             }
+            Paths.init(MainActivity.this);   // 授权"所有文件访问"回来后自动换根, 不必重启
             status.setText(statusText());
             h.postDelayed(this, 1000);
         }
@@ -50,7 +52,13 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:" + getPackageName())));
         }));
-        root.addView(btn("③ 启动服务 (悬浮条 + 通路自证)", v ->
+        root.addView(btn("③ 授权所有文件访问 (adb push 改配置/换模板)", v -> {
+            if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+                startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName())));
+            }
+        }));
+        root.addView(btn("④ 启动服务 (悬浮条 + 通路自证)", v ->
                 BotService.start(this, BotService.MODE_NAV)));
         root.addView(btn("停止引擎", v -> BotService.trigger("stop")));
         root.addView(btn("重载配置 (config.json)", v -> BotService.trigger("reload")));
@@ -96,8 +104,10 @@ public class MainActivity extends Activity {
         sb.append("Shizuku 授权: ").append(ShizukuCtl.granted() ? "已授" : "未授").append('\n');
         sb.append("执行通道: ").append(ShizukuCtl.ready() ? "就绪 (可截屏/点击)" : "未绑定").append('\n');
         sb.append("悬浮窗: ").append(Settings.canDrawOverlays(this) ? "已授" : "未授").append('\n');
+        sb.append("所有文件访问: ").append(Paths.legacy() ? "已授" : "未授(退私有目录)").append('\n');
         sb.append("引擎: ").append(BotService.isRunning()
                 ? "运行中 (" + BotService.currentMode() + ")" : "停止").append('\n');
+        sb.append("外部根: ").append(Paths.root()).append('\n');
         sb.append("\n adb 调试: adb forward tcp:8791 tcp:8791\n 然后开 http://127.0.0.1:8791/status");
         return sb.toString();
     }

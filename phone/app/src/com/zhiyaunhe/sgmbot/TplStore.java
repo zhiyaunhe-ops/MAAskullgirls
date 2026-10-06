@@ -13,7 +13,8 @@ import java.util.Map;
 /**
  * 模板库 — 结算/逃生/导航用的模板 PNG, 解码成 {@link Vision.Frame} (灰度 NCC 输入)。
  *
- * 来源优先级: /sdcard/sgm_settle/templates/<name>.png (热更: 重裁模板不必发版)
+ * 来源优先级: Paths.tplDir() (热更: 重裁模板不必发版; 默认是 /sdcard/sgm_settle/templates/,
+ *            未授"所有文件访问"时退到 App 私有目录)
  *           > assets/templates/<name>.png (APK 内置默认, 从 phone/autojs/templates 同步)。
  * 缺模板返回 null — 调用方按「没模板不盲点」降级处理 (同 autojs 版 try/catch 语义)。
  *
@@ -21,8 +22,6 @@ import java.util.Map;
  * ⚠️ aapt2 默认会 crunch PNG (重编码) 掉分风险 ⇒ build-ci.sh 用 --no-crunch。
  */
 public final class TplStore {
-    public static final String EXT_DIR = "/sdcard/sgm_settle/templates/";
-
     private final Context ctx;
     private final Map<String, Vision.Frame> cache = new HashMap<>();
 
@@ -43,7 +42,7 @@ public final class TplStore {
     public void clear() { cache.clear(); }
 
     private Vision.Frame load(String name) {
-        Vision.Frame f = fromFile(EXT_DIR + name + ".png");
+        Vision.Frame f = fromFile(Paths.tplDir() + name + ".png");
         if (f != null) return f;
         try {
             InputStream in = ctx.getAssets().open("templates/" + name + ".png");

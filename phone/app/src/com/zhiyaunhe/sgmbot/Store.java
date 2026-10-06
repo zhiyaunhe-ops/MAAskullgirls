@@ -10,12 +10,11 @@ import java.util.Locale;
 /**
  * 今日场次 — 移植 phone/autojs/pf_store.js (同口径: 日历天归零 / 上限 / 读写失败静默降级)。
  *
- * /sdcard/sgm_settle/store.json → {"day":"2026-10-07","rounds":12,"wins":7,"loses":5}
+ * <Paths.store()> → {"day":"2026-10-07","rounds":12,"wins":7,"loses":5}
+ * (默认 /sdcard/sgm_settle/store.json; 未授"所有文件访问"时退到 App 私有目录)
  * PC 版完整场次系统 (子场次/规则按钮组) 在 PC 侧; 手机侧只做今日计数 + 上限。
  */
 public final class Store {
-    public static final String PATH = "/sdcard/sgm_settle/store.json";
-
     public String day = "";
     public int rounds, wins, loses;
 
@@ -32,7 +31,7 @@ public final class Store {
         Store s = new Store();
         String today = todayStr();
         try {
-            File f = new File(PATH);
+            File f = new File(Paths.store());
             if (f.exists() && f.length() > 0) {
                 FileInputStream in = new FileInputStream(f);
                 byte[] buf = new byte[(int) f.length()];
@@ -60,7 +59,7 @@ public final class Store {
     /** 每场落盘 (崩溃/重启不丢今日计数); 失败静默 */
     public void save() {
         try {
-            File f = new File(PATH);
+            File f = new File(Paths.store());
             File d = f.getParentFile();
             if (d != null && !d.exists()) d.mkdirs();
             JSONObject o = new JSONObject();

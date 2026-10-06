@@ -18,6 +18,10 @@
          (sendBinder 里 requestedPermissions 不含 API_V23 的包被直接 continue),
          缺了它 provider 永远收不到 binder, 表现为"Shizuku 永远未连接"。 -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
+    <!-- 分区存储 (Android 11+): /sdcard 根目录只有"所有文件访问"能读写。
+         未授时 Paths 自动退到 App 私有外部目录, 功能不残但 adb push 得写长路径。
+         授权入口: 主页按「授权所有文件访问」跳系统设置页。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
 
     <application
         android:name=".App"

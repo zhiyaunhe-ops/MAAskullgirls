@@ -11,6 +11,7 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
         inst = this;
+        Paths.init(this);   // 必须先于 SgmLog.init — 日志目录也走 Paths
         SgmLog.init();
         new DebugHttp().start();
     }

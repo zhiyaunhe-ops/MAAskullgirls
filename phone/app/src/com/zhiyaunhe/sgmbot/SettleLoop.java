@@ -75,7 +75,7 @@ public final class SettleLoop {
         Vision.Frame tRm = tpls.get("btn_rematch"), tCt = tpls.get("btn_continue");
         if (tVic == null || tDef == null) {
             SgmLog.i("bot", "缺模板 victory/defeat — 不开跑 (assets/templates 或 "
-                    + TplStore.EXT_DIR + " 下补齐)");
+                    + Paths.tplDir() + " 下补齐)");
             return;
         }
 
