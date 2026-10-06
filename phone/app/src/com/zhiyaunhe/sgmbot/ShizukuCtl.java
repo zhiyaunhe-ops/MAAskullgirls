@@ -101,7 +101,7 @@ public final class ShizukuCtl {
             // mkdir -p: 目录不存在时 screencap 报 "Error opening file" 且不自建目录
             String out = exec("mkdir -p \"" + d + "\" && screencap -p \"" + p + "\"");
             Bitmap b = decode(p);
-            if (b != null) { capFails = 0; return b; }
+            if (b != null) { capFails = 0; capOk = d; return b; }
             capOut = out;
         }
         if (capFails++ % 20 == 0) {   // 每 20 次报一次, 别刷屏
@@ -113,11 +113,20 @@ public final class ShizukuCtl {
         return null;
     }
 
-    /** 候选落盘目录: 先 Paths 根 (私有目录或已授权的 /sdcard/sgm_settle), 再兜 /sdcard/sgm_settle */
+    /**
+     * 候选落盘目录: 上次成功的排最前 (免得每帧多跑一次注定失败的 screencap),
+     * 然后 Paths 根 (私有目录, 或已授权时的 /sdcard/sgm_settle), 最后兜 /sdcard/sgm_settle。
+     */
     private static String[] dirs() {
+        java.util.List<String> l = new java.util.ArrayList<String>(2);
+        if (capOk != null) l.add(capOk);
         String a = Paths.root();
-        return a.equals(Paths.LEGACY) ? new String[]{a} : new String[]{a, Paths.LEGACY};
+        if (!l.contains(a)) l.add(a);
+        if (!l.contains(Paths.LEGACY)) l.add(Paths.LEGACY);
+        return l.toArray(new String[0]);
     }
+
+    private static volatile String capOk;
 
     private String capErr = "";
     private String capOut = "";
