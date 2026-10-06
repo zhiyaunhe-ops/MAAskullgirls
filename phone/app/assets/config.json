@@ -14,8 +14,72 @@
   "result_ms": 350,
   "tap_delay_ms": 1200,
   "stall_sec": 30,
+  "battle_stall_sec": 180,
   "launch_timeout_s": 300,
   "hub_timeout_s": 120
+ },
+ "title_roi": [
+  400,
+  20,
+  480,
+  100
+ ],
+ "result_fallback": 3,
+ "escape": {
+  "ok_offset": [
+   210,
+   188
+  ],
+  "items": [
+   {
+    "tpl": "srv_ok",
+    "th": 0.75
+   },
+   {
+    "tpl": "ok_btn",
+    "th": 0.8,
+    "roi": [
+     480,
+     300,
+     320,
+     180
+    ]
+   },
+   {
+    "tpl": "srv_retry",
+    "th": 0.75
+   },
+   {
+    "tpl": "scene_x",
+    "th": 0.8,
+    "roi": [
+     600,
+     0,
+     560,
+     180
+    ]
+   },
+   {
+    "tpl": "modal_x",
+    "th": 0.9,
+    "roi": [
+     480,
+     0,
+     480,
+     280
+    ]
+   },
+   {
+    "tpl": "vs_fight",
+    "th": 0.75,
+    "roi": [
+     1020,
+     0,
+     260,
+     130
+    ]
+   }
+  ]
  },
  "daily_cap": 0,
  "target_card": "ev_target",

@@ -13,9 +13,11 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * 前台服务 — 悬浮条/工作线程/常驻通知的宿主。
- * M1: runBot 为通路自证 (每 5s 截一帧记尺寸); M2 接 SettleLoop/NavChain。
+ * M2: settle 模式跑 SettleLoop (移植 autojs 结算循环); 导航链待 NavChain 接入。
  * 控制面三入口 (悬浮条/广播/HTTP) 全部汇到 start/stop/trigger。
  */
 public class BotService extends Service {
@@ -26,7 +28,10 @@ public class BotService extends Service {
     private static volatile String mode = "";
     private static Config cfg;
     private static ShizukuCtl sh;
+    private static TplStore tpls;
     private static TouchCtl touch;
+    /** 循环停止标志 — 与 running 同步置位 (SettleLoop 达上限时也会自己置 false) */
+    private static final AtomicBoolean RUN = new AtomicBoolean(false);
     private static final Handler UI = new Handler(Looper.getMainLooper());
 
     private OverlayBar bar;
@@ -56,8 +61,10 @@ public class BotService extends Service {
             case "start": start(c, MODE_SETTLE); break;
             case "stop": stop(c); break;
             case "reload":
-                if (cfg != null)
+                if (cfg != null) {
+                    if (tpls != null) tpls.clear();     // 模板热更: 下次取模板重新解码
                     SgmLog.i("ctl", "reloaded, target=" + cfg.read().optString("target_card"));
+                }
                 break;
             default: SgmLog.i("ctl", "unknown action " + action);
         }
@@ -72,6 +79,7 @@ public class BotService extends Service {
         App.service = this;
         if (cfg == null) cfg = new Config(this);
         if (sh == null) sh = new ShizukuCtl();
+        if (tpls == null) tpls = new TplStore(this);
         if (touch == null) touch = new TouchCtl(sh);
         if (Settings.canDrawOverlays(this)) {
             bar = new OverlayBar(this);
@@ -96,6 +104,7 @@ public class BotService extends Service {
         }
         ShizukuCtl.tryBind(this);
         running = true;
+        RUN.set(true);
         mode = m;
         final String mm = m;
         new Thread(() -> runBot(mm), "bot-" + mm).start();
@@ -105,6 +114,7 @@ public class BotService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        RUN.set(false);
         if (bar != null) bar.destroy();
         App.service = null;
         SgmLog.i("svc", "destroyed");
@@ -112,33 +122,21 @@ public class BotService extends Service {
     }
 
     private void runBot(String m) {
-        SgmLog.i("bot", "M1 通路自证开始 mode=" + m);
-        notify_("SGM挂机 " + m + " — 通路自证中");
-        long t0 = System.currentTimeMillis();
-        int frames = 0, fails = 0;
-        while (running) {
-            Bitmap b = sh.capture();
-            if (b != null) {
-                frames++;
-                SgmLog.i("bot", "frame#" + frames + " " + b.getWidth() + "x" + b.getHeight());
-                b.recycle();
-            } else {
-                fails++;
-                SgmLog.i("bot", "frame fail #" + fails);
-            }
-            final int fr = frames, fl = fails;
-            if (bar != null) bar.setStat(m, fmtSec(System.currentTimeMillis() - t0),
-                    "帧 " + fr + "/失" + fl, 0, 0);
-            try {
-                SgmLog.state(DebugHttp.readFileJson(SgmLog.DIR + "state.json")
-                        .put("mode", m).put("running", true)
-                        .put("frames", fr).put("frame_fails", fl)
-                        .put("shizuku_ready", ShizukuCtl.ready()));
-            } catch (Exception ignored) { }
-            try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+        if (MODE_NAV.equals(m)) {
+            /* M2: NavChain 未接入前, 导航模式退化为直接进结算循环 (不盲点未知界面) */
+            SgmLog.i("bot", "导航链待 NavChain (M2) 接入 — 本次先跑结算循环");
+        }
+        SgmLog.i("bot", "开始 mode=" + m);
+        notify_("SGM挂机 " + m + " — 结算循环中");
+        try {
+            new SettleLoop(sh, tpls, bar).run(RUN, cfg);
+        } catch (Throwable t) {
+            SgmLog.i("bot", "循环异常: " + t);
         }
         running = false;
+        RUN.set(false);
         notify_("SGM挂机已停止");
+        SgmLog.i("svc", "stopped mode=" + m);
     }
 
     private static String fmtSec(long ms) {

@@ -23,7 +23,8 @@ mkdir -p "$OUT/gen"
 "$BT/aidl" -o "$OUT/gen" aidl/com/zhiyaunhe/sgmbot/shizuku/IShellService.aidl
 
 echo "== aapt2 compile/link =="
-"$BT/aapt2" compile --dir res -o "$OUT/res.zip"
+# --no-crunch: 模板 PNG 必须逐字节保真 (NCC 匹配对重编码敏感, 阈值 0.72 掉不起)
+"$BT/aapt2" compile --no-crunch --dir res -o "$OUT/res.zip"
 "$BT/aapt2" link -o "$OUT/base.apk" -I "$PLAT" \
     --manifest AndroidManifest.xml -A assets "$OUT/res.zip"
 
