@@ -64,6 +64,9 @@ public final class ShizukuCtl {
         };
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx, com.zhiyaunhe.sgmbot.shizuku.ShellService.class))
+                // UserService 进程名后缀 (<pkg>:sgmbot); 缺它 bindUserService 抛
+                // NPE "process name suffix must not be null" (Shizuku.java forAdd)
+                .processNameSuffix("sgmbot")
                 .version(1).tag("v1");
         Shizuku.bindUserService(args, conn);
         SgmLog.i("shizuku", "bindUserService...");
