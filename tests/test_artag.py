@@ -52,13 +52,46 @@ def hub():
 
 # ---------------------------------------------------------------- 条件表
 
+def _cond(tag):
+    """条件表取值走 conditions_of (2026-10-06: 条件表已改为 JSON 可配置)。"""
+    return T.conditions_of(tag)
+
+
 def test_条件表三档取值():
     """角色 5kw/5能量, 元素 5kw/4能量, 其余 4kw/4能量。"""
-    assert T.TAG_CONDITIONS["character"] == (50_000_000, 5, "class")
-    assert T.TAG_CONDITIONS["element"] == (50_000_000, 4, "element")
-    assert T.TAG_CONDITIONS["rift"] == (50_000_000, 4, "element")
+    assert _cond("character") == (50_000_000, 5, "class")
+    assert _cond("element") == (50_000_000, 4, "element")
     for tag in ("gold", "assist", "move"):
-        assert T.TAG_CONDITIONS[tag] == (40_000_000, 4, None), tag
+        assert _cond(tag) == (40_000_000, 4, None), tag
+
+
+def test_条件表来自JSON且可写(tmp_path):
+    """条件表不再是代码常量(2026-10-06 用户口径「能配置的界面」):
+    改 JSON -> conditions_of 立刻反映; rift 不在表里(另一种模式, 忽略)。"""
+    p = tmp_path / "c.json"
+    ok, msg = T.save_conditions({
+        "character": {"score_target": 12345678, "energy_cost": 6,
+                      "rule": "class", "label": "角色场"},
+        "gold": {"score_target": None, "energy_cost": 3, "rule": None, "label": "金币场"},
+    }, p)
+    assert ok, msg
+    tbl = T.load_conditions(p)
+    assert tbl["character"]["score_target"] == 12345678
+    assert tbl["character"]["energy_cost"] == 6
+    assert T.conditions_of("character", tbl) == (12345678, 6, "class")
+    assert tbl["gold"]["score_target"] is None, "留空 = 无上限"
+    assert "rift" not in tbl, "rift 已被忽略, 不该出现在条件表里"
+    ok2, msg2 = T.save_conditions({"x": {"score_target": None, "energy_cost": 4,
+                                        "rule": "bogus"}}, p)
+    assert not ok2, "非法 rule 类型应被拒"
+    assert "x" in msg2
+
+
+def test_表里没有的tag走最保守兜底():
+    """rift / 乱写的 tag 都不在表里 -> 走未识别兜底(4kw/4能量/无规则), 不猜。"""
+    for tag in ("rift", "zzz", ""):
+        assert T.conditions_of(tag) == (T.DEFAULT_SCORE_TARGET,
+                                        T.DEFAULT_ENERGY_COST, None), tag
 
 
 def test_月场两类均无上限():
@@ -68,15 +101,16 @@ def test_月场两类均无上限():
     188,331,229 / 191,962,012 —— 任何具体上限都会提前截断。
     """
     assert T.MONTHLY_SCORE_TARGET is None
-    assert T.TAG_CONDITIONS["monthly_character"] == (None, 4, None)
-    assert T.TAG_CONDITIONS["monthly_element"] == (None, 4, "element")
+    assert _cond("monthly_character") == (None, 4, None)
+    assert _cond("monthly_element") == (None, 4, "element")
 
 
 def test_月场标签已拆分():
     """旧的 monthly 单标签已拆成 monthly_character / monthly_element 两名。"""
-    assert "monthly" not in T.TAG_CONDITIONS
-    assert "monthly_character" in T.TAG_CONDITIONS
-    assert "monthly_element" in T.TAG_CONDITIONS
+    tbl = T.load_conditions()
+    assert "monthly" not in tbl
+    assert "monthly_character" in tbl
+    assert "monthly_element" in tbl
     # 优先级表也要跟着更新, 否则 _pick() 会因index 越界而崩
     for tag in ("monthly_character", "monthly_element"):
         assert tag in T._TAG_PRIORITY
@@ -149,7 +183,8 @@ def test_索引key认不出则落unknown不猜():
                                   "active": True, "scope": "current"}}}
     idx = T.build_tag_index(snap)
     assert idx[0]["tag"] == "unknown"
-    assert T.TAG_CONDITIONS.get(idx[0]["tag"]) is None   # 不在条件表 -> 走兜底
+    assert T.conditions_of(idx[0]["tag"]) == (T.DEFAULT_SCORE_TARGET,
+                                             T.DEFAULT_ENERGY_COST, None)
 
 
 def test_占位符Active不进索引():
@@ -167,31 +202,28 @@ def test_占位符Active不进索引():
     assert T.build_tag_index(snap) == []
 
 
-def test_rift与element同名按优先级取一并留痕():
-    """rift 与 element 可同为 'Dark': hub只有一张卡, 快照两条都 active。
+def test_rift被忽略不进索引():
+    """rift (裂缝元素) 按用户 2026-06 口径**忽略**: 它与 element 抢同名。
 
-    回归 (2026-09-19/09-20/09-26 实测): 旧实现顺序取第一个, 把 element 标成
-    rift。取值相同故不影响跑批, 但 tag 标错会让日志误导 —— 现在按优先级取
-    element 并在 note 里记明撞车。
+    实测 09-19/09-20/09-26 三天 sgmnow 里 rift 与 elem 都 active 且名字
+    都是 Dark/Water, 而 hub 只有一张卡。rift 不进索引后:
+      ① element 侧照常归类;
+      ② 只有 rift 时落 unknown 取最保守条件(宁可漏跑不错跑)。
     """
     snap = {"entries": {
         "rift": {"key": "rift", "name": "Dark", "active": True, "scope": "current"},
         "elem": {"key": "elem", "name": "Dark", "active": True, "scope": "current"},
     }}
-    r = T.classify_arena("Dark", T.build_tag_index(snap), manual={})
-    assert r["tag"] == "element", "element 应优先于 rift"
+    idx = T.build_tag_index(snap)
+    assert all(x["tag"] != "rift" for x in idx), "rift 不该进索引"
+    r = T.classify_arena("Dark", idx)
+    assert r["tag"] == "element", "element 侧应正常归类"
     assert r["rule"] == {"type": "element", "value": "dark"}
-    assert "同名撞车" in r["note"], "撞车必须留痕"
-    # 反向输入顺序结果应一致 (不能靠列表顺序决定答案)
-    snap2 = {"entries": {
-        "elem": {"key": "elem", "name": "Dark", "active": True, "scope": "current"},
-        "rift": {"key": "rift", "name": "Dark", "active": True, "scope": "current"},
-    }}
-    assert T.classify_arena("Dark", T.build_tag_index(snap2), manual={})["tag"] == "element"
-
-
-# ---------------------------------------------------------------- 比对阈值
-
+    only = {"entries": {"rift": {"key": "rift", "name": "Rift X",
+                                 "active": True, "scope": "current"}}}
+    r2 = T.classify_arena("Rift X", T.build_tag_index(only))
+    assert r2["tag"] == T.UNKNOWN_TAG
+    assert r2["rule"] is None
 def test_全等满分():
     assert T.match_score("A SHOT IN THE DARK", "A Shot in the Dark") == 1.0
 
@@ -310,7 +342,7 @@ def test_对真实hub扫描结果归类(snap, hub):
     out = T.classify_all(arenas, snap)
     assert len(out) == len(arenas)
     for r in out:
-        assert r["tag"] in T.TAG_CONDITIONS or r["tag"] == T.UNKNOWN_TAG
+        assert r["tag"] in T.load_conditions() or r["tag"] == T.UNKNOWN_TAG
         assert r["energy_cost"] >= 1 and r["energy_cost"] <= 10
         if r["tag"] not in ("character", "element", "rift", "monthly_element"):
             assert r["rule"] is None, f"{r['title']!r} 非限定场却带规则 {r['rule']}"
@@ -332,7 +364,7 @@ def test_月场人工表三类条目结构合规():
     assert m, "monthly_manual.json 读不出来或为空"
     for k, spec in m.items():
         assert spec.get("monthly") is True, f"{k} 缺 monthly=true"
-        assert spec.get("tag") in T.TAG_CONDITIONS, \
+        assert spec.get("tag") in T.load_conditions(), \
             f"{k} 的 tag={spec.get('tag')!r} 不在条件表里"
 
 

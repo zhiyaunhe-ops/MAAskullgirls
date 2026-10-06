@@ -4,7 +4,7 @@
   1. **先更新场次再做比对** —— JJC.today() 必须在 classify之前被调用;
      缺这一步就会拿昨天的快照比今天的场地, 白跑一天。
   2. **条件按 tag 取, 不继承** —— 建出来的场次 score_target/energy_cost/rule
-     全部来自 pf_artag.TAG_CONDITIONS, 与任何父场次无关。
+     全部来自条件表(pf_artag.conditions_of), 与任何父场次无关。
   3. **判不出类别仍建场次**(取最保守条件) —— 不因认不出类别就无场次可跑。
 
 全程不触网、不起MuMu/游戏: JJC 与pf_store 都在测试里换成桩。
@@ -146,17 +146,16 @@ def test_快照stale会显式告警(monkeypatch, stub_store, capsys):
 
 # ---------------------------------------------------------------- 条件取值
 
-def test_条件按tag取与TAG_CONDITIONS一致(monkeypatch, stub_store):
+def test_条件按tag取与条件表一致(monkeypatch, stub_store):
     """建出来的条件必须等于条件表, 不受任何场次影响。"""
+    # rift按用户 2026-10-06 口径忽略(另一种模式), 不再作为一类参与归类
     cases = {
         "Ms. Fortune": ("character", 50_000_000, 5),
         "Fire":        ("element",   50_000_000, 4),
-        "Wind":        ("rift",      50_000_000, 4),
     }
     entries = {
         "char": {"key": "char", "name": "Ms. Fortune", "active": True, "scope": "current"},
         "elem": {"key": "elem", "name": "Fire", "active": True, "scope": "current"},
-        "rift": {"key": "rift", "name": "Wind", "active": True, "scope": "current"},
     }
     for title, (tag, tgt, ec) in cases.items():
         snap = {"day": "2026-10-06", "stale": False, "revision": 1, "entries": entries}

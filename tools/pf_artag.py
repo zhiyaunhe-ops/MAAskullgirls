@@ -49,38 +49,171 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 条件表
 
-# score_target / energy_cost 口径 (用户 2026-10-06 确认, 覆盖 2026-09-19 的旧值:
-# 旧口径是角色周场 8kw / 光元素场 6kw, 本表为新口径为准):
-#   角色场 5kw + 5 能量 · 元素场 5kw + 4 能量 + 对应元素限制 · 其余一律 4kw + 4 能量
-#   **月场两类(角色月场/元素月场)均无上限** (score_target=None, 打到手动停)
-# ⚠️ None 不是"漏填": pf_bot 的判定是 `if score_target is not None and
-#   val >= score_target` (pf_bot.py:571), None 直接跳过上界判定 = 不限量。
-#   A 级依据: sessions.json 里两类月场的 tgt 本来就全是 None, 实测总分
-#   188,331,229 / 191,962,012 (1.5~1.9 亿量级), 任何具体上限都会提前截断。
-DEFAULT_SCORE_TARGET = 40_000_000     # 4kw —— 未归类场次的兜底
-DEFAULT_ENERGY_COST = 4# 其余场次统一 4 能量
+# ★ 条件表**存在 JSON 里, 不写死在代码里**(2026-10-06 用户口径「能配置的界面」):
+#   WebUI 的「场次条件」页可改这份配置, 落盘 debug/pf/tag_conditions.json,
+#   bot 重启后按新表建场次。下面的 SEED_CONDITIONS 只是**首次运行的种子值**。
+#   格式: {tag: {"score_target": int|null, "energy_cost": 1-10,
+#                 "rule": "class"|"element"|null, "label": 中文名}}
+#   - score_target=null = **无上限**(不是漏填): pf_bot 判据
+#     `if score_target is not None and val >= target` (pf_bot.py:571),
+#     None 直接跳过上界判定 = 一直打到手动停。
+#   - rule 只两类: 角色场挂 class(防守角色, 仅约束防守队), 元素类挂 element。
+#     其余必须 null —— 铁律: 非元素场带规则会做无用的队伍筛选。
+# ⚠️ rift (裂缝元素) 是**另一种模式, 按用户 2026-10-06 口径忽略**:
+#   它与普通元素场抢同名(实测 09-19/09-20/09-26 两条都 active, 名字都是
+#   Dark/Water), 撞车时只按 element 处理, rift 不再单独建条件。
+#   若将来要支持, 在 tag_conditions.json 里加rift 条目即可(本模块不写死)。
+SEED_CONDITIONS = {
+    "character":         {"score_target": 50_000_000, "energy_cost": 5,
+                          "rule": "class",   "label": "角色场"},
+    "element":           {"score_target": 50_000_000, "energy_cost": 4,
+                          "rule": "element", "label": "元素场"},
+    "monthly_character": {"score_target": None, "energy_cost": 4,
+                          "rule": None, "label": "角色月场"},
+    "monthly_element":   {"score_target": None, "energy_cost": 4,
+                          "rule": "element", "label": "元素月场"},
+    "gold":              {"score_target": 40_000_000, "energy_cost": 4,
+                          "rule": None, "label": "金币场"},
+    "move":              {"score_target": 40_000_000, "energy_cost": 4,
+                          "rule": None, "label": "招式场"},
+    "assist":            {"score_target": 40_000_000, "energy_cost": 4,
+                          "rule": None, "label": "星场"},
+}
 
-CHAR_SCORE_TARGET = 50_000_000        # 5kw
+# 未知/未开放类别的 tag —— 归类失败落到这里, 取最保守条件(不猜元素)
+UNKNOWN_TAG = "unknown"
+# 未识别场次的兜底条件 (用户 2026-10-06: 其余一律 4kw + 4 能量)
+DEFAULT_SCORE_TARGET = 40_000_000
+DEFAULT_ENERGY_COST = 4
+# 兼容旧引用 (迁移脚本/测试按名字取; 别一次性改散落各处)
+CHAR_SCORE_TARGET = 50_000_000
 CHAR_ENERGY_COST = 5
-ELEM_SCORE_TARGET = 50_000_000        # 5kw (与角色场同量级, 用户 2026-10-06 口径)
+ELEM_SCORE_TARGET = 50_000_000
 ELEM_ENERGY_COST = 4
-MONTHLY_SCORE_TARGET = None# 月场无上限
+MONTHLY_SCORE_TARGET = None
 MONTHLY_ENERGY_COST = 4
 
-# tag -> (score_target, energy_cost, 是否需要附加规则)
-#   need_rule=True 的三类才产出 rule: 角色场挂 class(防守角色), 元素场挂 element。
-#   其余一律 None —— 见文件头铁律。
-TAG_CONDITIONS = {
-    "character":        (CHAR_SCORE_TARGET, CHAR_ENERGY_COST, "class"),
-    "element":          (ELEM_SCORE_TARGET, ELEM_ENERGY_COST, "element"),
-    "rift":             (ELEM_SCORE_TARGET, ELEM_ENERGY_COST, "element"),
-    # 月场两类: 无上限; 元素月场挂 element 限制(与元素场同一条铁律), 角色月场不挂。
-    "monthly_character": (MONTHLY_SCORE_TARGET, MONTHLY_ENERGY_COST, None),
-    "monthly_element":   (MONTHLY_SCORE_TARGET, MONTHLY_ENERGY_COST, "element"),
-    "gold":             (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
-    "move":             (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
-    "assist":           (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None),
-}
+# ---------------------------------------------------------------- 条件表读写
+
+# 条件表落盘位置。放 debug/ 与 sessions.json 同级: 属**本机配置**, 不随仓库
+# 分发(同 config.json 的理由)。首次运行时从 SEED_CONDITIONS 自举一份。
+CONDITIONS_PATH = (Path(__file__).resolve().parents[1] / "debug" / "pf"
+                   / "tag_conditions.json")
+
+
+def _valid_entry(tag: str, e) -> dict | None:
+    """校验一条条件配置, 合法返回规范化 dict, 非法返回 None。
+
+    逐条校验的意义: 配置是用户手改的, 一处笔误不该让**整表**报废。
+    """
+    if not isinstance(e, dict):
+        return None
+    tgt = e.get("score_target", None)
+    if tgt is not None and tgt != "":
+        try:
+            tgt = max(0, int(tgt))
+        except (TypeError, ValueError):
+            return None
+    else:
+        tgt = None                     # 空 = 无上限 (月场口径)
+    try:
+        ec = max(1, min(10, int(e.get("energy_cost", 4))))
+    except (TypeError, ValueError):
+        ec = DEFAULT_ENERGY_COST
+    rule = e.get("rule") or None
+    if rule not in (None, "class", "element"):
+        return None                     # 未知 rule 类型 -> 整条不认
+    return {"score_target": tgt, "energy_cost": ec, "rule": rule,
+            "label": str(e.get("label") or tag)}
+
+
+def load_conditions(path=None) -> dict:
+    """读条件表 -> {tag: {score_target, energy_cost, rule, label}}。
+
+    文件不存在/坏了 -> 回落种子并**落盘一份**(首次运行自举出可编辑文件)。
+    """
+    p = Path(path) if path else CONDITIONS_PATH
+    raw = None
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError, AttributeError):
+        raw = None
+    if not isinstance(raw, dict) or not raw:
+        raw = {t: dict(v) for t, v in SEED_CONDITIONS.items()}
+        _write_conditions(raw, p)
+    out = {}
+    for tag, e in raw.items():
+        v = _valid_entry(str(tag), e)
+        if v is not None:
+            out[str(tag)] = v
+    return out or {t: _valid_entry(t, v) for t, v in SEED_CONDITIONS.items()}
+
+
+def _write_conditions(table: dict, path=None) -> bool:
+    """条件表落盘(原子写)。失败只返回 False —— 配置写不下去不该崩 bot。"""
+    p = Path(path) if path else CONDITIONS_PATH
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(table, f, ensure_ascii=False, indent=1, sort_keys=True)
+        tmp.replace(p)
+        return True
+    except OSError:
+        return False
+
+
+def save_conditions(table: dict, path=None) -> tuple:
+    """WebUI 保存条件表。返回 (成功?, 说明)。非法条目被拒并说明是哪几条。"""
+    clean, bad = {}, []
+    for tag, e in (table or {}).items():
+        tag = str(tag).strip()
+        if not tag:
+            continue
+        if tag == UNKNOWN_TAG:
+            continue                     # 兜底 tag 不由用户改, 见conditions_of
+        v = _valid_entry(tag, e)
+        (bad.append(tag) if v is None else clean.update({tag: v}))
+    if bad:
+        return False, ("非法条目(分数上限须为非负整数或留空=无上限; "
+                       "能量 1-10; 规则只能 class/element/留空): " + "、".join(bad))
+    if not clean:
+        return False, "条件表为空, 已拒绝保存 (否则所有场次都归不上类)"
+    if not _write_conditions(clean, path):
+        return False, f"写盘失败: {path}"
+    return True, f"已保存 {len(clean)} 条; 对新建场次生效(已建的场次不受影响)"
+
+
+def conditions_of(tag: str, table: dict = None) -> tuple:
+    """tag -> (score_target, energy_cost, rule_kind)。
+
+    兼容旧的元组返回形态(pf_schedule / 迁移脚本按 3 元组解包)。
+    表里没有该 tag -> 走未识别兜底(最保守), **不猜**。
+    """
+    if table is None:
+        table = load_conditions()
+    e = table.get(tag)
+    if not e:
+        return DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None
+    return e["score_target"], e["energy_cost"], e["rule"]
+
+
+# 模块级缓存: 条件表读多写少, 每次读盘没必要。但**保存后要失效**
+# (load_conditions 带缓存参数, pf_schedule 长驻进程要拿到新值)。
+_CACHE = {"fp": None, "table": None}
+
+
+def conditions_cached() -> dict:
+    """按文件 mtime 缓存的条件表 —— 长驻进程改了配置能自动看到。"""
+    try:
+        fp = CONDITIONS_PATH.stat().st_mtime_ns
+    except OSError:
+        fp = None
+    if _CACHE["fp"] != fp:
+        _CACHE["table"] = load_conditions()
+        _CACHE["fp"] = fp
+    return _CACHE["table"]
 
 # 未知/未开放类别的 tag —— 归类失败落到这里, 取最保守条件(不猜元素)
 UNKNOWN_TAG = "unknown"
@@ -315,6 +448,12 @@ def build_tag_index(snapshot: dict, *, only_active: bool = True) -> list:
             continue
         # key 认不出 -> kind 落unknown 而不是猜一个 (错 tag 会套错条件)
         kind = kinds.get(e.get("key"), "unknown")
+        # rift (裂缝元素) 按用户 2026-10-06 口径**忽略**: 它与 element 抢同名
+        # (实测 09-19/09-20/09-26 两条都 active, 名字都是 Dark/Water),
+        # 进索引只会让同一张卡被当成两个类别。剔除后 rift 场次若真出现在
+        # hub 上, 会落 unknown 取最保守条件 —— 宁可漏跑不错跑。
+        if kind == "rift":
+            continue
         # 月场**不进索引**: sgmnow 的 holi 只有名字, 没有"角色月场还是元素月场"
         # 也没有元素名 —— 归类交由 monthly_manual.json 人工补(build 时就会被
         # 覆盖), 否则只能给出 monthly 这一无法再分的 tag。
@@ -349,7 +488,7 @@ def match_score(a: str, b: str) -> float:
 # hub 上只有一张该名的卡, 但快照里两条都 active —— 同名时按此序取一个, 并在
 # note 里记明撞车, 不让日志看起来像"本来就只有一个元素场")。
 #取值上两者本就相同(都是 5kw/4能量/element 规则), 所以这是可读性问题而非跑批问题。
-_TAG_PRIORITY = ("character", "element", "rift", "gold",
+_TAG_PRIORITY = ("character", "element", "gold",
                  "monthly_character", "monthly_element",
                  "assist", "move", "unknown")
 
@@ -368,8 +507,7 @@ def _from_manual(title: str, spec: dict) -> dict:
     「人工配置」—— 事后翻日志时能立刻分清哪些归类是查出来的、哪些是口述的。
     """
     tag = spec.get("tag") or UNKNOWN_TAG
-    tgt, energy, rule_kind = TAG_CONDITIONS.get(
-        tag, (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None))
+    tgt, energy, rule_kind = conditions_of(tag)
     rule = None
     if rule_kind == "element":
         elem = norm_element(spec.get("element"))
@@ -417,8 +555,7 @@ def classify_arena(title: str, index: list,
     # 走相似度只会落unknown -> 最保守的 4kw, 把无上限的月场砍掉。
     for rx, tag in _CN_TAG_RULES:
         if rx.search(title or ""):
-            tgt, energy, rule_kind = TAG_CONDITIONS.get(
-                tag, (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None))
+            tgt, energy, rule_kind = conditions_of(tag)
             note = f"tag={tag} <- 场次名含类别词 {rx.pattern!r} (本地自起名, A级口径)"
             rule = None
             if rule_kind == "element":
@@ -445,9 +582,7 @@ def classify_arena(title: str, index: list,
                 "energy_cost": DEFAULT_ENERGY_COST,
                 "note": f"未过阈值({threshold}): {near}"}
     hit, collisions = _pick(cands)
-    tgt, energy, rule_kind = TAG_CONDITIONS.get(hit["tag"],
-                                                (DEFAULT_SCORE_TARGET,
-                                                 DEFAULT_ENERGY_COST, None))
+    tgt, energy, rule_kind = conditions_of(hit["tag"])
     rule = None
     if rule_kind == "element":
         # 元素场必须带对应元素限制 (用户 2026-09-20 口径: 对应元素放左1)。

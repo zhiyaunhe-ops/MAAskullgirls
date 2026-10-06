@@ -146,10 +146,8 @@ def act_run_pf(params: dict) -> None:
         # 只是名字沿用父名+日期); 没 tag 的(未迁移/人工建)才退回旧继承,
         # 免得schedule.json 里存量任务直接崩。
         if parent.get("tag"):
-            from pf_artag import TAG_CONDITIONS, DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST
-            tgt, ec, _ = TAG_CONDITIONS.get(parent["tag"],
-                                            (DEFAULT_SCORE_TARGET,
-                                             DEFAULT_ENERGY_COST, None))
+            from pf_artag import conditions_of
+            tgt, ec, _ = conditions_of(parent["tag"])
             name = f"{parent['name']} {time.strftime('%m-%d')}"
             sess = STORE.create_tagged(name, parent.get("rule"),
                                        tag=parent["tag"],
@@ -393,7 +391,7 @@ def classify_and_create(title: str, params: dict):
       ① **先更新场次** (JJC.today(): 当天有快照就用, 没有现抓 sgmnow) ——
          「先更新场次再做比对」这条顺序缺了就会拿旧数据比, 白跑一天;
       ② pf_artag.classify_arena 按名称相似度定 tag (阈值 0.75);
-      ③ 条件一律**从 pf_artag.TAG_CONDITIONS 按 tag 取**, 不继承任何场次;
+      ③ 条件一律**从条件表(pf_artag.conditions_of)按 tag 取**, 不继承任何场次;
       ④ 场次名带日期, 便于连刷编排识别。
 
     归类不中(判不出 tag)时**照样建场次**, 但取最保守条件(4kw/4能量/无规则)

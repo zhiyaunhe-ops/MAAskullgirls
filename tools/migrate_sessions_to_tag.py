@@ -2,7 +2,7 @@
 
 背景: 场次原先靠 parent_id -> STORE.create_child() 继承 score_target/
 energy_cost/rule; 用户 2026-10-06 口径改为「不搞父子, 只按 tag 归类取条件」,
-取值表在 tools/pf_artag.py (见该模块 TAG_CONDITIONS)。本脚本把**已有场次**
+取值表在 tools/pf_artag.py (条件表 JSON, 见 conditions_of)。本脚本把**已有场次**
 的三个字段按tag 重算一遍, 使存量与新口径一致。
 
 ⚠️ 为什么必须停bot 才能跑:
@@ -136,8 +136,7 @@ def classify_session(s: dict) -> dict:
 
 def conditions_for(tag: str, element, char) -> dict:
     """tag -> {score_target, energy_cost, rule}。未知 tag 走最保守兜底。"""
-    tgt, energy, rule_kind = T.TAG_CONDITIONS.get(
-        tag, (T.DEFAULT_SCORE_TARGET, T.DEFAULT_ENERGY_COST, None))
+    tgt, energy, rule_kind = T.conditions_of(tag)
     rule = None
     if rule_kind == "element" and element:
         rule = {"type": "element", "value": element}
