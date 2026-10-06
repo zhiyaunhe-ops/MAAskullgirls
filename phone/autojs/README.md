@@ -85,6 +85,7 @@ HyperOS 装第三方 APK 被拦时，按你平时装 pfwidget 的方式放行即
     ├── hall_events.png  # (导航用, 待采集) 大厅 EVENTS 菱形文字标签
     ├── ev_play.png      # (导航用) 活动居中卡橙色 PLAY! 按钮
     ├── srv_ok.png        # (stall 逃生) 网络错误弹窗文字框 — 点 OK 用 OK_OFFSET 固定偏移
+    ├── ok_btn.png        # (stall 逃生) 弹窗 OK 按钮通用兜底 — 网络错误弹窗有多种文案, 按钮本体不变
     ├── vs_fight.png      # (stall 逃生/自愈) VS 页右上 FIGHT! — 直接开打, 不绕大厅
     └── ev_target.png    # (导航用, 待采集) 目标活动卡模板 (当前=Pillow Talk, 换活动重裁此图)
 ```
@@ -248,6 +249,7 @@ AutoJs6 内置打包：文件列表长按 `sgm_settle` 文件夹（或脚本）�
 | 日志狂刷 `[!!] 无识别` | 游戏不在结算页属正常；一直刷 = 模板对不上 → 第 5 步调参/重裁 |
 | 战斗 3 分钟+无大字 | 长战斗属正常不动作；超 `BATTLE_STALL_SEC`(180s) 后每 30s 一跳：先试 PLAY 拉回（不在活动卡页只记日志不盲点），连续 3 跳 → 导航自愈。网络错误弹窗（Beep. Boop.../Error Code OK）任何阶段出现都会被 `srv_ok` 模板点掉 |
 | 日志出现 `[弹] stall 关弹窗 (srv_ok)` | 网络错误弹窗被点掉，等游戏自己恢复回循环；反复出现 = 服务器/网络真有问题 |
+| 卡在网络错误弹窗但日志没反应 | 文案变体没进模板（Beep.Boop=Error 1 / We're having...=Error 0 / ...）。通用 `ok_btn` 模板兜底所有文案；新变体出现时确认 `[弹] stall 关弹窗 (ok_btn)` 有打出 |
 | 自愈导航停在 VS 对战页不动 | 旧版没这个场景的处置。已修：`vs_fight` 模板（2026-10-06 失败帧裁剪）——runNav 开头检测右上 FIGHT! 直接开打接 AUTO/3x，结算逃生链也会点它 |
 | 点了 REMATCH 但没进下一场 | 偶发：延迟不足。`TAP_DELAY_MS` 加到 1800；或该局弹出的是别的对话框（人工看一眼） |
 | 手机重启后不工作 | 三件事：无线调试重开、Shizuku 重新启动、AutoJs6 重新运行脚本 |

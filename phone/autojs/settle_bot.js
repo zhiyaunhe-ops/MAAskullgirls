@@ -55,7 +55,7 @@ var worker = null;
 var runStart = 0;
 var mode = "";                                // "nav"=导航接棒中 / "loop"=结算循环 (小状态用)
 var folded = false;                           // 面板是否已折成小箭头
-var tplX = null, tplM = null, tplS = null, tplE = null, tplF = null;   // 弹窗X/RETRY/网络错误OK/VS页FIGHT 模板 (stall 逃生用)
+var tplX = null, tplM = null, tplS = null, tplE = null, tplF = null, tplO = null;   // X/RETRY/srv_ok/vs_fight/OK按钮 模板 (stall 逃生用)
 var navBusy = false;                          // 自愈导航进行中 (stall 连发时防重复触发)
 var _pfNav;                                   // 惰性 require: 缺 pf_nav.js 只跳过自愈, 不挡循环
 var stat = { wins: 0, loses: 0, rematches: 0, continues: 0, seen: false,
@@ -295,13 +295,15 @@ function loop() {
     if (tplS) { tplS.recycle(); tplS = null; }
     if (tplE) { tplE.recycle(); tplE = null; }
     if (tplF) { tplF.recycle(); tplF = null; }
+    if (tplO) { tplO.recycle(); tplO = null; }
     try {
         tplX = files.exists(TPL_DIR + "scene_x.png") ? images.read(TPL_DIR + "scene_x.png") : null;
         tplM = files.exists(TPL_DIR + "modal_x.png") ? images.read(TPL_DIR + "modal_x.png") : null;
         tplS = files.exists(TPL_DIR + "srv_retry.png") ? images.read(TPL_DIR + "srv_retry.png") : null;
         tplE = files.exists(TPL_DIR + "srv_ok.png") ? images.read(TPL_DIR + "srv_ok.png") : null;
         tplF = files.exists(TPL_DIR + "vs_fight.png") ? images.read(TPL_DIR + "vs_fight.png") : null;
-    } catch (e) { tplX = tplM = tplS = tplE = tplF = null; }
+        tplO = files.exists(TPL_DIR + "ok_btn.png") ? images.read(TPL_DIR + "ok_btn.png") : null;
+    } catch (e) { tplX = tplM = tplS = tplE = tplF = tplO = null; }
     files.createWithDirs(SHOT_PATH);
     runStart = Date.now();
     stat.lastAct = Date.now();
@@ -383,14 +385,21 @@ function loop() {
         }
 
         if (Date.now() - stat.lastAct > STALL_SEC * 1000) {
-            /* stall 逃生 (pf_scene 同款思路): 网络错误OK → 服务器RETRY → 弹窗X → VS页FIGHT! → 三槽按钮。
+            /* stall 逃生 (pf_scene 同款思路): 网络错误OK/通用OK按钮 → 服务器RETRY → 弹窗X
+             * → VS页FIGHT! → 三槽按钮。
              * 战斗阶段卡死另有超时链: 超 BATTLE_STALL_SEC 无大字 → PLAY 拉回,
              * 连续 3 跳仍无结果 → 导航自愈 (2026-10-06 用户规则) */
             var escaped = false;
             var hitX = null, kindX = null;
-            if (tplE) {
+            if (!hitX && tplE) {
                 hitX = images.findImage(work, tplE, { threshold: 0.75 });
                 kindX = "srv_ok";
+            }
+            if (!hitX && tplO) {
+                /* OK 按钮通用兜底: 网络错误弹窗文案多变 (Beep.Boop / We're having...,
+                 * 文字框模板只认一种), OK 按钮本体跨文案稳定 (2026-10-06 Error Code: 0 实例) */
+                hitX = images.findImage(work, tplO, { region: [480, 300, 320, 180], threshold: 0.8 });
+                kindX = "ok_btn";
             }
             if (!hitX && tplS) {
                 hitX = images.findImage(work, tplS, { threshold: 0.75 });
@@ -417,6 +426,7 @@ function loop() {
                     var tplHit = kindX === "scene_x" ? tplX
                         : kindX === "modal_x" ? tplM
                         : kindX === "vs_fight" ? tplF
+                        : kindX === "ok_btn" ? tplO
                         : tplS;
                     offX = tplHit.getWidth() / 2; offY = tplHit.getHeight() / 2;
                 }
@@ -491,6 +501,7 @@ function loop() {
     if (tplS) { tplS.recycle(); tplS = null; }
     if (tplE) { tplE.recycle(); tplE = null; }
     if (tplF) { tplF.recycle(); tplF = null; }
+    if (tplO) { tplO.recycle(); tplO = null; }
 }
 
 function startBot() {

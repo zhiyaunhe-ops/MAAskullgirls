@@ -44,6 +44,8 @@ var X_TH = 0.8;
 var SRV_TH = 0.75;           // 服务器错误弹窗 RETRY 按钮 (绿, 真机截图裁剪)
 var FIGHT_TH = 0.75;         // VS 页/地图右上 FIGHT! 按钮 (橙, 2026-10-06 自愈失败帧裁剪)
 var FIGHT_ROI = [1020, 0, 260, 130];   // 右上 FIGHT! 搜索区 (576 系; VS 页与地图页同位)
+var OK_TH = 0.8;             // 弹窗 OK 按钮通用兜底 (紫底金边; 文案变体多, 按钮本体跨文案稳定)
+var OK_ROI = [480, 300, 320, 180];     // OK 按钮搜索区 (576 系, 弹窗居中固定位)
 
 var FIRST_TAP = [903, 512];  // 右槽先手 (同 settle_bot): 胜=CONTINUE / 负=REMATCH
 var HOME_XY = [95, 32];      // 顶栏房子回大厅 (轮播页实测; 地图页在 ~72,27 —
@@ -111,7 +113,7 @@ var MODAL_TH = 0.90;                 // popup_close_x 方 X 阈值 (PC 同款, �
 var NAV_TPL_SETTLE = ["victory", "defeat", "btn_continue"];
 var NAV_TPL_REQUIRED = ["hall_events", "ev_play"]
     .concat(TARGET_CARD ? [TARGET_CARD] : []).concat(NAV_TPL_SETTLE);
-var NAV_TPL_OPTIONAL = ["scene_x", "modal_x", "srv_retry", "home", "vs_fight",
+var NAV_TPL_OPTIONAL = ["scene_x", "modal_x", "srv_retry", "home", "vs_fight", "ok_btn",
     "battle_spd_1x", "battle_spd_3x"];
 
 /* ---------- 纯决策函数 (Node 可单测) ---------- */
@@ -136,6 +138,7 @@ function playAvailable(satMean) {
  * → 结算大字先手 → CONTINUE → 大厅(完成) → 偶尔回家 → 等待 */
 function decideHallFrame(f) {
     if (f.srv) return { act: "tapSrv", xy: f.srv };
+    if (f.ok) return { act: "tapOk", xy: f.ok };
     if (f.x) return { act: "tapX", xy: f.x };
     if (f.modal) return { act: "tapModal", xy: f.modal };
     if (f.vic || f.def) return { act: "firstTap", xy: FIRST_TAP };
@@ -325,6 +328,7 @@ function waitHall(logger, tpls, shouldStop) {
         var w = snap.work;
         var d = decideHallFrame({
             srv: tpls.srv_retry ? find(w, tpls.srv_retry, null, SRV_TH) : null,
+            ok: tpls.ok_btn ? find(w, tpls.ok_btn, OK_ROI, OK_TH) : null,
             x: tpls.scene_x ? find(w, tpls.scene_x, X_ROI, X_TH) : null,
             modal: tpls.modal_x ? find(w, tpls.modal_x, MODAL_ROI, MODAL_TH) : null,
             vic: find(w, tpls.victory, ROI_TITLE, TITLE_TH) !== null,
@@ -363,6 +367,7 @@ function waitHall(logger, tpls, shouldStop) {
                 else if (d.act === "tapContinue") tapCenterWork(s2, d.xy, tpls.btn_continue);
                 else if (d.act === "tapModal") tapCenterWork(s2, d.xy, tpls.modal_x);
                 else if (d.act === "tapSrv") tapCenterWork(s2, d.xy, tpls.srv_retry);
+                else if (d.act === "tapOk") tapCenterWork(s2, d.xy, tpls.ok_btn);
                 else tapWork(s2, d.xy);
                 release(s2);
             }
