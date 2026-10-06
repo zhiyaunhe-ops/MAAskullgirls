@@ -16,7 +16,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex"
 
 LIBS=libs
-CP="$PLAT:$LIBS/api-classes.jar:$LIBS/provider-classes.jar:$LIBS/annotation-1.7.1.jar"
+CP="$PLAT:$LIBS/api-classes.jar:$LIBS/aidl-classes.jar:$LIBS/shared-classes.jar:$LIBS/provider-classes.jar:$LIBS/annotation-1.7.1.jar"
 
 echo "== aidl =="
 mkdir -p "$OUT/gen"
@@ -37,7 +37,7 @@ javac -encoding UTF-8 -classpath "$CP" -d "$OUT/classes" @"$OUT/sources.txt"
 
 echo "== d8 =="
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
-"$BT/d8" --min-api 21 --lib "$PLAT" --output "$OUT/dex" @"$OUT/classes.txt"     "$LIBS/api-classes.jar" "$LIBS/provider-classes.jar" "$LIBS/annotation-1.7.1.jar"
+"$BT/d8" --min-api 21 --lib "$PLAT" --output "$OUT/dex" @"$OUT/classes.txt"     "$LIBS/api-classes.jar" "$LIBS/aidl-classes.jar" "$LIBS/shared-classes.jar" "$LIBS/provider-classes.jar" "$LIBS/annotation-1.7.1.jar"
 
 echo "== pack =="
 (cd "$OUT/dex" && zip -q ../base.apk classes.dex)
