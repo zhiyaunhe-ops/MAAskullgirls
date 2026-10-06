@@ -10,6 +10,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- Shizuku: server 的 BinderSender 只向声明了此权限的包推送 binder
+         (sendBinder 里 requestedPermissions 不含 API_V23 的包被直接 continue),
+         缺了它 provider 永远收不到 binder, 表现为"Shizuku 永远未连接"。 -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
 
     <application
         android:name=".App"
