@@ -138,9 +138,32 @@ def act_run_pf(params: dict) -> None:
     sid = params.get("session_id")
     if not sid and params.get("parent_session"):
         from pf_store import STORE  # bot 未运行, 独占 sessions.json 安全
-        child = STORE.create_child(params["parent_session"])
-        sid = child["id"]
-        log(f"已建子场次「{child['name']}」({sid})")
+        parent = STORE.get(params["parent_session"])
+        if not parent:
+            raise RuntimeError(f"parent_session {params['parent_session']} 不存在")
+        # 2026-10-06: 父子已退役, 新建场次一律按 tag 取条件。父场次是迁移
+        # 过来的存量, 多数带 tag -> 直接复用它的 tag 条件(等价于按 tag 建,
+        # 只是名字沿用父名+日期); 没 tag 的(未迁移/人工建)才退回旧继承,
+        # 免得schedule.json 里存量任务直接崩。
+        if parent.get("tag"):
+            from pf_artag import TAG_CONDITIONS, DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST
+            tgt, ec, _ = TAG_CONDITIONS.get(parent["tag"],
+                                            (DEFAULT_SCORE_TARGET,
+                                             DEFAULT_ENERGY_COST, None))
+            name = f"{parent['name']} {time.strftime('%m-%d')}"
+            sess = STORE.create_tagged(name, parent.get("rule"),
+                                       tag=parent["tag"],
+                                       tag_basis=f"沿用父场次 {parent['id']} 的 tag",
+                                       score_target=tgt, energy_cost=ec)
+            sid = sess["id"]
+            log(f"按父场次 tag={parent['tag']} 建场次「{sess['name']}」({sid}) "
+                f"tgt={tgt} ec={ec}")
+        else:
+            child = STORE.create_child(params["parent_session"])
+            sid = child["id"]
+            log(f"父场次 {params['parent_session']} 无 tag, 退回旧式继承建子场次"
+                f"「{child['name']}」({sid}) —— 该父场次未迁移, 建议先跑 "
+                f"tools/migrate_sessions_to_tag.py", "warn")
     if not sid:
         raise RuntimeError("params 缺 session_id / parent_session")
     start_bot(sid)
@@ -213,19 +236,22 @@ def act_run_new_pf(params: dict) -> None:
     """凌晨新 PF 全链 (用户定义的路线):
 
     MuMu → 唯一 device → Skullgirls → 清弹窗 → 大厅 → PF hub → 左右滑动找今天
-    新出的 PF(score=0) → 判定它属于哪个类别 → 挂到对应父场次下建当日子场次 → 起 bot。
+    新出的 PF(score=0) → **先更新 sgmnow 场次** → **按 tag 归类取条件** → 建当日子场次
+    → 起 bot。
+
+    ⚠️ 2026-10-06 起走 tag 归类 (classify_and_create), 不再走
+    resolve_arena + create_child 父子继承 (用户口径「不搞父子了, 只搞归类tag」)。
+    params.legacy_parent 保留可回退旧路径(调试对照用), 默认新路径。
 
     params:
       fallback_title  没扫到 score=0 时的兜底场地关键词 (可选)
-      parents         {场地关键词: 父场次 id} 覆盖 arena_rules.json 的映射 (可选)
-      default_parent  兜底父场次 id (可选)
-      auto_parent     找不到父场次时按场地名新建顶级场次 (默认 True)
-      restart        bot 在跑时先停 (默认 True)
-      no_start       只找到场地+建子场次, 不起 bot (调试用, 默认 False)
+      dry_run         只归类不建场次不起bot (核对 tag 是否判对)
+      no_start        只建场次, 不起 bot (调试用, 默认 False)
+      legacy_parent   给父场次 id 则走**旧父子路径**(仅调试对照)
+      restart         bot 在跑时先停 (默认 True)
     """
     from pf_scene import PfScene, ensure_mumu
     from pf_env import resolve_adb
-    from pf_store import STORE
 
     if bot_alive():
         if not params.get("restart", True):
@@ -244,29 +270,20 @@ def act_run_new_pf(params: dict) -> None:
     #   这就是"清掉所有弹窗"那一环 (不另写视觉逻辑, 复用实测过的链路)
 
     title = pick_new_arena(scene, params)   # ⑤⑥ 左右滑动 + 选今天新出的 PF
-    rule, pid, kind, note = resolve_arena(title, params)   # 划到哪个类别
 
-    if not pid and params.get("auto_parent", True):
-        if len("".join(ch for ch in title.upper() if ch.isalnum())) < 4:
-            raise RuntimeError(
-                f"场地名 {title!r} 过短 (OCR 疑似不完整), 拒绝自动新建顶级场次 —— "
-                f"请人工看 debug/pf/run/ 下当轮截图确认真名后补 arena_rules.json")
-        sess = STORE.create(title, rule)
-        pid, note = sess["id"], note + " | 无匹配父场次, 已新建顶级场次"
-        log(f"新建顶级场次「{sess['name']}」({pid}) 规则={rule}", "warn")
-    if not pid:
-        raise RuntimeError(f"场地「{title}」既无映射父场次也无 auto_parent, 放弃")
-
-    child = STORE.create_child(pid)        # ⑦ 建当日子场次 (继承规则/上界/能量/休息)
-    log(f"子场次「{child['name']}」({child['id']}) <- 父 {pid} | 类别={kind} | {note}")
-    if rule is not None and child.get("rule") != rule:
-        STORE.update(child["id"], rule=rule)
-        log(f"按场地类别改写子场次规则 -> {rule}", "warn")
-
+    # ⑦ 按 tag 归类建场次 (内部: 先更新 sgmnow 场次, 再比对归类)
+    sid, info = classify_and_create(title, params)
+    if not sid:
+        return# dry_run: 已在 classify_and_create 里打印
+    if params.get("legacy_parent"):
+        log("legacy_parent: 新场次已建, 额外再挂一个旧式子场次(调试对照)", "warn")
+        from pf_store import STORE
+        child = STORE.create_child(params["legacy_parent"])
+        log(f"旧式子场次「{child['name']}」({child['id']})", "warn")
     if params.get("no_start"):
-        log(f"no_start: 停在已居中的「{title}」, 子场次 {child['id']} 待人工开跑")
+        log(f"no_start: 停在已居中的「{title}」, 场次 {sid} 待人工开跑")
         return
-    start_bot(child["id"])
+    start_bot(sid)
 
 
 def pick_new_arena(scene, params: dict) -> str:
@@ -303,7 +320,13 @@ def pick_new_arena(scene, params: dict) -> str:
 
 
 def resolve_arena(title: str, params: dict):
-    """场地名 -> (rule, parent_id, kind, note)。映射见 tools/data/arena_rules.json。"""
+    """场地名 -> (rule, parent_id, kind, note)。映射见 tools/data/arena_rules.json。
+
+    ⚠️ **2026-10-06 起此函数只服务「旧父子路径」**, 新建场次走
+    classify_and_create() (pf_artag): tag 优先用 sgmnow 官方分类, 不靠读名字猜。
+    保留它是因为 schedule.json 里可能还留着 parent_session 参数的旧任务,
+    以及人工在 WebUI 上设的规则仍走 sessions.json。
+    """
     import json as _json
     from pathlib import Path as _P
 
@@ -356,6 +379,77 @@ def resolve_arena(title: str, params: dict):
         note = "无父场次"
     note = f"{note} | 依据={spec.get('依据','?')}"
     return rule, pid, spec.get("kind") or "未知", note
+
+
+# ---------------------------------------------------------------- tag 归类建场次
+
+def classify_and_create(title: str, params: dict):
+    """场地名 -> (session_id, info)。**新路径: 按 tag 归类建独立场次**。
+
+    取代旧的三段式 `resolve_arena` + `create_child` (父子继承) —— 用户
+    2026-10-06 口径「不搞父子了, 只搞归类 tag」。
+
+    流程 (顺序即约束):
+      ① **先更新场次** (JJC.today(): 当天有快照就用, 没有现抓 sgmnow) ——
+         「先更新场次再做比对」这条顺序缺了就会拿旧数据比, 白跑一天;
+      ② pf_artag.classify_arena 按名称相似度定 tag (阈值 0.75);
+      ③ 条件一律**从 pf_artag.TAG_CONDITIONS 按 tag 取**, 不继承任何场次;
+      ④ 场次名带日期, 便于连刷编排识别。
+
+    归类不中(判不出 tag)时**照样建场次**, 但取最保守条件(4kw/4能量/无规则)
+    并打 warn —— 与「漏跑不错跑」同理: 场次本身有效, 只是条件保守, 人工可在
+    WebUI 上改。**不因为认不出类别就不建** —— 那会让 bot 无场次可跑。
+
+    params:
+      dry_run   只算不建, 返回 (None, info) (调试/核对用)
+      no_start  建场次但不起bot (调用方决定后续)
+    """
+    from jjc_store import JJC, sgm_day
+    import pf_artag as T
+
+    # ① 先更新场次 (缺这一步=拿昨天的数据比今天的场地)
+    snap = None
+    try:
+        snap = JJC.today(log=lambda m, level="info": log(m, level))
+    except Exception as e:  # noqa: BLE001 抓取失败不该阻断建场次
+        log(f"JJC 快照获取失败 ({e}), 将按无数据源归类(条件取最保守)", "warn")
+    stale = bool((snap or {}).get("stale"))
+    day = (snap or {}).get("day") or sgm_day()
+    if snap:
+        log(f"sgmnow 快照: 游戏日 {day}"
+            + ("  ⚠️ 当日未取到, 显示最近一次归档" if stale else "")
+            + f" (revision {snap.get('revision')})")
+
+    # ② 按 tag 归类
+    index = T.build_tag_index(snap) if snap else []
+    r = T.classify_arena(title, index, day=day)
+    log(f"归类「{title}」-> tag={r['tag']} | {r['note']}")
+    if r["tag"] == T.UNKNOWN_TAG:
+        log(f"场地「{title}」判不出类别, 按最保守条件建场次 "
+            f"(4kw/4能量/无规则) —— 需人工在 WebUI 上确认类别", "warn")
+    elif r["tag"] in ("character", "element", "rift", "monthly_element") and not r["rule"]:
+        log(f"tag={r['tag']} 未能产出规则(缺防守角色/元素名), 该场次将不限队伍",
+            "warn")
+
+    info = {"tag": r["tag"], "rule": r["rule"],
+            "score_target": r["score_target"],
+            "energy_cost": r["energy_cost"], "basis": r["note"],
+            "day": day, "stale": stale}
+
+    if params.get("dry_run"):
+        log(f"dry_run: 不建场次 (tag={r['tag']} tgt={info['score_target']} "
+            f"ec={info['energy_cost']} rule={info['rule']})")
+        return None, info
+
+    # ③ 按 tag 取条件建独立场次 (不继承任何父场次)
+    from pf_store import STORE
+    name = f"{title} {time.strftime('%m-%d')}"
+    sess = STORE.create_tagged(
+        name, info["rule"], tag=info["tag"], tag_basis=info["basis"],
+        score_target=info["score_target"], energy_cost=info["energy_cost"])
+    log(f"建场次「{sess['name']}」({sess['id']}) tag={info['tag']} "
+        f"tgt={info['score_target']} ec={info['energy_cost']} rule={info['rule']}")
+    return sess["id"], info
 
 
 def act_explore(params: dict) -> None:

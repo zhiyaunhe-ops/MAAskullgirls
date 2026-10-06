@@ -134,6 +134,32 @@ class ScoreStore:
         self._ver(sess, op="create")
         return sess
 
+    def create_tagged(self, name: str, rule, *, tag=None, tag_basis=None,
+                      rest_every=0, rest_minutes=0, score_target=None,
+                      energy_cost=4, scene=None) -> dict:
+        """按tag 建场次 (2026-10-06 用户口径: 不搞父子, 条件按 tag 取)。
+
+        与 create() 的差别 = **tag / tag_basis 在创建时就落盘**, 且进版本账本。
+        ⚠️ 不要「先 create() 再手动往 dict 里塞 tag」: _save_sessions() 已经
+        写过一次, 手动塞的字段要再等下一次任意写入才落盘, 而版本账本里记的
+        是**不含 tag 的那个快照** —— 事后追溯会看到「当时没有 tag」。
+        tag是场次的属性(属于哪一类), 条件之外的独立信息, 不参与 clean_* 清洗。
+        """
+        sess = {"id": self._new_id(), "name": name,
+                "rule": clean_rule(rule), "created": time.time(),
+                "rest_every": clean_rest(rest_every),
+                "rest_minutes": clean_rest(rest_minutes),
+                "score_target": clean_target(score_target),
+                "energy_cost": clean_energy(energy_cost),
+                "scene": clean_scene(scene),
+                "tag": str(tag) if tag else None,
+                "tag_basis": str(tag_basis) if tag_basis else None}
+        with self._lock:
+            self.sessions.append(sess)
+            self._save_sessions()
+        self._ver(sess, op="create")
+        return sess
+
     def create_child(self, parent_sid: str, name=None) -> dict:
         """建子场次 (周期性分类的每一期): 继承父场次规则/上界/能量/休息, 默认名=父名+日期。"""
         p = self.get(parent_sid)

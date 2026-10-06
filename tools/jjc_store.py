@@ -67,8 +67,11 @@ _DAILY_LABEL = "Current Daily Events:"
 _RESET_HOUR = 10            # SGM 每日 reset = Pacific 10:00
 
 # 版本账本追踪的配置字段 (score 等非配置字段不在此列)
+# tag / tag_basis 2026-10-06 起纳入: 场次按 tag 取条件后, tag 本身就是
+# 决定 score_target/energy_cost/rule 的依据 —— 不记就看不出「当时为什么是
+# 这个上界」。parent 保留(存量历史留档), 但新建场次不再走父子。
 CFG_FIELDS = ("name", "rule", "parent", "energy_cost",
-              "score_target", "rest_every", "rest_minutes")
+              "score_target", "rest_every", "rest_minutes", "tag")
 
 
 class SourceError(Exception):
