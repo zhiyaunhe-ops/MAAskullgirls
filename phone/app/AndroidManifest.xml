@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <!-- Android 14 (targetSdk 34): foregroundServiceType="specialUse" 必须同时持有此权限
+         并在 service 下声明 <property> 用途, 否则 startForeground 抛 SecurityException
+         (实测: Service 直接创建失败, 循环永远起不来) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Shizuku: server 的 BinderSender 只向声明了此权限的包推送 binder
@@ -38,11 +42,21 @@
 
         <service android:name=".BotService"
             android:exported="false"
-            android:foregroundServiceType="specialUse"/>
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="游戏挂机自动化: Shizuku shell 截屏识别结算页并模拟点击"/>
+        </service>
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- adb 控制面广播通道: 未注册时 am broadcast 静默无响应 (日志连 onReceive 都没有) -->
+        <receiver android:name=".CtlReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="com.zhiyaunhe.sgmbot.CMD"/>
             </intent-filter>
         </receiver>
     </application>
