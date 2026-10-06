@@ -92,6 +92,21 @@ UNKNOWN_TAG = "unknown"
 # 而不同场次之间 ('NIGHT' vs 'MIGHT') 明显更低。0.75 留了余量又不跨场。
 MATCH_THRESHOLD = 0.75
 
+# 中文场次名里的类别词 (本地自起名, 如「202609角色月场」/「金币场 10-01」)。
+# ⚠️ 与人工补丁表**分开**: 补丁表管 sgmnow 官方名 + 月场元素这类外部信息,
+# 这里只认**名字里自己写着什么类别** —— 角色月场/元素月场/金币场/角色周场
+# 这些词是用户建场时自己起的, 属 A 级口径, 不该依赖任何外部数据。
+# ⚠️ 顺序即优先级, '元素月场' 必须先于 '月场'/'角色月场' 匹配 ——
+# 反了 '202609元素月场' 会先被 '角色月场' 之外的低优先项吃掉。
+_CN_TAG_RULES = (
+    (re.compile(r"元素月场"), "monthly_element"),
+    (re.compile(r"角色月场"), "monthly_character"),
+    (re.compile(r"月场"), "monthly_element"),      # 只写「月场」-> 按元素月场兜底
+    (re.compile(r"元素场"), "element"),
+    (re.compile(r"角色周场|角色场"), "character"),
+    (re.compile(r"金币场"), "gold"),
+)
+
 # 子串匹配的长度下限: 较短一方至少这么多字母才允许子串命中。
 # 承 pf_nav._kw_hit 的既有门槛(「<4 字母只认全等」)—— 2026-10-06 实测,
 # 月场补丁若无此门槛, 1 字母残串 'M' 会因是 'COSTUMEPARTY' 的子串而被
@@ -133,7 +148,15 @@ MANUAL_PATH = Path(__file__).resolve().parent / "data" / "monthly_manual.json"
 
 
 def _load_manual(path=None) -> dict:
-    """读月场人工补丁表 -> {归一key: spec}。读不了返回空表。"""
+    """读月场人工补丁表 -> {归一key: spec}。读不了返回空表。
+
+    ⚠️ **匹配键来自 match 字段, 不是 _name**(2026-10-06 实测踩到):
+    _key() 只保留 [A-Z0-9], 中文被滤光—— '202609元素月场' 与
+    '202609角色月场' 归一后**都是 '202609'**, 拿 _name 建索引会让**角色月场
+    也被判成元素月场**并挂上错误的 element 规则。本地自起的中文名必须显式写
+    在 match 列表里(可一个条目对应多个本地名); 无 match 时才退回 _name
+    (纯英文官方名如 'COSTUMEPARTY' 走这条)。
+    """
     try:
         with open(path or MANUAL_PATH, encoding="utf-8") as f:
             raw = json.load(f)
@@ -141,8 +164,15 @@ def _load_manual(path=None) -> dict:
         return {}
     out = {}
     for name, spec in (raw.get("arenas") or {}).items():
-        if isinstance(spec, dict) and name:
-            out[_key(name)] = dict(spec, _name=name)
+        if not isinstance(spec, dict) or not name:
+            continue
+        names = spec.get("match")
+        if not isinstance(names, list) or not names:
+            names = [name]
+        for n in names:
+            k = _key(n)
+            if k:
+                out[k] = dict(spec, _name=name, _match_name=str(n))
     return out
 
 
@@ -167,11 +197,38 @@ def _manual_match(name: str, manual: dict, day: str = None) -> dict | None:
     匹配: monthly=True 的条目, 名字双向子串命中(承 pf_nav OCR 残串实证:
     'ASHOTINTHEDARK'/'IGBENSBEATDOWN'), 且在有效期内。
 
-    ⚠️ **子串必须有长度下限** (2026-10-06 单测抓出): 短 OCR 残串 'M' 是
+    ⚠️ **子串必须有长度下限** (2026-10-06 单测抓出): 短 OCR 残串 'M'是
     'COSTUMEPARTY' 的子串, 无下限就会把一个 1 字母残串判成元素月场。
     pf_nav 早就为此定过「<4 字母只认全等」, 这里沿用同一条门槛 ——
     否则相似度路径有防护、补丁路径没有, 等于从后门绕过了既有防线。
+
+    ⚠️ **两段式匹配** (2026-10-06 迁移实测踩到): 中文名归一后只剩数字
+    ('202609元素月场' 与 '202609角色月场' 都=> '202609'), 归一+子串会让
+    「角色月场」被「元素月场」的条目接走。因此:
+      ① 先按**原始字符串**精确/子串比对(中文名的唯一可靠通道);
+      ② 原文没命中才降级到归一+长度门槛(给纯英文名的 OCR 残串用)。
     """
+    raw = str(name or "").strip()
+    kr = re.sub(r"\s+", " ", raw)
+    # ① 原文层: 精确优先, 其次是原文子串(短名要够长, 同一条门槛)
+    for spec in (manual or {}).values():
+        if not spec.get("monthly") or not _manual_valid(spec, day):
+            continue
+        for mn in (spec.get("match") or [spec.get("_name")]):
+            if not mn:
+                continue
+            ms = re.sub(r"\s+", " ", str(mn).strip())
+            if ms and (ms == kr
+                       or (min(len(ms), len(kr)) >= MIN_SUBSTR_LEN
+                           and (ms in kr or kr in ms))):
+                return spec
+    # ② 归一层: 纯英文名的 OCR 残串('ASHOTINTHEDARK' 之类)
+    # ⚠️ 原文含非 ASCII(中文)时**绝不走这一层**(2026-10-06 实测):
+    #   _key() 会把中文全滤掉, '202609角色月场' => '202609', 于是与
+    #   '202609元素月场 09-06'(=> '2026090906') 双向子串成立 ->
+    #   **角色月场被判成元素月场**。中文名的信息在这一层已丢失, 不能比。
+    if not raw.isascii():
+        return None
     k = _key(name)
     if not k:
         return None
@@ -179,7 +236,7 @@ def _manual_match(name: str, manual: dict, day: str = None) -> dict | None:
     for spec in (manual or {}).values():
         if not spec.get("monthly") or not _manual_valid(spec, day):
             continue
-        mk = _key(spec.get("_name"))
+        mk = _key(spec.get("_match_name") or spec.get("_name"))
         if not mk:
             continue
         if mk == k:
@@ -193,7 +250,7 @@ def _manual_match(name: str, manual: dict, day: str = None) -> dict | None:
             hit = min(len(mk), len(k)) >= MIN_SUBSTR_LEN
         else:
             hit = False
-        if hit and (best is None or len(mk) > len(_key(best.get("_name")))):
+        if hit and (best is None or len(mk) > len(_key(best.get("_match_name") or ""))):
             best = spec          # 多个命中取名字最长的(最具体那个)
     return best
 
@@ -355,7 +412,24 @@ def classify_arena(title: str, index: list,
     if mspec is not None:
         return _from_manual(title, mspec)
 
-    # ② sgmnow 索引 + 名称相似度
+    # ② 本地中文场次名里的类别词 (「202609角色月场」-> monthly_character)
+    # 必须在相似度之前: 这类自起名在 sgmnow 索引里根本不存在(名字对不上),
+    # 走相似度只会落unknown -> 最保守的 4kw, 把无上限的月场砍掉。
+    for rx, tag in _CN_TAG_RULES:
+        if rx.search(title or ""):
+            tgt, energy, rule_kind = TAG_CONDITIONS.get(
+                tag, (DEFAULT_SCORE_TARGET, DEFAULT_ENERGY_COST, None))
+            note = f"tag={tag} <- 场次名含类别词 {rx.pattern!r} (本地自起名, A级口径)"
+            rule = None
+            if rule_kind == "element":
+                # 元素月场自起名里没写元素(元素在人工表) -> 不猜, 留痕
+                rule = None
+                note += " | ⚠️ 自起名未含元素, 元素限制需人工表补充"
+            return {"tag": tag, "matched": True, "name": title, "score": 1.0,
+                    "rule": rule, "score_target": tgt, "energy_cost": energy,
+                    "note": note}
+
+    # ③ sgmnow 索引 + 名称相似度
     best_score, cands = 0.0, []
     for item in index or []:
         s = match_score(title, item["name"])

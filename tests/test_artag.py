@@ -422,6 +422,52 @@ def test_人工表缺元素名则不挂规则并留痕():
     assert "缺元素名" in r["note"]
 
 
+def test_中文名归一后不可区分_必须靠match字段():
+    """回归 (2026-10-06 迁移实测): _key() 只留 [A-Z0-9], 中文被滤光。
+
+    '202609元素月场' 与 '202609角色月场' 归一后**都是 '202609'** ——
+    早先拿 _name 建索引, 结果**角色月场被判成元素月场**并挂上 wind 规则。
+    ⇒ 含中文的本地名必须显式写进 match 列表。
+    """
+    assert T._key("202609元素月场") == T._key("202609角色月场") == "202609"
+    m = T._load_manual()
+    # 角色月场不能被元素月场那条接走
+    r = T.classify_arena("202609角色月场", [], manual=m, day="2026-09-26")
+    assert r["tag"] != "monthly_element", "角色月场被误判成元素月场"
+    assert r["rule"] is None, f"角色月场不该挂 element 规则, 实={r['rule']}"
+    assert r["score_target"] is None
+    # 元素月场才挂 wind
+    r2 = T.classify_arena("202609元素月场", [], manual=m, day="2026-09-26")
+    assert r2["tag"] == "monthly_element"
+    assert r2["rule"] == {"type": "element", "value": "wind"}
+
+
+def test_match列表可一对多():
+    """一个补丁条目可对应多个本地自起名(元素月场有 3 个场次名)。"""
+    m = T._load_manual()
+    for nm in ("202609元素月场", "202609元素月场 09-06", "202609元素月场 09-06 10-02"):
+        r = T.classify_arena(nm, [], manual=m, day="2026-09-26")
+        assert r["tag"] == "monthly_element", nm
+        assert r["rule"] == {"type": "element", "value": "wind"}, nm
+    # 补丁过期(10月)后: 人工表不再命中, 但**中文类别词仍能认出这是月场**
+    # —— 这是设计使然: 类别词是 A 级口径(名字自己写着「元素月场」),
+    # 与人工表的有效期无关。但元素值拿不到了, 必须 rule=None 且留痕,
+    # 绝不能沿用 9 月的 wind(那是上个月的元素)。
+    r = T.classify_arena("202609元素月场", [], manual=m, day="2026-10-06")
+    assert r["tag"] == "monthly_element"
+    assert r["rule"] is None, "过期后不得沿用上月元素"
+    assert r["score_target"] is None, "月场仍是无上限"
+    assert "元素" in r["note"], "必须留痕说明元素缺失"
+
+
+def test_纯英文官方名走_name回退():
+    """无 match 字段的条目(纯英文官方名)仍按 _name 匹配。"""
+    m = T._load_manual()
+    r = T.classify_arena("COSTUMEPARTY", [], manual=m, day="2026-10-06")
+    assert r["tag"] == "monthly_element"
+    assert r["rule"] == {"type": "element", "value": "dark"}
+
+
 def test_非月场不受补丁影响():
     """人工表只按名字覆盖, 不该把角色场/元素场也带偏。"""
     idx = [{"tag": "character", "name": "Ms. Fortune", "char_key": "MSFORTUNE",
