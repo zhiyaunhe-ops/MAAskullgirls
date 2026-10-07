@@ -11,6 +11,8 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
+
+import org.json.JSONObject;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -62,6 +64,15 @@ public class MainActivity extends Activity {
                 BotService.start(this, BotService.MODE_NAV)));
         root.addView(btn("停止引擎", v -> BotService.trigger("stop")));
         root.addView(btn("重载配置 (config.json)", v -> BotService.trigger("reload")));
+        root.addView(btn("检查更新 (GitHub release)", v -> {
+            status.setText("检查中… (见 /log)");
+            BotService.trigger("check_update");
+        }));
+        /* 只热更 templates+config; 装 APK 需要「所有文件访问」(shell 读得到) + Shizuku 就绪 */
+        root.addView(btn("拉取更新 (bundle + APK)", v -> {
+            status.setText("拉取中… (见 /log)");
+            BotService.trigger("update");
+        }));
 
         setContentView(root);
 
@@ -108,8 +119,26 @@ public class MainActivity extends Activity {
         sb.append("引擎: ").append(BotService.isRunning()
                 ? "运行中 (" + BotService.currentMode() + ")" : "停止").append('\n');
         sb.append("外部根: ").append(Paths.root()).append('\n');
+        JSONObject m = cfgMeta();
+        sb.append("更新源: ").append(m.optString("repo", "(未配)"))
+                .append(" bundle=").append(m.optString("bv", "0")).append('\n');
         sb.append("\n adb 调试: adb forward tcp:8791 tcp:8791\n 然后开 http://127.0.0.1:8791/status");
         return sb.toString();
+    }
+
+    /** 状态页用的更新信息 (repo / 本地 bundle 水位) */
+    private JSONObject cfgMeta() {
+        try {
+            Config c = BotService.cfg();
+            JSONObject all = c == null ? null : c.read();
+            JSONObject u = all == null ? null : all.optJSONObject("update");
+            JSONObject m = all == null ? null : all.optJSONObject("meta");
+            return new JSONObject()
+                    .put("repo", u == null ? "" : u.optString("repo", ""))
+                    .put("bv", m == null ? "0" : m.optString("bundle_version", "0"));
+        } catch (Exception e) {
+            return new JSONObject();
+        }
     }
 
     @Override

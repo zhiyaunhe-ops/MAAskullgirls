@@ -24,6 +24,8 @@ import java.util.Map;
 public final class TplStore {
     private final Context ctx;
     private final Map<String, Vision.Frame> cache = new HashMap<>();
+    /** 缩放版模板缓存 (key = name@千分比) — rel/fit 分辨率模式下按屏幕比例复用 */
+    private final Map<String, Vision.Frame> scaled = new HashMap<>();
 
     public TplStore(Context ctx) { this.ctx = ctx; }
 
@@ -36,10 +38,31 @@ public final class TplStore {
         return f;
     }
 
+    /**
+     * 按倍数取模板 (rel/fit 模式下画面元素尺寸变了, 模板要同比例缩放才匹配得上)。
+     * s≈1 直接返回原模板 (零开销, abs/center 模式走这条)。
+     */
+    public Vision.Frame getScaled(String name, double s) {
+        return getScaled(name, s, s);
+    }
+
+    public Vision.Frame getScaled(String name, double sx, double sy) {
+        if (sx <= 0 || sy <= 0) return get(name);
+        if (Math.abs(sx - 1.0) < 0.01 && Math.abs(sy - 1.0) < 0.01) return get(name);
+        String k = name + "@" + Math.round(sx * 1000) + "x" + Math.round(sy * 1000);
+        Vision.Frame f = scaled.get(k);
+        if (f != null) return f;
+        Vision.Frame base = get(name);
+        if (base == null) return null;
+        f = base.scaleXY(sx, sy);
+        scaled.put(k, f);
+        return f;
+    }
+
     public boolean has(String name) { return get(name) != null; }
 
     /** 外部模板热更后调用 (config reload 时一并清) */
-    public void clear() { cache.clear(); }
+    public void clear() { cache.clear(); scaled.clear(); }
 
     private Vision.Frame load(String name) {
         Vision.Frame f = fromFile(Paths.tplDir() + name + ".png");

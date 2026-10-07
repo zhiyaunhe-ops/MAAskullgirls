@@ -1,3 +1,4 @@
+import com.zhiyaunhe.sgmbot.Roi;
 import com.zhiyaunhe.sgmbot.Vision;
 
 import javax.imageio.ImageIO;
@@ -86,6 +87,66 @@ public class VisionProbe {
 
     static final double TH = 0.72;   // 与 config thresholds.min_sim 同步改
 
+    /* ==================== 多分辨率 ROI 映射回归 ====================
+     *
+     * 真机只有 20:9 一张素材, 别的比例只能**合成**: 按"设备实际怎么排版"把
+     * 1280x576 基准帧重排成目标宽度, 再用 Roi 的映射公式反推 ROI、缩放模板去匹配。
+     *   center → 元素尺寸不变, 中心裁/补 (两侧黑边或裁掉边缘)
+     *   rel    → 整帧横向拉伸铺满
+     *   fit    → 内容保 20:9 居中, 其余黑边 (letterbox/pillarbox, 最可能的真实排版)
+     *
+     * 自洽性 (对角线) 过了 = 映射公式没写错; 但**哪一种是这台机器的真实排版,
+     * 离线证明不了** —— 要拿一张该分辨率的真机截图, 看哪个模式命中 (日志会打
+     * "屏=WxH 档=… mode=…")。所以这张表是"公式对不对"的回归, 不是"设备用哪个"的答案。
+     */
+    static Vision.Frame synth(Vision.Frame f, int W, String kind) {
+        int H = f.h;
+        double kx = 1, ky = 1, ox = 0, oy = 0;
+        if ("center".equals(kind)) {
+            ox = (W - f.w) / 2.0;                       // 元素尺寸不变, 只平移 (多退少补黑边)
+        } else if ("rel".equals(kind)) {
+            kx = W / (double) f.w;                      // 横向拉伸铺满
+        } else if ("fit".equals(kind)) {
+            kx = ky = Roi.fitScale(W, H);               // 内容保 20:9 居中
+            ox = Roi.fitOffX(W, H); oy = Roi.fitOffY(W, H);
+        }
+        int[] out = new int[W * H];
+        for (int i = 0; i < out.length; i++) out[i] = 0xFF000000;   // 黑底 (= 游戏的黑边)
+        for (int y = 0; y < H; y++) {
+            double a0 = (y - oy) / ky, a1 = (y + 1 - oy) / ky;
+            int y0 = (int) Math.floor(a0), y1 = (int) Math.ceil(a1) - 1;
+            for (int x = 0; x < W; x++) {
+                double b0 = (x - ox) / kx, b1 = (x + 1 - ox) / kx;
+                int x0 = (int) Math.floor(b0), x1 = (int) Math.ceil(b1) - 1;
+                if (x1 < 0 || x0 >= f.w || y1 < 0 || y0 >= f.h) continue;      // 落在黑边区
+                int cx0 = Math.max(0, x0), cx1 = Math.min(f.w - 1, x1);
+                int cy0 = Math.max(0, y0), cy1 = Math.min(f.h - 1, y1);
+                long r = 0, g = 0, b = 0, n = 0;
+                for (int sy = cy0; sy <= cy1; sy++)
+                    for (int sx = cx0; sx <= cx1; sx++) {
+                        int p = f.px[sy * f.w + sx];
+                        r += (p >> 16) & 0xFF; g += (p >> 8) & 0xFF; b += p & 0xFF; n++;
+                    }
+                out[y * W + x] = 0xFF000000
+                        | ((int) (r / n) << 16) | ((int) (g / n) << 8) | (int) (b / n);
+            }
+        }
+        return new Vision.Frame(out, W, H);
+    }
+
+    /** 用 mode 的映射 + 缩放模板在 frame 里找 tpl; 返回 {峰值, 是否命中且在 ROI 内} */
+    static double[] tryMode(Vision.Frame f, Vision.Frame t0, int[] roi, int W, String mode) {
+        int[] r = Roi.resolveMode(mode, roi, W, f.h);
+        double sx = Roi.scaleXOf(mode, W, f.h), sy = Roi.scaleYOf(mode, W, f.h);
+        Vision.Frame t = t0.scaleXY(sx, sy);
+        if (t.w > r[2] || t.h > r[3]) return new double[]{-2, 0};  // 缩放后 ROI 装不下模板
+        double[] sc = Vision.findScored(f, t, r, TH);
+        int[] hit = sc != null && sc[2] >= TH ? new int[]{(int) sc[0], (int) sc[1]} : null;
+        boolean in = hit != null && hit[0] >= r[0] && hit[0] <= r[0] + r[2] - t.w
+                && hit[1] >= r[1] && hit[1] <= r[1] + r[3] - t.h;
+        return new double[]{sc == null ? -2 : sc[2], in ? 1 : 0};
+    }
+
     public static void main(String[] args) throws Exception {
         String src = args.length > 0 ? args[0] : "D:/Downloads/Telegram Desktop/";
         String tplDir = args.length > 1 ? args[1] : "phone/app/assets/templates/";
@@ -156,6 +217,62 @@ public class VisionProbe {
             System.out.println(fn + "/" + tn + " → "
                     + (hit == null ? "null (漏识别!)" : hit[0] + "," + hit[1] + (in ? " 在槽内" : " 越界!")));
         }
+        /* ---- 多分辨率 ---- */
+        int[] widths = {768, 1024, 1280, 1344};
+        String[] wname = {"4:3 平板", "16:9 模拟器", "20:9 真机(基准)", "21:9 带鱼"};
+        String[] modes = {"center", "rel", "fit", "abs"};
+        // 三个"必须命中"的用例 (帧, 模板, 基准 ROI)
+        Object[][] mc = {
+                {"lose", "btn_rematch", new int[]{793, 478, 220, 68}},
+                {"win", "btn_rematch", new int[]{530, 478, 220, 68}},
+                {"lose", "defeat", new int[]{400, 20, 480, 100}},
+        };
+        System.out.println("\n== 多分辨率: 自洽性 (合成方式 = 映射模式, 应 3/3 命中) ==");
+        System.out.printf("%-16s %-7s | %s%n", "设备", "work宽", "center  rel   fit    abs");
+        for (int i = 0; i < widths.length; i++) {
+            int W = widths[i];
+            StringBuilder row = new StringBuilder();
+            for (String mode : modes) {
+                int ok = 0, tot = 0;
+                StringBuilder miss = new StringBuilder();
+                for (Object[] c : mc) {
+                    if (!frB.containsKey((String) c[0])) continue;
+                    tot++;
+                    Vision.Frame sf = synth(frB.get((String) c[0]), W, mode);
+                    double[] rr = tryMode(sf, tpl.get((String) c[1]), (int[]) c[2], W, mode);
+                    if (rr[1] > 0) ok++;
+                    else miss.append(' ').append(c[0]).append('/').append(c[1]).append('(').append(String.format("%.2f", rr[0])).append(')');
+                }
+                // abs 只在基准宽有意义 (别的宽度本来就是它要解决的病), 不判失败
+                boolean req = tot > 0 && !("abs".equals(mode) && W != 1280);
+                if (req && ok != tot) {
+                    bad++;
+                    System.out.println("   [!!] " + wname[i] + " mode=" + mode + " 未命中:"
+                            + miss + " (合成=" + mode + ")");
+                }
+                row.append(String.format("%-7s", ok + "/" + tot + (req && ok != tot ? "✗" : " ")));
+            }
+            System.out.printf("%-16s %-7d | %s%n", wname[i], W, row);
+        }
+        System.out.println("\n== 多分辨率: 交叉对照 (设备按 fit/letterbox 排版, 各模式能否救回) ==");
+        System.out.printf("%-16s %-7s | %s%n", "设备", "work宽", "center  rel   fit    abs");
+        for (int i = 0; i < widths.length; i++) {
+            int W = widths[i];
+            StringBuilder row = new StringBuilder();
+            for (String mode : modes) {
+                int ok = 0, tot = 0;
+                for (Object[] c : mc) {
+                    if (!frB.containsKey((String) c[0])) continue;
+                    tot++;
+                    Vision.Frame sf = synth(frB.get((String) c[0]), W, "fit");
+                    if (tryMode(sf, tpl.get((String) c[1]), (int[]) c[2], W, mode)[1] > 0) ok++;
+                }
+                row.append(String.format("%-7s", ok + "/" + tot));
+            }
+            System.out.printf("%-16s %-7d | %s%n", wname[i], W, row);
+        }
+        System.out.println("(fit 是最可能的真实排版: 游戏保 20:9 出图, 别的比例屏留黑边)");
+
         System.out.println(bad == 0 ? "\n[ok] 全部用例通过" : "\n[!!] " + bad + " 项不符");
         System.exit(bad == 0 ? 0 : 1);
     }

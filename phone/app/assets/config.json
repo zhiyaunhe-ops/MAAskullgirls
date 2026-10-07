@@ -1,4 +1,9 @@
 {
+ "meta": {
+  "config_version": 3,
+  "bundle_version": "0",
+  "note": "bundle_version 由 GitHub 更新包写入 (Update.applyBundle); 本地手改无效"
+ },
  "thresholds": {
   "min_sim": 0.72,
   "ev_play": 0.78,
@@ -17,6 +22,183 @@
   "battle_stall_sec": 180,
   "launch_timeout_s": 300,
   "hub_timeout_s": 120
+ },
+ "scan": {
+  "battle_ms": 800,
+  "result_ms": 350,
+  "stall_ms": 1000,
+  "adaptive": {
+   "on": true,
+   "min_ms": 250,
+   "max_ms": 2000,
+   "hit_ms": 350,
+   "miss_ms": 900
+  }
+ },
+ "matcher": {
+  "chan": "blue",
+  "step": 2,
+  "refine": 2,
+  "work_h": 576
+ },
+ "screen": {
+  "roi_mode": "abs",
+  "profiles": [
+   {
+    "name": "tablet_4x3",
+    "ar_min": 1.2,
+    "ar_max": 1.7,
+    "roi_mode": "fit"
+   },
+   {
+    "name": "std_16x9",
+    "ar_min": 1.7,
+    "ar_max": 2.0,
+    "roi_mode": "fit"
+   },
+   {
+    "name": "tall_20x9",
+    "ar_min": 2.0,
+    "ar_max": 2.5,
+    "roi_mode": "abs"
+   },
+   {
+    "name": "wide_21x9",
+    "ar_min": 2.5,
+    "ar_max": 3.4,
+    "roi_mode": "fit"
+   }
+  ]
+ },
+ "run": {
+  "max_minutes": 0,
+  "pause_from": "",
+  "pause_to": ""
+ },
+ "log": {
+  "trace_size": 200
+ },
+ "graph": {
+  "layout": "grid",
+  "nodes": [
+   {
+    "id": "battle",
+    "label": "战斗监测",
+    "kind": "scan",
+    "tpl": [
+     "victory",
+     "defeat"
+    ],
+    "roi": "title_roi",
+    "th": 0.72
+   },
+   {
+    "id": "bigword",
+    "label": "大字判定",
+    "kind": "match",
+    "on_hit": "记胜负"
+   },
+   {
+    "id": "first_tap",
+    "label": "先手点右槽",
+    "kind": "tap"
+   },
+   {
+    "id": "result",
+    "label": "结算页",
+    "kind": "scan",
+    "tpl": [
+     "btn_rematch",
+     "btn_continue"
+    ],
+    "roi": "btn_rois",
+    "th": 0.72
+   },
+   {
+    "id": "rematch",
+    "label": "REMATCH 计场",
+    "kind": "tap"
+   },
+   {
+    "id": "continue",
+    "label": "CONTINUE 略过",
+    "kind": "tap"
+   },
+   {
+    "id": "escape",
+    "label": "弹窗逃生链",
+    "kind": "chain"
+   },
+   {
+    "id": "stall",
+    "label": "超时自愈",
+    "kind": "heal"
+   }
+  ],
+  "edges": [
+   {
+    "from": "battle",
+    "to": "bigword",
+    "on": "命中大字"
+   },
+   {
+    "from": "bigword",
+    "to": "first_tap",
+    "on": "首次 seen"
+   },
+   {
+    "from": "first_tap",
+    "to": "result",
+    "on": ""
+   },
+   {
+    "from": "result",
+    "to": "rematch",
+    "on": "命中 REMATCH"
+   },
+   {
+    "from": "rematch",
+    "to": "battle",
+    "on": "计场后"
+   },
+   {
+    "from": "result",
+    "to": "continue",
+    "on": "命中 CONTINUE"
+   },
+   {
+    "from": "continue",
+    "to": "result",
+    "on": "还有下一页"
+   },
+   {
+    "from": "result",
+    "to": "battle",
+    "on": "连续无按钮"
+   },
+   {
+    "from": "battle",
+    "to": "stall",
+    "on": "超时"
+   },
+   {
+    "from": "result",
+    "to": "escape",
+    "on": "stall"
+   },
+   {
+    "from": "stall",
+    "to": "battle",
+    "on": "拉回后"
+   }
+  ]
+ },
+ "update": {
+  "repo": "zhiyaunhe-ops/MAAskullgirls",
+  "bundle_asset": "bundle.zip",
+  "apk_asset": "sgmbot.apk",
+  "auto_check_h": 12,
+  "allow_apk": true
  },
  "title_roi": [
   400,

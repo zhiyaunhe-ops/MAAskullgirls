@@ -25,8 +25,23 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
+      # APK 自更新走 pm install -r, versionCode 必须递增 (否则 INSTALL_FAILED_VERSION_DOWNGRADE)
+      - name: Bump versionCode
+        run: |
+          sed -i "s/android:versionCode=\"[0-9]*\"/android:versionCode=\"${{ github.run_number }}\"/" phone/app/AndroidManifest.xml
+          sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"0.1.${{ github.run_number }}\"/" phone/app/AndroidManifest.xml
+          grep -n "versionCode\|versionName" phone/app/AndroidManifest.xml
+
       - name: Build APK (aapt2 + javac + d8 + apksigner)
         run: bash phone/app/build-ci.sh
+
+      # bundle.zip = templates + config, 供 App 内「拉取更新」热更 (换模板不必重装 APK)
+      - name: Pack bundle
+        run: |
+          cd phone/app/assets
+          zip -r "$GITHUB_WORKSPACE/bundle.zip" templates config.json
+          cd "$GITHUB_WORKSPACE"
+          unzip -l bundle.zip
 
       - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4
@@ -44,3 +59,4 @@ jobs:
           NOTES="auto build ${GITHUB_SHA::7} — $(git log -1 --pretty=%s)"
           gh release create "$TAG" --title "SGM挂机 debug 构建" --notes "$NOTES" 2>/dev/null || true
           gh release upload "$TAG" phone/app/build/sgmbot.apk --clobber
+          gh release upload "$TAG" bundle.zip --clobber

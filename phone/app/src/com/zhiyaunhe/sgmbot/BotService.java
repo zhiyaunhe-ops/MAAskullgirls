@@ -13,6 +13,8 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
 
+import org.json.JSONObject;
+
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -69,14 +71,42 @@ public class BotService extends Service {
             case "start": start(c, MODE_SETTLE); break;
             case "stop": stop(c); break;
             case "end": end(c); break;
-            case "reload":
-                if (cfg != null) {
-                    if (tpls != null) tpls.clear();     // 模板热更: 下次取模板重新解码
-                    SgmLog.i("ctl", "reloaded, target=" + cfg.read().optString("target_card"));
-                }
-                break;
+            case "reload": reload(); break;
+            /* 更新: 网络 IO, 一律丢后台线程 (trigger 会被 UI 线程/HTTP 线程直接调) */
+            case "check_update": background(() -> {
+                JSONObject r = Update.check(cfg);
+                SgmLog.i("ctl", r.optBoolean("ok")
+                        ? "更新检查: bundle" + (r.optBoolean("need_bundle") ? "有" : "无")
+                          + " apk" + (r.optBoolean("need_apk") ? "有" : "无")
+                          + " (tag=" + r.optString("tag") + ")"
+                        : "更新检查失败 — " + r.optString("msg"));
+            }); break;
+            case "update": background(() -> {
+                JSONObject r = Update.apply(c, cfg, true);
+                SgmLog.i("ctl", "update: " + r);
+            }); break;
+            case "update_bundle": background(() -> {
+                JSONObject r = Update.apply(c, cfg, false);
+                SgmLog.i("ctl", "update(bundle only): " + r);
+            }); break;
             default: SgmLog.i("ctl", "unknown action " + action);
         }
+    }
+
+    /** 配置/模板热更 (POST /reload、bundle 落盘后、主页按钮共用) */
+    public static void reload() {
+        if (cfg != null) {
+            if (tpls != null) tpls.clear();     // 模板热更: 下次取模板重新解码
+            JSONObject c = cfg.read();
+            Vision.configure(c);                // 匹配口径可能改了
+            Graph.load(c);                      // 判定图结构可能改了
+            SgmLog.i("ctl", "reloaded, target=" + c.optString("target_card")
+                    + " | 匹配=" + Vision.modeText());
+        }
+    }
+
+    private static void background(Runnable r) {
+        new Thread(r, "ctl-bg").start();
     }
 
     @Override
@@ -144,6 +174,7 @@ public class BotService extends Service {
         }
         SgmLog.i("bot", "开始 mode=" + m);
         notify_("SGM挂机 " + m + " — 结算循环中");
+        Update.autoCheck(this, cfg, false);   // 顺手查一次更新 (默认只热更 bundle, 不自动装 APK)
         try {
             new SettleLoop(sh, tpls, bar).run(RUN, cfg);
         } catch (Throwable t) {

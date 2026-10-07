@@ -51,4 +51,6 @@ public final class Paths {
     public static String config() { return root + "/config.json"; }
     public static String tplDir() { return root + "/templates/"; }
     public static String logDir() { return root + "/logs/"; }
+    /** GitHub 热更包落点 (bundle.zip / sgmbot.apk) — 见 Update */
+    public static String updateDir() { return root + "/update/"; }
 }

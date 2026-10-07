@@ -90,6 +90,8 @@ python tools/jjc_store.py versions
 | 场次 tag 归类与条件 | [场次条件口径](docs/session-tag.md) |
 | 前端全页失效 | [2026-09-24事故](docs/incident-2026-09-24-webui-js-dead.md) |
 | 手机脚本 | [phone/autojs/README.md](phone/autojs/README.md) |
+| 手机 App（Shizuku） | [docs/phone-app.md](docs/phone-app.md)：跑起来／可配置项／判定图／多分辨率／拉更新 |
+| 手机 App 排障 | [docs/phone-app-shizuku.md](docs/phone-app-shizuku.md)：Shizuku 链路、分区存储 |
 
 ## 免责声明
 
