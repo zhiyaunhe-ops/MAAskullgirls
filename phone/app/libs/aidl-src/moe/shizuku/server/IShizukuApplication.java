@@ -7,10 +7,10 @@ public interface IShizukuApplication extends android.os.IInterface
   /** Default implementation for IShizukuApplication. */
   public static class Default implements moe.shizuku.server.IShizukuApplication
   {
-    @Override public void bindApplication(android.os.Bundle data) throws android.os.RemoteException
+    @Override public void bindApplication(Bundle data) throws android.os.RemoteException
     {
     }
-    @Override public void dispatchRequestPermissionResult(int requestCode, android.os.Bundle data) throws android.os.RemoteException
+    @Override public void dispatchRequestPermissionResult(int requestCode, Bundle data) throws android.os.RemoteException
     {
     }
     // Sui only
@@ -64,9 +64,9 @@ public interface IShizukuApplication extends android.os.IInterface
         case TRANSACTION_bindApplication:
         {
           data.enforceInterface(descriptor);
-          android.os.Bundle _arg0;
+          Bundle _arg0;
           if ((0!=data.readInt())) {
-            _arg0 = android.os.Bundle.CREATOR.createFromParcel(data);
+            _arg0 = Bundle.CREATOR.createFromParcel(data);
           }
           else {
             _arg0 = null;
@@ -79,9 +79,9 @@ public interface IShizukuApplication extends android.os.IInterface
           data.enforceInterface(descriptor);
           int _arg0;
           _arg0 = data.readInt();
-          android.os.Bundle _arg1;
+          Bundle _arg1;
           if ((0!=data.readInt())) {
-            _arg1 = android.os.Bundle.CREATOR.createFromParcel(data);
+            _arg1 = Bundle.CREATOR.createFromParcel(data);
           }
           else {
             _arg1 = null;
@@ -125,7 +125,7 @@ public interface IShizukuApplication extends android.os.IInterface
       {
         return DESCRIPTOR;
       }
-      @Override public void bindApplication(android.os.Bundle data) throws android.os.RemoteException
+      @Override public void bindApplication(Bundle data) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         try {
@@ -147,7 +147,7 @@ public interface IShizukuApplication extends android.os.IInterface
           _data.recycle();
         }
       }
-      @Override public void dispatchRequestPermissionResult(int requestCode, android.os.Bundle data) throws android.os.RemoteException
+      @Override public void dispatchRequestPermissionResult(int requestCode, Bundle data) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         try {
@@ -216,8 +216,8 @@ public interface IShizukuApplication extends android.os.IInterface
       return Stub.Proxy.sDefaultImpl;
     }
   }
-  public void bindApplication(android.os.Bundle data) throws android.os.RemoteException;
-  public void dispatchRequestPermissionResult(int requestCode, android.os.Bundle data) throws android.os.RemoteException;
+  public void bindApplication(Bundle data) throws android.os.RemoteException;
+  public void dispatchRequestPermissionResult(int requestCode, Bundle data) throws android.os.RemoteException;
   // Sui only
 
   public void showPermissionConfirmation(int requestUid, int requestPid, java.lang.String requestPackageName, int requestCode) throws android.os.RemoteException;

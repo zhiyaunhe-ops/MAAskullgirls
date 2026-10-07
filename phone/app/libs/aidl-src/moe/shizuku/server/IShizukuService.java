@@ -34,11 +34,11 @@ public interface IShizukuService extends android.os.IInterface
     @Override public void setSystemProperty(java.lang.String name, java.lang.String value) throws android.os.RemoteException
     {
     }
-    @Override public int addUserService(moe.shizuku.server.IShizukuServiceConnection conn, android.os.Bundle args) throws android.os.RemoteException
+    @Override public int addUserService(moe.shizuku.server.IShizukuServiceConnection conn, Bundle args) throws android.os.RemoteException
     {
       return 0;
     }
-    @Override public int removeUserService(moe.shizuku.server.IShizukuServiceConnection conn, android.os.Bundle args) throws android.os.RemoteException
+    @Override public int removeUserService(moe.shizuku.server.IShizukuServiceConnection conn, Bundle args) throws android.os.RemoteException
     {
       return 0;
     }
@@ -53,23 +53,23 @@ public interface IShizukuService extends android.os.IInterface
     {
       return false;
     }
-    @Override public void attachApplication(moe.shizuku.server.IShizukuApplication application, android.os.Bundle args) throws android.os.RemoteException
+    @Override public void attachApplication(moe.shizuku.server.IShizukuApplication application, Bundle args) throws android.os.RemoteException
     {
     }
     @Override public void exit() throws android.os.RemoteException
     {
     }
-    @Override public void attachUserService(android.os.IBinder binder, android.os.Bundle options) throws android.os.RemoteException
+    @Override public void attachUserService(android.os.IBinder binder, Bundle options) throws android.os.RemoteException
     {
     }
-    @Override public void dispatchPackageChanged(android.content.Intent intent) throws android.os.RemoteException
+    @Override public void dispatchPackageChanged(Intent intent) throws android.os.RemoteException
     {
     }
     @Override public boolean isHidden(int uid) throws android.os.RemoteException
     {
       return false;
     }
-    @Override public void dispatchPermissionConfirmationResult(int requestUid, int requestPid, int requestCode, android.os.Bundle data) throws android.os.RemoteException
+    @Override public void dispatchPermissionConfirmationResult(int requestUid, int requestPid, int requestCode, Bundle data) throws android.os.RemoteException
     {
     }
     @Override public int getFlagsForUid(int uid, int mask) throws android.os.RemoteException
@@ -198,9 +198,9 @@ public interface IShizukuService extends android.os.IInterface
           data.enforceInterface(descriptor);
           moe.shizuku.server.IShizukuServiceConnection _arg0;
           _arg0 = moe.shizuku.server.IShizukuServiceConnection.Stub.asInterface(data.readStrongBinder());
-          android.os.Bundle _arg1;
+          Bundle _arg1;
           if ((0!=data.readInt())) {
-            _arg1 = android.os.Bundle.CREATOR.createFromParcel(data);
+            _arg1 = Bundle.CREATOR.createFromParcel(data);
           }
           else {
             _arg1 = null;
@@ -215,9 +215,9 @@ public interface IShizukuService extends android.os.IInterface
           data.enforceInterface(descriptor);
           moe.shizuku.server.IShizukuServiceConnection _arg0;
           _arg0 = moe.shizuku.server.IShizukuServiceConnection.Stub.asInterface(data.readStrongBinder());
-          android.os.Bundle _arg1;
+          Bundle _arg1;
           if ((0!=data.readInt())) {
-            _arg1 = android.os.Bundle.CREATOR.createFromParcel(data);
+            _arg1 = Bundle.CREATOR.createFromParcel(data);
           }
           else {
             _arg1 = null;
@@ -257,9 +257,9 @@ public interface IShizukuService extends android.os.IInterface
           data.enforceInterface(descriptor);
           moe.shizuku.server.IShizukuApplication _arg0;
           _arg0 = moe.shizuku.server.IShizukuApplication.Stub.asInterface(data.readStrongBinder());
-          android.os.Bundle _arg1;
+          Bundle _arg1;
           if ((0!=data.readInt())) {
-            _arg1 = android.os.Bundle.CREATOR.createFromParcel(data);
+            _arg1 = Bundle.CREATOR.createFromParcel(data);
           }
           else {
             _arg1 = null;
@@ -280,9 +280,9 @@ public interface IShizukuService extends android.os.IInterface
           data.enforceInterface(descriptor);
           android.os.IBinder _arg0;
           _arg0 = data.readStrongBinder();
-          android.os.Bundle _arg1;
+          Bundle _arg1;
           if ((0!=data.readInt())) {
-            _arg1 = android.os.Bundle.CREATOR.createFromParcel(data);
+            _arg1 = Bundle.CREATOR.createFromParcel(data);
           }
           else {
             _arg1 = null;
@@ -294,9 +294,9 @@ public interface IShizukuService extends android.os.IInterface
         case TRANSACTION_dispatchPackageChanged:
         {
           data.enforceInterface(descriptor);
-          android.content.Intent _arg0;
+          Intent _arg0;
           if ((0!=data.readInt())) {
-            _arg0 = android.content.Intent.CREATOR.createFromParcel(data);
+            _arg0 = Intent.CREATOR.createFromParcel(data);
           }
           else {
             _arg0 = null;
@@ -323,9 +323,9 @@ public interface IShizukuService extends android.os.IInterface
           _arg1 = data.readInt();
           int _arg2;
           _arg2 = data.readInt();
-          android.os.Bundle _arg3;
+          Bundle _arg3;
           if ((0!=data.readInt())) {
-            _arg3 = android.os.Bundle.CREATOR.createFromParcel(data);
+            _arg3 = Bundle.CREATOR.createFromParcel(data);
           }
           else {
             _arg3 = null;
@@ -525,7 +525,7 @@ public interface IShizukuService extends android.os.IInterface
           _data.recycle();
         }
       }
-      @Override public int addUserService(moe.shizuku.server.IShizukuServiceConnection conn, android.os.Bundle args) throws android.os.RemoteException
+      @Override public int addUserService(moe.shizuku.server.IShizukuServiceConnection conn, Bundle args) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         android.os.Parcel _reply = android.os.Parcel.obtain();
@@ -553,7 +553,7 @@ public interface IShizukuService extends android.os.IInterface
         }
         return _result;
       }
-      @Override public int removeUserService(moe.shizuku.server.IShizukuServiceConnection conn, android.os.Bundle args) throws android.os.RemoteException
+      @Override public int removeUserService(moe.shizuku.server.IShizukuServiceConnection conn, Bundle args) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         android.os.Parcel _reply = android.os.Parcel.obtain();
@@ -640,7 +640,7 @@ public interface IShizukuService extends android.os.IInterface
         }
         return _result;
       }
-      @Override public void attachApplication(moe.shizuku.server.IShizukuApplication application, android.os.Bundle args) throws android.os.RemoteException
+      @Override public void attachApplication(moe.shizuku.server.IShizukuApplication application, Bundle args) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         android.os.Parcel _reply = android.os.Parcel.obtain();
@@ -684,7 +684,7 @@ public interface IShizukuService extends android.os.IInterface
           _data.recycle();
         }
       }
-      @Override public void attachUserService(android.os.IBinder binder, android.os.Bundle options) throws android.os.RemoteException
+      @Override public void attachUserService(android.os.IBinder binder, Bundle options) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         android.os.Parcel _reply = android.os.Parcel.obtain();
@@ -710,7 +710,7 @@ public interface IShizukuService extends android.os.IInterface
           _data.recycle();
         }
       }
-      @Override public void dispatchPackageChanged(android.content.Intent intent) throws android.os.RemoteException
+      @Override public void dispatchPackageChanged(Intent intent) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         try {
@@ -753,7 +753,7 @@ public interface IShizukuService extends android.os.IInterface
         }
         return _result;
       }
-      @Override public void dispatchPermissionConfirmationResult(int requestUid, int requestPid, int requestCode, android.os.Bundle data) throws android.os.RemoteException
+      @Override public void dispatchPermissionConfirmationResult(int requestUid, int requestPid, int requestCode, Bundle data) throws android.os.RemoteException
       {
         android.os.Parcel _data = android.os.Parcel.obtain();
         try {
@@ -867,17 +867,17 @@ public interface IShizukuService extends android.os.IInterface
   public java.lang.String getSELinuxContext() throws android.os.RemoteException;
   public java.lang.String getSystemProperty(java.lang.String name, java.lang.String defaultValue) throws android.os.RemoteException;
   public void setSystemProperty(java.lang.String name, java.lang.String value) throws android.os.RemoteException;
-  public int addUserService(moe.shizuku.server.IShizukuServiceConnection conn, android.os.Bundle args) throws android.os.RemoteException;
-  public int removeUserService(moe.shizuku.server.IShizukuServiceConnection conn, android.os.Bundle args) throws android.os.RemoteException;
+  public int addUserService(moe.shizuku.server.IShizukuServiceConnection conn, Bundle args) throws android.os.RemoteException;
+  public int removeUserService(moe.shizuku.server.IShizukuServiceConnection conn, Bundle args) throws android.os.RemoteException;
   public void requestPermission(int requestCode) throws android.os.RemoteException;
   public boolean checkSelfPermission() throws android.os.RemoteException;
   public boolean shouldShowRequestPermissionRationale() throws android.os.RemoteException;
-  public void attachApplication(moe.shizuku.server.IShizukuApplication application, android.os.Bundle args) throws android.os.RemoteException;
+  public void attachApplication(moe.shizuku.server.IShizukuApplication application, Bundle args) throws android.os.RemoteException;
   public void exit() throws android.os.RemoteException;
-  public void attachUserService(android.os.IBinder binder, android.os.Bundle options) throws android.os.RemoteException;
-  public void dispatchPackageChanged(android.content.Intent intent) throws android.os.RemoteException;
+  public void attachUserService(android.os.IBinder binder, Bundle options) throws android.os.RemoteException;
+  public void dispatchPackageChanged(Intent intent) throws android.os.RemoteException;
   public boolean isHidden(int uid) throws android.os.RemoteException;
-  public void dispatchPermissionConfirmationResult(int requestUid, int requestPid, int requestCode, android.os.Bundle data) throws android.os.RemoteException;
+  public void dispatchPermissionConfirmationResult(int requestUid, int requestPid, int requestCode, Bundle data) throws android.os.RemoteException;
   public int getFlagsForUid(int uid, int mask) throws android.os.RemoteException;
   public void updateFlagsForUid(int uid, int mask, int value) throws android.os.RemoteException;
 }

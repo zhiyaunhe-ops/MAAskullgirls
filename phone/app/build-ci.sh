@@ -23,9 +23,10 @@ echo "== aidl =="
 # Bundle/Intent/IBinder 框架声明在 libs/aidl-framework — 老 aidl 需显式 import 才能解析)
 mkdir -p "$OUT/gen"
 "$BT/aidl" -o "$OUT/gen" aidl/com/zhiyaunhe/sgmbot/shizuku/IShellService.aidl
-for f in libs/aidl-src/moe/shizuku/server/*.aidl; do
-    "$BT/aidl" -I libs/aidl-src -I libs/aidl-framework -o "$OUT/gen" "$f"
-done
+# moe.shizuku.server 桩的 .java 已入库 (libs/aidl-src), 由本地 aidl 生成:
+#   for f in libs/aidl-src/moe/shizuku/server/*.aidl; do
+#     aidl -I libs/aidl-src -I libs/aidl-framework -o build/gen "$f"; done
+# CI 的 aidl 是 34 版 (v2 语法), 与本地 11 版对 Bundle/Intent 解析行为不同 — 不在 CI 生成
 
 echo "== aapt2 compile/link =="
 # --no-crunch: 模板 PNG 必须逐字节保真 (NCC 匹配对重编码敏感, 阈值 0.72 掉不起)
