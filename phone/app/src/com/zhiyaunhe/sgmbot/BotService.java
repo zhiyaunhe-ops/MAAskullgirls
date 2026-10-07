@@ -43,13 +43,21 @@ public class BotService extends Service {
 
     public void runOnUi(Runnable r) { UI.post(r); }
     public int screenW() { return getResources().getDisplayMetrics().widthPixels; }
+    public int screenH() { return getResources().getDisplayMetrics().heightPixels; }
 
+    /** 开始: 服务活着只起工作线程 (停止=暂停, 服务/悬浮条保留); 服务没起则先起服务 */
     public static void start(Context ctx, String m) {
         if (running) { SgmLog.i("svc", "already running mode=" + mode); return; }
+        if (App.service != null) { App.service.spawn(m); return; }
         ctx.startService(new Intent(ctx, BotService.class).putExtra("mode", m));
     }
 
-    public static void stop(Context ctx) {
+    /** 停止 = 暂停引擎 (服务/悬浮条保留, 可再点开始) */
+    public static void stop(Context ctx) { running = false; }
+
+    /** 结束 = 退出脚本同义: 引擎停 + 服务停 (悬浮窗/通知一并收掉) */
+    public static void end(Context ctx) {
+        running = false;
         ctx.stopService(new Intent(ctx, BotService.class));
     }
 
@@ -60,6 +68,7 @@ public class BotService extends Service {
             case "start_nav": start(c, MODE_NAV); break;
             case "start": start(c, MODE_SETTLE); break;
             case "stop": stop(c); break;
+            case "end": end(c); break;
             case "reload":
                 if (cfg != null) {
                     if (tpls != null) tpls.clear();     // 模板热更: 下次取模板重新解码
@@ -119,6 +128,13 @@ public class BotService extends Service {
         App.service = null;
         SgmLog.i("svc", "destroyed");
         super.onDestroy();
+    }
+
+    private void spawn(String m) {
+        if (running) return;
+        running = true;
+        mode = m;
+        new Thread(() -> runBot(m), "bot-" + m).start();
     }
 
     private void runBot(String m) {

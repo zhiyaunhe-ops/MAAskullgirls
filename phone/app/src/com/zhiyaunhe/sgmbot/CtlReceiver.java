@@ -28,6 +28,9 @@ public class CtlReceiver extends BroadcastReceiver {
             case "stop":
                 BotService.stop(ctx);
                 break;
+            case "end":
+                BotService.end(ctx);
+                break;
             case "reload":
                 new Config(ctx).read();   // 热读配置, 引擎下一帧生效
                 SgmLog.i("ctl", "config reloaded");
