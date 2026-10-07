@@ -2,6 +2,7 @@
  * This file is auto-generated.  DO NOT MODIFY.
  */
 package moe.shizuku.server;
+import android.os.IBinder;
 public interface IShizukuServiceConnection extends android.os.IInterface
 {
   /** Default implementation for IShizukuServiceConnection. */

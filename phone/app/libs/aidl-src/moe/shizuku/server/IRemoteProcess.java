@@ -2,6 +2,7 @@
  * This file is auto-generated.  DO NOT MODIFY.
  */
 package moe.shizuku.server;
+import android.os.IBinder;
 public interface IRemoteProcess extends android.os.IInterface
 {
   /** Default implementation for IRemoteProcess. */
