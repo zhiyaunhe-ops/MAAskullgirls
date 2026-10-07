@@ -16,11 +16,16 @@ rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex"
 
 LIBS=libs
-CP="$PLAT:$LIBS/api-classes.jar:$LIBS/aidl-classes.jar:$LIBS/shared-classes.jar:$LIBS/provider-classes.jar:$LIBS/annotation-1.7.1.jar"
+CP="$PLAT:$LIBS/api-classes.jar:$LIBS/shared-classes.jar:$LIBS/provider-classes.jar:$LIBS/annotation.jar"
 
 echo "== aidl =="
+# 自有 UserService 接口 + Shizuku server 桩 (moe.shizuku.server.*, 源在 libs/aidl-src,
+# Bundle/Intent/IBinder 框架声明在 libs/aidl-framework — 老 aidl 需显式 import 才能解析)
 mkdir -p "$OUT/gen"
 "$BT/aidl" -o "$OUT/gen" aidl/com/zhiyaunhe/sgmbot/shizuku/IShellService.aidl
+for f in libs/aidl-src/moe/shizuku/server/*.aidl; do
+    "$BT/aidl" -I libs/aidl-src -I libs/aidl-framework -o "$OUT/gen" "$f"
+done
 
 echo "== aapt2 compile/link =="
 # --no-crunch: 模板 PNG 必须逐字节保真 (NCC 匹配对重编码敏感, 阈值 0.72 掉不起)
@@ -37,7 +42,7 @@ javac -encoding UTF-8 -classpath "$CP" -d "$OUT/classes" @"$OUT/sources.txt"
 
 echo "== d8 =="
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
-"$BT/d8" --min-api 21 --lib "$PLAT" --output "$OUT/dex" @"$OUT/classes.txt"     "$LIBS/api-classes.jar" "$LIBS/aidl-classes.jar" "$LIBS/shared-classes.jar" "$LIBS/provider-classes.jar" "$LIBS/annotation-1.7.1.jar"
+"$BT/d8" --min-api 21 --lib "$PLAT" --output "$OUT/dex" @"$OUT/classes.txt"     "$LIBS/api-classes.jar" "$LIBS/shared-classes.jar" "$LIBS/provider-classes.jar" "$LIBS/annotation.jar"
 
 echo "== pack =="
 (cd "$OUT/dex" && zip -q ../base.apk classes.dex)
