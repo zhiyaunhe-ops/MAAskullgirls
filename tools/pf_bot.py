@@ -63,9 +63,9 @@ from maa.toolkit import Toolkit  # noqa: E402
 from maa.tasker import Tasker  # noqa: E402
 
 import pf_vision as vis  # noqa: E402
-from pf_nav import (RESOURCE_DIR, ROI_RESULT, ROI_TOPRIGHT,  # noqa: E402  (场景导航/扫描独立模块)
-                    NavAborted, SceneNav, TPL_CONTINUE, TPL_HUB_PLAY,
-                    TPL_RESULT_CONTINUE)
+from pf_nav import (RESOURCE_DIR, ROI_RESULT, ROI_SCENE_X, ROI_TOPRIGHT,  # noqa: E402  (场景导航/扫描独立模块)
+                    NavAborted, SceneNav, TPL_CONTINUE, TPL_HALL_PRIZE, TPL_HUB_PLAY,
+                    TPL_RESULT_CONTINUE, TPL_SCENE_X)
 from pf_domain import ScoreTracker  # noqa: E402  (clean_* 在 pf_webui.apply_session)
 from pf_store import STORE  # noqa: E402
 from pf_webui import apply_session, start_webui  # noqa: E402
@@ -356,10 +356,21 @@ class PfBot(SceneNav):
         return (int(box[0] + box[2] / 2), int(box[1] + box[3] / 2))
 
     def find_popup_x(self, img):
-        """弹窗关闭按钮 (能量/streak 同款 X), 命中返回中心。"""
+        """弹窗关闭按钮, 命中返回中心。四款 X: 能量 / streak / OPTIONS / 促销弹窗。
+
+        ⚠️ 2026-10-08 补第四路 (促销 X): 原只认 energy/streak/options 三款,
+        而大厅促销弹窗 (EGRET APPRECIATION DAY 等) 的 X 是「金环+蓝底+金 X」另一款,
+        三路全 MISS (实测用户截图 debug/pf/_promo_egret.png: 最高仅 0.271),
+        于是 step() 落到「未知界面」→ 乱按返回键; 该帧在 08:42 那轮连卡 7 轮
+        (debug/pf/run/1008_084253/0044~0050_未知界面)。导航路径 goto_pf_hub 早
+        已认它 (TPL_SCENE_X @0.8), 是主循环这份判据表漏了 —— 同款弹窗两处不同步。
+        离线复验: 该帧 0.984 命中 (1103, 97); 285 张 debug/pf/run 帧里 >=0.8 仅
+        这同一弹窗的 7 帧, 其余 0 误报。
+        """
         return (self.match_tpl(img, TPL_ENERGY_X, ROI_POPUP, th=0.7)
                 or self.match_tpl(img, TPL_STREAK_X, ROI_POPUP, th=0.7)
-                or self.match_tpl(img, TPL_OPTIONS_X, (1140, 5, 1240, 75), th=0.7))
+                or self.match_tpl(img, TPL_OPTIONS_X, (1140, 5, 1240, 75), th=0.7)
+                or self.match_tpl(img, TPL_SCENE_X, ROI_SCENE_X, th=0.8))
 
     def find_defense_popup(self, img) -> bool:
         """「先设防守队」弹窗是否在前台。
@@ -1482,6 +1493,20 @@ class PfBot(SceneNav):
             self.controller.post_click(*box).wait()
             time.sleep(3.0)
             self.snap("play点击后")
+        elif self.match_tpl(img, TPL_HALL_PRIZE, (0, 0, 0, 0), th=0.72):
+            # 游戏主大厅 (PRIZE FIGHTS 菱形可见): 点菱形进 PF hub。
+            # ⚠️ 2026-10-08 新增: 原 step() 判据表**没有大厅判据** —— 只住 pf_scene
+            # /pf_nav 的导航路径里 (goto_pf_hub)。bot 一晃回大厅 (延迟误退出/新场
+            # 切场) 就落「未知界面」→ 乱按返回键/右上 X, 在大厅上可能误触 STORE 等。
+            # 实测用户截图 debug/pf/_hall_main.png (主大厅) 该模板 0.985 命中,
+            # 但 step 认不出 ⇒ 用户看到「未知界面判不出」。285 张 debug/pf/run 帧
+            # (均为 PF 内界面) 0 命中, 无误报。
+            self.unknown_tries = 0
+            STATE.set_step("游戏主大厅")
+            STATE.log("检测到游戏主大厅, 点 PRIZE FIGHTS 进入 PF", "warn")
+            box = self.match_tpl(img, TPL_HALL_PRIZE, (0, 0, 0, 0), th=0.72)
+            self.controller.post_click(*box).wait()
+            time.sleep(2.5)
         elif (not self._defense_done and STATE.fight_no <= 1
               and self.find_defense_popup(img)):
             # 防守队弹窗: 压在选对手页之上, 底下的 REFRESH 仍命中, 所以必须排在
@@ -1534,6 +1559,8 @@ class PfBot(SceneNav):
                 self.match_tpl(img2, TPL_FIGHT, ROI_TOPRIGHT),
                 self.match_tpl(img2, TPL_CONTINUE, ROI_TOPRIGHT),
                 self.match_tpl(img2, TPL_RESULT_CONTINUE, ROI_RESULT, th=0.7),
+                self.match_tpl(img2, TPL_HUB_PLAY, (500, 400, 780, 530), th=0.7),
+                self.match_tpl(img2, TPL_HALL_PRIZE, (0, 0, 0, 0), th=0.72),
             ]):
                 # 交替按 左上返回键 / 右上关闭X: 某些界面左上是设置齿轮,
                 # 只按返回键会打开 OPTIONS 菜单卡死
