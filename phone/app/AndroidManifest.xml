@@ -27,6 +27,7 @@
         android:name=".App"
         android:label="SGM挂机"
         android:icon="@drawable/ic_bot"
+        android:usesCleartextTraffic="true"
         android:allowBackup="false">
 
         <activity android:name=".MainActivity" android:exported="true">
@@ -35,6 +36,12 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- 配置编辑页 (只暴露调不坏的安全子集; 写 override 文件 + 热重载) -->
+        <activity android:name=".ConfigActivity" android:exported="false"/>
+
+        <!-- 判定路径图: 内嵌 WebView 开 127.0.0.1:8791, 手机上不用 adb forward */
+        <activity android:name=".GraphActivity" android:exported="false"/>
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

@@ -43,8 +43,31 @@ public final class Update {
 
     /** 上次自动检查的时刻 (进程内; 服务是长驻的, 不写盘免得每次开跑都改 config) */
     private static volatile long lastCheckMs = 0;
+    /** 最近一次检查/拉取的一句话结果 — 主页直接回显, 不用翻 /log (2026-10-08) */
+    private static volatile String lastResult = "";
 
     private Update() { }
+
+    /** 给 UI 用的一句话摘要 (空 = 还没查过) */
+    public static String lastResult() { return lastResult; }
+
+    /** 人类可读的一句话 (主页状态区显示) */
+    private static String brief(JSONObject r, boolean applied) {
+        if (r == null) return "结果为空";
+        String pre = applied ? "拉取: " : "检查: ";
+        if (!r.optBoolean("ok")) return pre + r.optString("msg", "失败");
+        boolean nb = r.optBoolean("need_bundle"), na = r.optBoolean("need_apk");
+        if (applied) {
+            int n = r.optInt("bundle_files", -1);
+            JSONObject apk = r.optJSONObject("apk");
+            return pre + "bundle=" + (n < 0 ? (nb ? "失败" : "已最新") : n + " 文件")
+                    + " apk=" + (apk == null ? (na ? "失败" : "已最新")
+                            : (apk.optBoolean("ok") ? "已安装" : apk.optString("msg", "跳过")));
+        }
+        return pre + "bundle" + (nb ? "有更新" : "已最新")
+                + " apk" + (na ? "有更新" : "已最新")
+                + " (tag=" + r.optString("tag", "-") + ")";
+    }
 
     /* ---------------- 检查 ---------------- */
 
@@ -56,11 +79,11 @@ public final class Update {
     public static JSONObject check(Config cfg) {
         JSONObject u = sec(cfg);
         String repo = u.optString("repo", "");
-        if (repo.length() == 0) return err("update.repo 未配 — config.json 里填 \"owner/name\"");
+        if (repo.length() == 0) return remember(err("update.repo 未配 — config.json 里填 \"owner/name\""), false);
         JSONObject rel = fetchJson(String.format(API, repo));
-        if (rel == null) return err("取 release 失败 (无网络 / 仓库不存在 / 还没有 release)");
+        if (rel == null) return remember(err("取 release 失败 (无网络 / 仓库不存在 / 还没有 release)"), false);
         if (rel.has("message") && !rel.has("assets"))
-            return err("GitHub: " + rel.optString("message"));
+            return remember(err("GitHub: " + rel.optString("message")), false);
 
         JSONArray as = rel.optJSONArray("assets");
         JSONObject b = pick(as, u.optString("bundle_asset", "bundle.zip"));
@@ -72,7 +95,7 @@ public final class Update {
         String vA = a == null ? "" : a.optString("updated_at", "");
 
         try {
-            return new JSONObject()
+            return remember(new JSONObject()
                     .put("ok", true)
                     .put("tag", rel.optString("tag_name", ""))
                     .put("published_at", rel.optString("published_at", ""))
@@ -83,10 +106,16 @@ public final class Update {
                     .put("ver_bundle", vB).put("ver_apk", vA)
                     .put("need_bundle", b != null && vB.length() > 0 && !vB.equals(curB))
                     .put("need_apk", a != null && vA.length() > 0 && !vA.equals(curA))
-                    .put("apk_ok", Paths.legacy());     // 未授所有文件访问 ⇒ shell 读不到, 装不了
+                    .put("apk_ok", Paths.legacy()), false);     // 未授所有文件访问 ⇒ shell 读不到, 装不了
         } catch (Exception e) {
-            return err("组装结果失败: " + e);
+            return remember(err("组装结果失败: " + e), false);
         }
+    }
+
+    /** 记下最近结果供 UI 回显 */
+    private static JSONObject remember(JSONObject r, boolean applied) {
+        try { lastResult = brief(r, applied); } catch (Throwable ignored) { }
+        return r;
     }
 
     /* ---------------- 应用 ---------------- */
@@ -97,7 +126,7 @@ public final class Update {
      */
     public static JSONObject apply(Context ctx, Config cfg, boolean withApk) {
         JSONObject st = check(cfg);
-        if (!st.optBoolean("ok")) return st;
+        if (!st.optBoolean("ok")) { lastResult = brief(st, true); return st; }
         JSONObject out = new JSONObject();
         try {
             out.put("ok", true).put("tag", st.optString("tag"));
@@ -145,7 +174,7 @@ public final class Update {
         /* 3) 让引擎重新读 config / 清模板缓存 */
         BotService.trigger("reload");
         try { out.put("reloaded", true); } catch (Exception ignored) { }
-        return out;
+        return remember(out, true);
     }
 
     /** pm install -r; 2>&1 是因为 pm 的结果在新版上走 stderr, 只抓 stdout 会看到空输出 */

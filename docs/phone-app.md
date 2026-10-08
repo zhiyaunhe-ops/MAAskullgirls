@@ -50,11 +50,22 @@ curl http://127.0.0.1:8791/log         # app.log
 | `graph` | `layout/nodes/edges` | 见文件 | 判定路径图结构（见下） |
 | `update` | `repo/bundle_asset/apk_asset/auto_check_h/allow_apk` | 见文件 | GitHub 更新（见下） |
 
-改配置不用 push 也行：
+### 三条改配置的路
 
-```bash
-curl -X POST --data-binary @config.json http://127.0.0.1:8791/config
-```
+| 方式 | 适合 | 怎么用 |
+|---|---|---|
+| **App 内「编辑配置」** | 调运行时参数 | 手机上直接改，带范围校验，越界拒收（见下） |
+| `adb push` 原文 | 精确编辑 | 推 `config.json` 到 `Paths.config()` 再 `/reload` |
+| HTTP | PC 脚本 | `curl -X POST --data-binary @config.json http://127.0.0.1:8791/config` |
+
+**App 内只暴露安全子集**（扫描间隔 / 自适应 / 匹配口径 / 运行控制 / 流水 / 更新）。
+坐标与阈值（`title_roi`、`btn_rois`、`boss_anchor`、`escape` 链、`thresholds.*`）
+**不进界面**：那些是标定值，手输错一个数就是"不打/乱点/永远认不出"，且现场没有回滚
+手段。要改它们走 `adb push` 原文——那才是精确编辑。
+
+两条落地路径**共用同一套语义**：界面只写你**真改过**的键（与当前值相同的不写），
+`Config.read()` 是「assets 默认 + override 逐键合并」，所以没碰的键继续吃默认，
+不会把默认值固化成 override。「恢复默认」= 删掉 override 文件。
 
 ## 判定路径图
 
@@ -62,13 +73,19 @@ curl -X POST --data-binary @config.json http://127.0.0.1:8791/config
 `nodes`，不必发版。循环每走到一个判定点就 `Graph.cursor(id)` + `Trace.put(...)`
 （记模板/ROI/峰值/命中与否）。
 
-```bash
-adb forward tcp:8791 tcp:8791 && start http://127.0.0.1:8791/
-```
+两种看法：
+
+- **手机上**：主页「查看判定路径图」。内置 WebView 开 `http://127.0.0.1:8791/`
+  —— 服务只绑回环且由 App 进程自己起，同进程 WebView 直接可达，不用 adb。服务没起
+  时页内能直接点「启动服务」。
+- **PC 上**：`adb forward tcp:8791 tcp:8791` 后开 `http://127.0.0.1:8791/`。
 
 页面：SVG 按 config 的 x/y 画节点与边（缺省 grid 自动排），**高亮当前节点**，
 节点下方是该节点最近一次 NCC 峰值（差 0.02 卡住一眼可见），右侧是最近判定流水。
 数据口 `GET /graph` 返回 `{nodes,edges,cursor,byNode,trace}`。
+
+⚠️ 页面全靠 JS 拉 `/graph` 再画 SVG ⇒ WebView **必须开 JavaScript**（默认是关的），
+否则一片空白且不报错——那种"白屏"最容易误判成接口坏了。
 
 ## 多分辨率
 
