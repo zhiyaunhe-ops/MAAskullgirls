@@ -23,8 +23,11 @@ POST /api/end           结束当前场次, 回 IDLE 待命 (进程与 WebUI 保
 POST /api/stop          进程退出 (主循环退出, WebUI 一并关闭; 托盘/调度依赖)
 POST /api/queue/set     {ids:[...]} 整体重设接力队列 (打完一场自动接下一场的任务单)
 GET  /api/chain         {blocks, enabled, queue, running}  连刷编排配置 (debug/pf/chain.json)
-POST /api/chain/save    {blocks:[{pos,title,target}], enabled} 场块槽位同步成场次
-                        (scene=#N 位置绑定) 并按链条设接力队列; enabled=false 只清队列
+                        blocks[].target 是**只读回填** (所绑场次的 score_target 现值)
+POST /api/chain/save    {blocks:[{pos,title}], enabled} 场块槽位同步成场次
+                        (scene=#N 位置绑定) 并按链条设接力队列; enabled=false 只清队列。
+                        入参 block 的 target 被**忽略** (分数上限唯一入口 = 场次页签,
+                        2026-10-08 收敛, 见 sync_chain 注释)
 POST /api/scan          待命中请求去 PF hub 扫描录入今日场地 (运行中 409)
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
 POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删;
@@ -360,12 +363,21 @@ def apply_session(sess: dict) -> None:
 def sync_chain(store, blocks, scan=None, *, enabled=True, logger=None) -> list:
     """连刷链 -> 场次同步 + 接力队列。
 
-    blocks: [{pos,title,target,sid?}] —— pos = 轮播位 (1 起), 场次 scene 绑 "#pos"
+    blocks: [{pos,title,sid?}] —— pos = 轮播位 (1 起), 场次 scene 绑 "#pos"
     (位置绑定, 不依赖 OCR); 槽位场次按 sid 复用 (chain.json 记账, 被删则重建),
-    同步只动 名称/目标分/scene, 规则/能量/休息等人工配置不碰; 标题优先取当日
+    同步只动 名称/scene, 规则/能量/休息等人工配置不碰; 标题优先取当日
     扫描 (pos 对得上), 场地每天轮换时槽位自动跟新场走。
     enabled=False 只清接力队列 (链条配置保留, 不开跑)。
-    返回落库后的 blocks (带 sid)。"""
+    返回落库后的 blocks (带 sid)。
+
+    ⚠️ 2026-10-08 修: target 从「链条自带 + 覆盖场次」改为**只读回填**。
+    原实现 `store.update(..., score_target=clean_target(b['target']))` 会用
+    chain.json 的 target **静默覆盖**场次已设的 score_target —— 用户在场次页签
+    设的 ≤40M, 只要在链条页签保存一次就被冲成链条里的 null(无上限)。
+    同一字段两个可写入口必然分叉 (用户 2026-10-08 质疑, 采纳其口径)。
+    现在: score_target 唯一入口 = 场次页签; 链条只**显示**场次现值, 不改它。
+    为兼容旧 chain.json 残留的 target 键, 入参里的 target 一律忽略 (不报错)。
+    """
     log = logger or STATE.log
     scan_by_pos = {}
     if isinstance(scan, dict):
@@ -381,20 +393,20 @@ def sync_chain(store, blocks, scan=None, *, enabled=True, logger=None) -> list:
         if pos < 1:
             continue
         title = scan_by_pos.get(pos) or str(b.get("title") or "").strip()
-        tgt = clean_target(b.get("target"))
         sess = store.get(str(b.get("sid") or ""))
         if sess is None:
-            sess = store.create(title or f"连刷#{pos}", None, 0, 0, tgt, 4, f"#{pos}")
+            # 新建槽位场次: target 交给场次页签设, 这里不臆造 (默认无上限)。
+            sess = store.create(title or f"连刷#{pos}", None, 0, 0, None, 4, f"#{pos}")
             log(f"连刷槽位 #{pos}: 新建场次「{sess['name']}」", "warn")
         elif sess["id"] == store.session_id and STATE.running:
             log(f"连刷槽位 #{pos}: 场次「{sess['name']}」运行中, 配置同步跳过 (下次开始生效)",
                 "warn")
         else:
-            store.update(sess["id"], name=title or sess.get("name"),
-                         score_target=tgt, scene=f"#{pos}")
+            # 只改名与 scene; score_target 归场次页签管, 这里不碰。
+            store.update(sess["id"], name=title or sess.get("name"), scene=f"#{pos}")
         sids.append(sess["id"])
         out.append({"pos": pos, "title": title or f"连刷#{pos}",
-                    "target": tgt, "sid": sess["id"]})
+                    "target": sess.get("score_target"), "sid": sess["id"]})
     store.queue_set(sids if enabled else [])
     return out
 
@@ -575,7 +587,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", body)
         elif path == "/api/chain":
             stored = _load_chain()
-            body = json.dumps({"blocks": stored["blocks"], "enabled": stored["enabled"],
+            # target 是**只读回填**: 显示其绑定场次的 score_target 现值 (唯一真源),
+            # 不用 chain.json 里的陈旧副本 —— 两者可能已分叉 (2026-10-08)。
+            blocks = []
+            for b in stored["blocks"]:
+                if not isinstance(b, dict):
+                    continue
+                sess = STORE.get(str(b.get("sid") or "")) if b.get("sid") else None
+                nb = dict(b)
+                nb["target"] = sess.get("score_target") if sess else None
+                blocks.append(nb)
+            body = json.dumps({"blocks": blocks, "enabled": stored["enabled"],
                                "queue": STORE.queue_list(), "running": bool(STATE.running)},
                               ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json", body)

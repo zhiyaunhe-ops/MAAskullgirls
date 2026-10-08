@@ -704,7 +704,12 @@ progress::-moz-progress-bar { background:var(--gold); }
 .chain-node .cn-step { font-weight:700; color:var(--blue); }
 .chain-node .cn-pos { color:var(--dim); }
 .chain-node .cn-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.chain-node .cn-target { width:130px; }
+/* 只读目标分 (2026-10-08): 原为可编辑 number 输入框 (width:130px), 改为
+   「场次」页签的只读回显 —— 分数上限唯一入口在场次, 链条不再可写。 */
+.chain-node .cn-target {
+  width:90px; text-align:right; color:var(--dim);
+  font-variant-numeric:tabular-nums;
+}
 .chain-link { width:2px; height:18px; background:var(--line); margin:2px auto; position:relative; }
 .chain-link::after {
   content:''; position:absolute; left:-3px; bottom:-1px;

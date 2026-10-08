@@ -747,12 +747,15 @@ function renderChainUI() {
   }
   box.innerHTML = chainBlocks.map((b, i) => {
     const link = i ? '<div class="chain-link" aria-hidden="true"></div>' : '';
+    // target 只读显示 (2026-10-08): 分数上限唯一入口是「场次」页签。
+    // 原来这里也有个 number 输入框, 保存链条时会静默覆盖场次的 score_target,
+    // 同一字段两个可写入口必然分叉 (用户质疑 → 收敛为单一入口)。
+    const tgt = b.target != null ? '≤' + fmtN(b.target) : '≤∞';
     return link + `<div class="chain-node" data-i="${i}">` +
       `<span class="cn-step">${i + 1}</span>` +
       `<span class="cn-pos">#${b.pos}</span><b class="cn-title">${esc(b.title)}</b>` +
-      `<input class="inp cn-target" type="number" min="0" step="100000" data-i="${i}"` +
-      ` value="${b.target != null ? b.target : ''}" placeholder="目标分(不限)"` +
-      ` aria-label="第${i + 1}节目标分" title="本场刷到该总分自动切下一节; 留空 = 刷到手动结束">` +
+      `<span class="cn-target" title="分数上限由「场次」页签设置 (留空=无上限); ` +
+      `链条只读显示">${tgt}</span>` +
       `<button class="s-act" data-cup="${i}" title="上移">▲</button>` +
       `<button class="s-act" data-cdown="${i}" title="下移">▼</button>` +
       `<button class="s-act" data-cdel="${i}" title="从链条断开">✕</button></div>`;
@@ -805,8 +808,9 @@ async function requestScan() {
 document.getElementById('arena-pool').addEventListener('click', e => {
   const blk = e.target.closest('.arena-block');
   if (!blk || blk.classList.contains('in-chain')) return;
+  // target 不再由前端提供: 回填值由服务端按所绑场次的 score_target 给出。
   chainBlocks.push({ pos: Number(blk.dataset.pos), title: blk.dataset.title || '',
-                     target: null, sid: null });
+                     sid: null });
   saveChain();
 });
 document.getElementById('chain-list').addEventListener('click', e => {
@@ -823,12 +827,8 @@ document.getElementById('chain-list').addEventListener('click', e => {
     saveChain();
   }
 });
-document.getElementById('chain-list').addEventListener('change', e => {
-  const inp = e.target.closest('.cn-target');
-  if (!inp) return;
-  const b = chainBlocks[Number(inp.dataset.i)];
-  if (b) { b.target = inp.value.trim() === '' ? null : Number(inp.value); saveChain(); }
-});
+/* target 输入框已移除 (2026-10-08): 分数上限唯一入口 = 「场次」页签。
+   原 change 监听随输入框一并删除, 链条 target 只读显示。 */
 document.getElementById('chain-on').addEventListener('change', e => toggleChain(e.target.checked));
 
 /* ---------- 接力队列 (2026-10-02): 打完一场自动接下一场 ---------- */

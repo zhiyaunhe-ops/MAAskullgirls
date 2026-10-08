@@ -128,6 +128,10 @@ check(chainHtml1.includes('chain-node'), '接入后链条节点未渲染');
 check(chainHtml1.includes('COSTUMEPARTY'), '链条节点缺场名');
 check((lastChainSave || []).length === 1 && lastChainSave[0].pos === 2,
       `chain/save 载荷不对: ${JSON.stringify(lastChainSave)}`);
+check(lastChainSave[0].target === undefined,
+      'chain/save 不应再传 target (分数上限唯一入口 = 场次页签, 2026-10-08)');
+check(/<span class="cn-target"/.test(chainHtml1) && !/cn-target[^>]*type="number"/.test(chainHtml1),
+      '链条目标分须为只读 <span>, 不得是可编辑 <input type="number">');
 
 if (failures.length) {
   console.error('连刷编排渲染冒烟失败:\n  - ' + failures.join('\n  - '));
