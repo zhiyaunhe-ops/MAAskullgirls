@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         Ui.add(this, Ui.section(this, "服务与悬浮条"));
         Ui.add(this, Ui.hint(this,
                 "「启动服务」= 起常驻服务并跑结算循环 (需要 Shizuku 就绪)。\n"
-                + "「悬浮条」可以**单独**显示, 不需要起服务 —— 先摆好位置, 想跑再点悬浮条上的「开始」。"));
+                + "「悬浮条」可以「单独」显示, 不需要起服务 —— 先摆好位置, 想跑再点悬浮条上的「开始」。"));
 
         Ui.button(this, "④ 启动服务 (跑结算循环)",
                 "启动服务并开跑结算循环…", feed,

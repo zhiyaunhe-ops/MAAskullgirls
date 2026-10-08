@@ -99,7 +99,7 @@ public class StatsActivity extends Activity {
         root.addView(Ui.text(this, "每日战绩热力图", Ui.TXT, 19f));
 
         root.addView(Ui.hint(this, "数据源: store.json 的 history 归档 (每场落一次盘)\n"
-                + "颜色越深 = 那天打得**越多**; 深浅和胜率无关, 胜率看下面。"));
+                + "颜色越深 = 那天打得「越多」; 深浅和胜率无关, 胜率看下面。"));
 
         /* 总计卡 */
         LinearLayout sum = Ui.card(this);
@@ -228,15 +228,15 @@ public class StatsActivity extends Activity {
         root.addView(Ui.section(this, "数据从哪来 / 会不会丢"));
         root.addView(Ui.hint(this,
                 "来源: " + Paths.store() + " 的 history 段。\n"
-                + "引擎**每打完一场就落一次盘** (见 SettleLoop.countRound), 所以:\n"
+                + "引擎「每打完一场就落一次盘」 (见 SettleLoop.countRound), 所以:\n"
                 + "  崩溃 / 重启 / 后台被杀 都不会丢已记的场次。\n"
-                + "  但**手动删 store.json** 会清空全部历史 —— 想在电脑上改的话先备份。\n"
+                + "  但「手动删 store.json」会清空全部历史 —— 想在电脑上改的话先备份。\n"
                 + "保留: store.keep_days (默认 400 天, 约 13 个月), 超期自动丢最旧的。"));
 
         root.addView(Ui.section(this, "计场时机 (和胜负判定同源)"));
         root.addView(Ui.hint(this,
                 "一场 = 点出 REMATCH / 败局先手那一下, 一局恰计一次。\n"
-                + "屏幕上的 VICTORY / DEFEAT 大字**不**计场 —— 结算两页都会有同一张横幅,\n"
+                + "屏幕上的 VICTORY / DEFEAT 大字「不」计场 —— 结算两页都会有同一张横幅,\n"
                 + "按大字计会虚高 (实测 20 倍), 这是刻意避开的坑。"));
 
         root.addView(Ui.section(this, "和 autojs 版一致吗"));

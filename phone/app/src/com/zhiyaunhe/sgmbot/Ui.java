@@ -77,22 +77,33 @@ public final class Ui {
     /**
      * 前置条件闸门 — **"点了没反应"的头号原因**。
      *
-     * 用法: `Ui.act(a, null, s, Ui.gate(a, s, NEED_SHIZUKU, () -> doStart()))`
-     * 不满足时: 弹一句人话 + 状态区写红 + (能跳设置的就跳过去), 返回 null ⇒ act 不执行 body。
+     * 用法: `Ui.act(a, note, s, Ui.gate(a, s, NEED_CHANNEL, () -> doStart()))`
+     * 不满足时: 弹一句人话 + 状态区写红 + (能跳设置的就跳过去), 且**不执行 body**。
      *
-     * @return 条件满足返回 body, 否则返回 null
+     * ⚠️ **返回的是"点下去才检查"的包装, 不是检查结果** (2026-10-08 实测踩坑)。
+     *    第一版直接 `if (why == null) return body; else return null;` —— 那是**在
+     *    参数求值时**就检查了, 而 gate 又偏偏写在 `Ui.button(..., gate(...))` 的
+     *    实参位置 ⇒ ① 主页 onCreate 组装界面时就检查了一遍 (那会儿 Shizuku 当然没起)
+     *    ② 于是 offerFix 顺手 startActivity(HelpActivity), **App 一打开就自己跳到指引页**
+     *    ③ 而且真正点击时反而不再检查, 条件早就变了也没用。
+     *    所以这里必须返回 lambda, 把 blockReason/offerFix 推迟到 click 那一刻。
      */
-    public static Runnable gate(Activity a, TextView status, String need, Runnable body) {
-        String why = blockReason(a, need);
-        if (why == null) return body;
-        toast(a, why);
-        if (status != null) {
-            status.setText("✗ " + why);
-            status.setTextColor(ERR);
-        }
-        SgmLog.i("ui", "拦截 [" + need + "]: " + why);
-        offerFix(a, need);
-        return null;
+    public static Runnable gate(final Activity a, final TextView status,
+                                final String need, final Runnable body) {
+        return () -> {
+            String why = blockReason(a, need);
+            if (why == null) {
+                if (body != null) body.run();
+                return;
+            }
+            toast(a, why);
+            if (status != null) {
+                status.setText("✗ " + why);
+                status.setTextColor(ERR);
+            }
+            SgmLog.i("ui", "拦截 [" + need + "]: " + why);
+            offerFix(a, need);
+        };
     }
 
     /* 需要的东西 */
