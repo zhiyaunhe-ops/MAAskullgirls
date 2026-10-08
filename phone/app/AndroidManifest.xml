@@ -40,7 +40,7 @@
         <!-- 配置编辑页 (只暴露调不坏的安全子集; 写 override 文件 + 热重载) -->
         <activity android:name=".ConfigActivity" android:exported="false"/>
 
-        <!-- 判定路径图: 内嵌 WebView 开 127.0.0.1:8791, 手机上不用 adb forward */
+        <!-- 判定路径图: 内嵌 WebView 开 127.0.0.1:8791, 手机上不用 adb forward -->
         <activity android:name=".GraphActivity" android:exported="false"/>
 
         <provider

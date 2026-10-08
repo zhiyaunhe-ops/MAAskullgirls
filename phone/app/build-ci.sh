@@ -28,6 +28,33 @@ mkdir -p "$OUT/gen"
 #     aidl -I libs/aidl-src -I libs/aidl-framework -o build/gen "$f"; done
 # CI 的 aidl 是 34 版 (v2 语法), 与本地 11 版对 Bundle/Intent 解析行为不同 — 不在 CI 生成
 
+echo "== manifest 语法自检 =="
+# ⚠️ 加这步的原因 (2026-10-08 实际踩到): 注释写成 /* ... */ 时, XML 解析器不把它当
+# 注释, 会把后面的元素一起吞掉, 报错只有一句 "not well-formed (invalid token)"
+# 且**不带行号上下文**, 在 CI 上只能靠翻日志定位。这里先自检给出人话提示。
+# 两道检查: ① 注释块内不得出现 --  (XML 规则, 出现即非法)
+#           ② python 能解析整棵树 (兜住未闭合标签/吞元素这类)
+python3 - <<'PY' || { echo "[!!] AndroidManifest.xml 语法非法 — 见上面提示"; exit 1; }
+import io, re, sys
+d = io.open('AndroidManifest.xml', 'rb').read()
+bad = 0
+for m in re.finditer(rb'<!--(.*?)-->', d, re.S):
+    if b'--' in m.group(1):
+        print('[!!] 注释块内含 "--" (XML 非法): ' + m.group(1)[:100].decode('utf-8', 'replace'))
+        bad += 1
+op, cl = len(re.findall(rb'<!--', d)), len(re.findall(rb'-->', d))
+if op != cl:
+    print('[!!] 注释块没闭合: <!-- %d 个, --> %d 个' % (op, cl)); bad += 1
+print('注释 %d 块, 未闭合 %d' % (op, cl - op))
+import xml.etree.ElementTree as ET
+try:
+    r = ET.parse('AndroidManifest.xml').getroot()
+    print('[ok] XML 可解析, 元素总数 %d' % len(list(r.iter())))
+except Exception as e:
+    print('[!!] XML 解析失败: %s' % e); bad += 1
+sys.exit(1 if bad else 0)
+PY
+
 echo "== aapt2 compile/link =="
 # --no-crunch: 模板 PNG 必须逐字节保真 (NCC 匹配对重编码敏感, 阈值 0.72 掉不起)
 "$BT/aapt2" compile --no-crunch --dir res -o "$OUT/res.zip"
