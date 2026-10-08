@@ -72,6 +72,9 @@ public class BotService extends Service {
             case "stop": stop(c); break;
             case "end": end(c); break;
             case "reload": reload(); break;
+            /* 悬浮条独立启停 (不需要服务) — 主页/悬浮条/HTTP 都能调 */
+            case "overlay_show": OverlayCtl.show(c); break;
+            case "overlay_hide": OverlayCtl.hide(); break;
             /* 更新: 网络 IO, 一律丢后台线程 (trigger 会被 UI 线程/HTTP 线程直接调) */
             case "check_update": background(() -> {
                 JSONObject r = Update.check(cfg);
@@ -120,13 +123,10 @@ public class BotService extends Service {
         if (sh == null) sh = new ShizukuCtl();
         if (tpls == null) tpls = new TplStore(this);
         if (touch == null) touch = new TouchCtl(sh);
-        if (Settings.canDrawOverlays(this)) {
-            bar = new OverlayBar(this);
-            bar.show();
-            bar.setText("待机\n今日?场\n点导航开跑");
-        } else {
-            SgmLog.i("svc", "无悬浮窗权限 — 去 App 主页授权 (显示在应用上层)");
-        }
+        /* 悬浮条改由 OverlayCtl 统管 (可独立启动, 用户先摆好就复用不重建) */
+        bar = OverlayCtl.attachForService(this);
+        if (bar != null) bar.setText("待机\n今日" + Store.load().rounds + "场\n点开始跑");
+        else SgmLog.i("svc", "无悬浮窗权限 — 去 App 主页授权 (显示在应用上层); 引擎照跑");
         notify_("SGM挂机待命");
         SgmLog.i("svc", "created");
     }
@@ -154,7 +154,16 @@ public class BotService extends Service {
     public void onDestroy() {
         running = false;
         RUN.set(false);
-        if (bar != null) bar.destroy();
+        /* ⚠️ 只收「服务名下」的悬浮条 —— 用户单独启动的那条要留在屏幕上。
+         *   判据是"是服务起来时挂的": 用户先开的话 OverlayCtl 会复用, 这里就不该收。
+         *   实现上交给 OverlayCtl: 它知道当前这条是谁的 (attachForService vs show)。 */
+        if (bar != null && OverlayCtl.ownedByService()) {
+            OverlayCtl.hide();
+            bar = null;
+        } else if (bar != null) {
+            SgmLog.i("svc", "悬浮条是用户单独启动的 — 服务退出时保留");
+            bar.setText("待机 (服务已退)\n点开始重跑");
+        }
         App.service = null;
         SgmLog.i("svc", "destroyed");
         super.onDestroy();

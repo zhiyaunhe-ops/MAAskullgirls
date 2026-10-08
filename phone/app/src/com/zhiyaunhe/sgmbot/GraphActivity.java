@@ -58,8 +58,16 @@ public class GraphActivity extends Activity {
         start.setText("启动服务");
         start.setAllCaps(false);
         start.setOnClickListener(v -> {
+            String why = Ui.blockReason(this, Ui.NEED_SHIZUKU_SERVER);
+            if (why != null) {
+                tip.setTextColor(Color.parseColor("#D93636"));
+                tip.setText("✗ " + why);
+                Ui.toast(this, why);
+                return;
+            }
             BotService.start(this, BotService.MODE_SETTLE);
-            tip.setText("已请求启动 — 等 2~3 秒后刷新");
+            tip.setTextColor(Color.parseColor("#6B7280"));
+            tip.setText("› 已请求启动 — 等 2~3 秒后刷新");
             h.postDelayed(this::load, 2500);
         });
         btns.addView(start);
@@ -73,8 +81,43 @@ public class GraphActivity extends Activity {
         page.addView(web, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        navBar(page);                // 底部页签 (本轮新增: 与战绩页/配置页互跳)
         setContentView(page);
         load();
+    }
+
+    /** 底部导航 — 判定图/战绩/配置都是"看数据"的页, 互相能跳省得回主页再点 */
+    private void navBar(LinearLayout page) {
+        LinearLayout nav = new LinearLayout(this);
+        nav.setOrientation(LinearLayout.HORIZONTAL);
+        nav.setPadding(20, 4, 20, 16);
+        String[] names = {"判定图", "战绩热力图", "编辑配置"};
+        for (int i = 0; i < names.length; i++) {
+            final int idx = i;
+            TextView b = new TextView(this);
+            b.setText(names[i]);
+            b.setTextSize(13f);
+            b.setGravity(Gravity.CENTER);
+            b.setPadding(0, 18, 0, 18);
+            b.setTextColor(idx == 0 ? 0xFFFFFFFF : Color.parseColor("#2F6BFF"));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            lp.setMargins(6, 0, 6, 0);
+            b.setLayoutParams(lp);
+            android.graphics.drawable.GradientDrawable g =
+                    new android.graphics.drawable.GradientDrawable();
+            g.setColor(idx == 0 ? Color.parseColor("#2F6BFF") : Color.TRANSPARENT);
+            g.setCornerRadius(20);
+            g.setStroke(2, Color.parseColor("#2F6BFF"));
+            b.setBackground(g);
+            b.setOnClickListener(v -> {
+                if (idx == 0) return;                       // 当前页
+                if (idx == 1) startActivity(new android.content.Intent(this, StatsActivity.class));
+                else startActivity(new android.content.Intent(this, ConfigActivity.class));
+            });
+            nav.addView(b);
+        }
+        page.addView(nav);
     }
 
     private void load() {

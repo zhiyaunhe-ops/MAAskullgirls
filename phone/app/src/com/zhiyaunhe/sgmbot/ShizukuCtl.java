@@ -73,6 +73,23 @@ public final class ShizukuCtl {
         SgmLog.i("shizuku", "bindUserService...");
     }
 
+    /**
+     * 发授权请求 (幂等; 已授权则直接 tryBind) — 主页/悬浮条/指引页共用。
+     * 之前只有 MainActivity 里一份内联逻辑, 别的页面想补授权只能自己抄一遍。
+     */
+    public static void requestPerm() {
+        try {
+            if (!serverUp()) {
+                SgmLog.i("shizuku", "服务没在跑 — 授权请求发不出去");
+                return;
+            }
+            if (granted()) { tryBind(App.inst); return; }
+            Shizuku.requestPermission(REQ_PERMISSION);
+        } catch (Throwable t) {
+            SgmLog.i("shizuku", "requestPermission 失败: " + t);
+        }
+    }
+
     /* ---- 原语 ---- */
 
     /** sh -c 执行, 返回 stdout (UserService 未绑定/异常返回 "") */

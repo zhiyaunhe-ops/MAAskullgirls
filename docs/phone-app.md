@@ -7,11 +7,34 @@ Android 原生 App：Shizuku 拿 shell uid 截屏/点击，NCC 模板匹配认�
 | 想做什么 | 去哪 |
 |---|---|
 | 装起来/跑起来 | 本文「跑起来」 |
+| **装 Shizuku / 开启流程 / 点了没反应** | **App 内「使用指引」页**；本文「界面导览」 |
 | 改参数（扫描间隔/阈值/时长…） | 本文「可配置项」 |
 | 看判定路径图 | 本文「判定路径图」 |
+| **看每日战绩（热力图）** | **App 内「每日战绩」页**；本文「战绩热力图」 |
 | 换分辨率/别的比例屏 | 本文「多分辨率」 |
 | 拉模板/配置/新 APK | 本文「GitHub 拉取更新」 |
 | Shizuku 连不上、截屏失败 | [phone-app-shizuku.md](phone-app-shizuku.md) |
+
+## 界面导览（App 内五个页面）
+
+| 页面 | 入口 | 干什么 |
+|---|---|---|
+| 主页 | 启动 App | 状态总览 + 三项授权 + 服务/悬浮条控制 + 更新 + 各页入口 |
+| 使用指引 | 主页「❓ 使用指引」 | Shizuku 下载直链、**6 步开启流程**、「点了没反应」速查表、adb 入口 |
+| 编辑配置 | 主页「编辑配置」 | 改运行时参数（安全子集，带范围校验） |
+| 判定路径图 | 主页「查看判定路径图」 | WebView 实时看走到哪一步、各判定点峰值 |
+| 每日战绩 | 主页「每日战绩」 | GitHub 风格热力图 + 每日明细 + 口径说明 |
+
+**每个按钮点了都会弹提示**（`Ui.act`）：说清"要做什么"；前置条件不满足时给**人话
+原因**并尽量把你送到对应设置页（`Ui.gate`），不再静默丢弃。三类最容易"看着像坏了"
+的情况现在都有话：
+
+| 你点的 | 实际缺什么 | 提示 |
+|---|---|---|
+| 启动服务 | Shizuku 服务没跑 | "先去「使用指引」按步骤启动 Shizuku" |
+| 启动服务 | 没给本 App Shizuku 授权 | "点主页「① 授权 Shizuku」允许一下" |
+| 启动服务 | 授权了但通道没接上 | "稍等 2~3 秒再点" |
+| 单独显示悬浮窗 | 没授"显示在应用上层" | 直接弹提示 + 跳设置页 |
 
 ## 跑起来
 
@@ -19,6 +42,9 @@ Android 原生 App：Shizuku 拿 shell uid 截屏/点击，NCC 模板匹配认�
 2. 打开 App 依次授权：Shizuku → 悬浮窗 → **所有文件访问**（第三个不授也能跑，但
    `adb push` 改配置要写私有长路径，且 APK 自更新用不了，见「更新」）；
 3. 点「启动服务」；悬浮条：开始／导航／停止／结束／◀折叠。
+   悬浮条也可以**单独显示**（主页「单独显示悬浮窗」），不需要先起服务 —— 先摆好
+   位置，想跑时点悬浮条上的「开始」。悬浮条是谁启的决定了服务退出时收不收它：
+   用户单独开的会留着，服务开的会跟着服务一起收。
 
 调试（PC 侧）：
 
@@ -49,6 +75,9 @@ curl http://127.0.0.1:8791/log         # app.log
 | `log` | `trace_size` | 200 | 判定流水环形缓冲容量 |
 | `graph` | `layout/nodes/edges` | 见文件 | 判定路径图结构（见下） |
 | `update` | `repo/bundle_asset/apk_asset/auto_check_h/allow_apk` | 见文件 | GitHub 更新（见下） |
+| `shizuku` | `download_url/release_api/homepage/play_url` | 见文件 | 使用指引页的 Shizuku 链接（换版本不必发 APK） |
+| `stats` | `weeks` / `levels` | 26 / `[1,3,6,11]` | 热力图默认周数 / 颜色分档上界 |
+| `store` | `keep_days` | 400 | 战绩归档保留天数（≈13 个月），超期丢最旧 |
 
 ### 三条改配置的路
 
@@ -139,3 +168,35 @@ update_bundle`／HTTP `GET /update`、`POST /update?apk=0|1`。开跑时还会�
 - bundle 里的 `config.json` **只补新键**，不覆盖本地手改；想强制覆盖就放
   `config_patch.json`。
 - 未授所有文件访问时 shell 读不到 App 私有目录 ⇒ APK 跳过（bundle 照常热更）。
+
+## 战绩热力图
+
+「每日战绩」页三个页签：**热力图** / **明细** / **口径说明**。
+
+布局同 GitHub contributions：列 = 周（最右是本周），行 = 周一~周日，一格一天，
+颜色 = 当天**场数**档次（`stats.levels` 四档上界 → 5 色）。点格子看当天明细，
+下面能给 13/26/52 周三档切换。
+
+⚠️ **颜色深 = 打得多，不是打得好**。胜率另看（明细页每天一行 + 胜负条）。这点在
+「口径说明」页里也写了一遍 —— 不做的话几乎所有人都会读错。
+
+数据源是 `store.json` 的 `history` 归档（`Store.java`）：
+
+```json
+{"day":"2026-10-08","rounds":12,"wins":7,"loses":5,
+ "history":{"2026-10-07":{"rounds":30,"wins":18,"loses":12},
+            "2026-10-08":{"rounds":12,"wins":7,"loses":5}}}
+```
+
+跨天归零只重置 today 三键，**归档不归零**；每场落一次盘，所以崩溃/重启不丢。
+`tools/StoreProbe.java` 是这套归档逻辑的离线回归（纯 JVM + 真 org.json）：
+
+```bash
+# 真 org.json 一份（android.jar 里的是桩, 跑不了）
+# javac -cp <真 org.json>:<android.jar> -d out \
+#   phone/app/src/com/zhiyaunhe/sgmbot/{Store,Paths,SgmLog,Config}.java tools/StoreProbe.java
+java -cp out:<真 org.json>:<android.jar> StoreProbe     # 35 项断言
+```
+
+它专门盯三处易错又不显形的地方：跨天把归档一起清了、旧 `store.json`（没 `history`
+键）升级后今天空白、`trim` 把最新几天裁掉。

@@ -43,6 +43,12 @@
         <!-- 判定路径图: 内嵌 WebView 开 127.0.0.1:8791, 手机上不用 adb forward -->
         <activity android:name=".GraphActivity" android:exported="false"/>
 
+        <!-- 使用指引: Shizuku 官方下载链接 + 开发者模式/无线调试 6 步开启流程 + 没反应速查表 -->
+        <activity android:name=".HelpActivity" android:exported="false"/>
+
+        <!-- 每日战绩: GitHub contributions 风格热力图 + 每日明细 + 口径说明 -->
+        <activity android:name=".StatsActivity" android:exported="false"/>
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="com.zhiyaunhe.sgmbot.shizuku"

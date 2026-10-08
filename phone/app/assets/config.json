@@ -350,5 +350,23 @@
    220,
    68
   ]
- ]
+ ],
+ "shizuku": {
+  "download_url": "https://github.com/RikkaApps/Shizuku/releases/latest",
+  "release_api": "https://api.github.com/repos/RikkaApps/Shizuku/releases/latest",
+  "homepage": "https://shizuku.rikka.app/",
+  "play_url": "https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api"
+ },
+ "stats": {
+  "weeks": 26,
+  "levels": [
+   1,
+   3,
+   6,
+   11
+  ]
+ },
+ "store": {
+  "keep_days": 400
+ }
 }

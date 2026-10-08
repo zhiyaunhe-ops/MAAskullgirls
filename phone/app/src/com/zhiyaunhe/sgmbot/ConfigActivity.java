@@ -42,15 +42,11 @@ public class ConfigActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(36, 48, 36, 48);
-        ScrollView sv = new ScrollView(this);
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        sv.addView(root);
-        page.addView(sv);
-        setContentView(page);
+        /* 用统一骨架: ScrollView + 底部 48dp 留白 (原来底部被手势条挡, 最后两颗按钮
+         * 点不到 —— 用户"不能滚动"的一条实际原因就是按钮在可视区外且滚不下去)。 */
+        View[] pg = Ui.page(this);
+        root = (LinearLayout) pg[1];
+        setContentView(pg[0]);
         build();
     }
 
@@ -105,20 +101,28 @@ public class ConfigActivity extends Activity {
         Button save = new Button(this);
         save.setText("保存并热重载");
         save.setAllCaps(false);
-        save.setOnClickListener(v -> save());
+        save.setOnClickListener(Ui.act(this, "保存到 " + Paths.config() + " 并热重载…", null,
+                this::save));
         root.addView(save, lp());
 
         Button graph = new Button(this);
         graph.setText("打开判定路径图 (本地页面)");
         graph.setAllCaps(false);
-        graph.setOnClickListener(v ->
-                startActivity(new Intent(this, GraphActivity.class)));
+        graph.setOnClickListener(Ui.act(this, "打开判定路径图 (需 App 进程活着)", null,
+                () -> startActivity(new Intent(this, GraphActivity.class))));
         root.addView(graph, lp());
+
+        Button stats = new Button(this);
+        stats.setText("打开每日战绩热力图");
+        stats.setAllCaps(false);
+        stats.setOnClickListener(Ui.act(this, "打开战绩页", null,
+                () -> startActivity(new Intent(this, StatsActivity.class))));
+        root.addView(stats, lp());
 
         Button reset = new Button(this);
         reset.setText("恢复内置默认 (删除 override 文件)");
         reset.setAllCaps(false);
-        reset.setOnClickListener(v -> reset());
+        reset.setOnClickListener(Ui.act(this, "删除 override 并回到内置默认…", null, this::reset));
         root.addView(reset, lp());
 
         hint("文件: " + Paths.config()

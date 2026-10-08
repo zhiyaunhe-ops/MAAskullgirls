@@ -25,7 +25,8 @@ import java.nio.charset.StandardCharsets;
  *     GET  /screencap — 当前帧 JPEG (PC 侧直接看手机画面)
  *     GET  /tap?x=&y= — work 坐标(1280x576)点击 (PC 遥控"手", 验证/接管用)
  *     POST /reload    — 热读 config.json
- *     POST /trigger?action=start_nav|start|stop|reload|check_update|update — 同广播
+ *     POST /trigger?action=start_nav|start|stop|reload|check_update|update
+ *                          |overlay_show|overlay_hide — 同广播
  *
  * ⚠️ POST /config 会**改写**外部 config.json — 这是调试通道, 只绑回环地址;
  *    请求行/头逐字节读到空行为止, body 按 Content-Length 取 (不依赖 chunked)。
