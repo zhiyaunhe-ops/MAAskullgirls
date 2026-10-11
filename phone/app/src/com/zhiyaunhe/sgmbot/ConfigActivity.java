@@ -125,9 +125,9 @@ public class ConfigActivity extends Activity {
         root.addView(save, lp());
 
         Button graph = new Button(this);
-        graph.setText("打开判定路径图 (本地页面)");
+        graph.setText("打开判定路径图 (App 内原生绘制)");
         graph.setAllCaps(false);
-        graph.setOnClickListener(Ui.act(this, "打开判定路径图 (需 App 进程活着)", null,
+        graph.setOnClickListener(Ui.act(this, "打开判定路径图 — 可拖动缩放, 点节点看条件/阈值/实测分数", null,
                 () -> startActivity(new Intent(this, GraphActivity.class))));
         root.addView(graph, lp());
 

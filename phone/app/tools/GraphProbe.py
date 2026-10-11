@@ -234,15 +234,70 @@ public class Probe {
     return os.path.join(OUT, 'src', 'Probe.java')
 
 
+def src_check():
+    """源码级静态检查 —— 钉住两件**用户明确要求过、最容易被改回去**的事:
+
+    ① **判定图不许再用 WebView**: 用户原话「别再跳转什么网页了 真的很丑」
+       (2026-10-11)。它换成 GraphView 自绘之后, 一旦有人图省事改回 loadUrl,
+       手机端立刻打回"网页字号 + 白底 + 一排外链"的老样子。
+    ② **主页不许再有运行控制键**: 用户原话「这都是在悬浮窗里面可以单独点的呀,
+       你就不用在那里再弄一次了」。加回来的直接后果是同一个动作两条路, 而两条路
+       的前置检查不同 (Ui.gate vs Ui.blockReason) ⇒ "主页点不了、悬浮条能点"。
+
+    这两条**没有运行时特征** (纯粹是"那段代码在不在"), 所以只能扫源码。
+    """
+    fails = 0
+
+    def ck(name, cond, got=''):
+        nonlocal fails
+        if cond:
+            print('  ok   ' + name)
+        else:
+            fails += 1
+            print('  FAIL ' + name + '    ' + str(got))
+
+    def rd(p):
+        """读源码并**剥掉注释**再查。
+
+        这一步是必需的: 新代码的注释里几乎一定会提到旧实现 (比如"旧实现是内嵌
+        WebView 打开 http://127.0.0.1:8791/"), 不剥就会把注释判成"回退",
+        于是这条断言永远红 —— 永远红的断言等于没有断言 (没人再信它)。
+        """
+        raw = io.open(os.path.join(SRC, p), encoding='utf-8').read()
+        raw = re.sub(r'/\*.*?\*/', '', raw, flags=re.S)
+        raw = re.sub(r'//[^\n]*', '', raw)
+        return raw
+
+    print('== 源码检查: 用户要求过的改动不许回退 ==')
+    ga = rd('GraphActivity.java')
+    ck('GraphActivity 不再用 WebView', 'WebView' not in ga)
+    ck('GraphActivity 不再 loadUrl', 'loadUrl' not in ga)
+    # 只查"不再自己连 8791" —— 帮助页签里**解释** 8791 是什么是应该的
+    ck('GraphActivity 不再自己连 8791 (无 Socket/InetSocketAddress)',
+       'InetSocketAddress' not in ga and 'new java.net.Socket' not in ga)
+    ck('GraphActivity 用原生 GraphView 画', 'new GraphView(' in ga)
+    ck('GraphActivity 直接读同进程 Graph.toJson()', 'Graph.toJson()' in ga)
+    ma = rd('MainActivity.java')
+    for kw in ('启动服务', '停止引擎', '结束服务'):
+        ck('主页没有「%s」按钮' % kw, kw not in ma)
+    ck('主页有「悬浮窗」启停键', 'overlayBtn' in ma)
+    gv = rd('GraphView.java')
+    ck('GraphView 继承 View (自绘, 非 WebView)', 'extends View' in gv)
+    ck('GraphView 的几何全部走 GraphLayout', 'GraphLayout.' in gv and '185' not in gv)
+    return fails
+
+
 def main():
     # Windows 下 python 默认按 cp936 编 stdout, 而 java 侧吐的是 UTF-8 ⇒ 断言文案乱码,
     # 用户看结论只能靠猜。统一按 UTF-8 出。
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    static_fails = src_check()
     probe = write_probe()
     srcs = [probe,
             os.path.join(SRC, 'Graph.java'),
             os.path.join(SRC, 'WorkPoint.java'),      # fast 落点几何 (纯 java.util, 无 android 依赖)
+            os.path.join(SRC, 'GraphLayout.java'),    # 判定图几何 (同上) — Graph.layout 引它算 x/y
             os.path.join(OUT, 'src', 'SgmLog.java'),
             os.path.join(OUT, 'src', 'BotService.java'),
             os.path.join(OUT, 'src', 'Trace.java'),
@@ -261,7 +316,7 @@ def main():
                         'com.zhiyaunhe.sgmbot.Probe', cfg], capture_output=True)
     out = (r.stdout + r.stderr).decode('utf-8', 'replace')
     sys.stdout.write(out)
-    sys.exit(r.returncode)
+    sys.exit(0 if (r.returncode == 0 and static_fails == 0) else 1)
 
 
 if __name__ == '__main__':

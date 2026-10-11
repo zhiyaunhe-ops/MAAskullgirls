@@ -30,6 +30,14 @@ import rikka.shizuku.Shizuku;
  *   ④ **Shizuku 下载 + 开启流程** → 新增「使用指引」入口 (HelpActivity)。
  *   另加「每日战绩」入口 (StatsActivity, GitHub 风格热力图)。
  *
+ * 2026-10-11 瘦身 (用户原话: 「APK 里面还有什么启动服务…这都是在悬浮窗里面可以单独
+ * 点的呀, 你就不用在那里再弄一次了」):
+ *   **主页不再放任何运行控制** —— 启动服务/停止引擎/结束服务三键全删, 「单独显示 /
+ *   隐藏悬浮窗」并成一个切换键。理由: 悬浮窗五键 (开始/导航/停止/结束/◀) 已经覆盖
+ *   全部动作, 主页再摆一套 = 同一个动作两条路, 而两条路的**前置检查是不同的**
+ *   (主页 Ui.gate vs 悬浮条 Ui.blockReason) ⇒ 早晚出现「主页点不了、悬浮条能点」。
+ *   主页只剩三类东西: **一次性授权**、**把悬浮窗叫出来**、**看/配/更新**。
+ *
  * 状态区不再每秒整体重刷 (会打断滚动): 状态是独立 TextView, 每秒只更新它的文字;
  * 反馈行 (§) 是另一行, 点按钮/出错时写它, 不被状态刷新覆盖。
  */
@@ -37,6 +45,7 @@ public class MainActivity extends Activity {
     private TextView status;
     private TextView feed;          // 点击反馈行 (只由 Ui.act/gate 写)
     private Button fastBtn;         // 运行模式切换按钮 (文案随当前模式变, 每秒刷)
+    private Button overlayBtn;      // 悬浮窗 启动/隐藏 (文案随窗口状态变, 每秒刷)
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -47,6 +56,13 @@ public class MainActivity extends Activity {
             Paths.init(MainActivity.this);   // 授权"所有文件访问"回来后自动换根, 不必重启
             status.setText(statusText());
             if (fastBtn != null) fastBtn.setText(fastLabel());
+            /* 窗口可能被系统摘掉/被悬浮条上的「结束」收掉 ⇒ 文案要跟着变。
+             * ⚠️ 只在**文本真的变了**时才 setText —— 每秒无条件 setText 会让按钮一直
+             *    重绘 (按下的高亮都会被刷掉, 看着像"点不动")。 */
+            if (overlayBtn != null) {
+                String lb = overlayLabel();
+                if (!lb.contentEquals(overlayBtn.getText())) overlayBtn.setText(lb);
+            }
             h.postDelayed(this, 1000);
         }
     };
@@ -96,7 +112,7 @@ public class MainActivity extends Activity {
                     if (Settings.canDrawOverlays(this)) {
                         Ui.toast(this, "已经授过了 — 要改就去设置页");
                         feed.setTextColor(Ui.OK);
-                        feed.setText("✓ 悬浮窗权限已授 — 可点「单独显示悬浮窗」");
+                        feed.setText("✓ 悬浮窗权限已授 — 可点下面「启动悬浮窗」");
                         return;
                     }
                     Ui.toast(this, "去设置页打开「显示在应用上层」开关");
@@ -125,51 +141,19 @@ public class MainActivity extends Activity {
                             Uri.parse("package:" + getPackageName())));
                 });
 
-        /* ---------------- 服务 / 悬浮条 ---------------- */
-        Ui.add(this, Ui.section(this, "服务与悬浮条"));
+        /* ---------------- 挂机控制 ----------------
+         * ⚠️ 2026-10-11 用户要求瘦身: 「启动服务 / 停止引擎 / 结束服务」**全部删掉** ——
+         *    这三件事悬浮窗五键上都有 (开始 / 导航 / 停止 / 结束), 主页再摆一套就是
+         *    **同一个动作两条路**, 而且两条路的前置检查还不一样 (主页走 Ui.gate,
+         *    悬浮条走 Ui.blockReason), 一旦不一致就会出现「主页点不了、悬浮条能点」
+         *    这种最难查的怪事。
+         *    现在定死: **控制只有一处 = 悬浮窗**; 主页只负责把它叫出来。 */
+        Ui.add(this, Ui.section(this, "挂机控制"));
         Ui.add(this, Ui.hint(this,
-                "「启动服务」= 起常驻服务并跑结算循环 (需要 Shizuku 就绪)。\n"
-                + "「悬浮条」可以「单独」显示, 不需要起服务 —— 先摆好位置, 想跑再点悬浮条上的「开始」。"));
-
-        Ui.button(this, "④ 启动服务 (跑结算循环)",
-                "启动服务并开跑结算循环…", feed,
-                Ui.gate(this, feed, Ui.NEED_CHANNEL, () ->
-                        BotService.start(this, BotService.MODE_SETTLE)));
-
-        Ui.button(this, "停止引擎 (暂停, 悬浮条/服务保留)",
-                "已请求停止引擎 — 悬浮条还在, 可再点开始", feed,
-                Ui.gate(this, feed, null, () -> BotService.trigger("stop")));
-
-        Ui.button(this, "结束服务 (停引擎 + 收服务/通知/悬浮条)",
-                "结束服务 — 引擎停、悬浮条与通知一并收掉", feed,
-                Ui.gate(this, feed, null, () -> BotService.trigger("end")));
-
-        /* ---- 悬浮条独立启停 (本轮新增, 关键需求) ---- */
-        Ui.button(this, "单独显示悬浮窗 (不需要起服务)",
-                "挂载悬浮条 (不依赖服务)…", feed, () -> {
-                    String e = OverlayCtl.show(this);
-                    if (e == null) {
-                        feed.setTextColor(Ui.OK);
-                        feed.setText("✓ 悬浮条已显示 — 可拖动/◀折叠; 点「开始」才跑");
-                    } else {
-                        feed.setTextColor(Ui.ERR);
-                        feed.setText("✗ " + e);
-                    }
-                });
-
-        Ui.button(this, "隐藏悬浮窗 (只收窗口, 不动引擎)",
-                "收悬浮条…", feed, () -> {
-                    if (!OverlayCtl.isShown()) {
-                        Ui.toast(this, "本来就没显示悬浮条");
-                        feed.setTextColor(Ui.SUB);
-                        feed.setText("· 当前没有悬浮条");
-                        return;
-                    }
-                    OverlayCtl.hide();
-                    feed.setTextColor(Ui.OK);
-                    feed.setText("✓ 悬浮条已隐藏 (引擎状态不变: "
-                            + (BotService.isRunning() ? "运行中" : "停止") + ")");
-                });
+                "所有开关都在悬浮窗上: 开始 / 导航 / 停止 / 结束 / ◀ 折叠。\n"
+                + "「开始」= 跑结算循环; 「停止」= 暂停, 窗口留着可再开; 「结束」= 连窗口一起收。\n"
+                + "主页只做一件事 —— 把悬浮窗叫出来 (不需要先起服务)。"));
+        overlayBtn = Ui.button(this, overlayLabel(), "", feed, this::toggleOverlay);
 
         /* ---------------- 运行模式 ---------------- */
         Ui.add(this, Ui.section(this, "运行模式"));
@@ -200,8 +184,8 @@ public class MainActivity extends Activity {
                             : "✓ 已重读配置 — 引擎没在跑, 下次启动按新配置来");
                 });
 
-        Ui.button(this, "查看判定路径图 (实时: 走到哪一步 / 峰值多少)",
-                "打开判定路径图 (本地页面, 需要 App 进程活着)", feed,
+        Ui.button(this, "查看判定路径图 (整个程序的判定树, App 内原生绘制)",
+                "打开判定路径图 — 可拖动缩放, 点节点看条件/阈值/实测分数", feed,
                 () -> startActivity(new Intent(this, GraphActivity.class)));
 
         Ui.button(this, "每日战绩 (GitHub 风格热力图)",
@@ -228,9 +212,9 @@ public class MainActivity extends Activity {
         /* ---------------- adb ---------------- */
         Ui.add(this, Ui.section(this, "adb 调试 (开发者)"));
         Ui.add(this, Ui.hint(this,
-                "调试服务只绑 127.0.0.1:8791, 对外不可达。\n"
+                "调试服务只绑 127.0.0.1:8791, 对外不可达 (给 PC 用; 手机上看判定图不必走它)。\n"
                 + "  adb forward tcp:8791 tcp:8791\n"
-                + "  http://127.0.0.1:8791/  → 判定路径图\n"
+                + "  http://127.0.0.1:8791/  → 判定路径图 (网页版, 与 App 内同数据)\n"
                 + "  /status /log /screencap /config /update"));
         Ui.button(this, "复制 adb forward 命令",
                 "已复制 adb 命令", feed,
@@ -277,6 +261,48 @@ public class MainActivity extends Activity {
 
     /* ---------------- 行为 ---------------- */
 
+    /** 悬浮窗按钮的文案 = 当前该做什么 (显示中 ⇒ 点了是隐藏) */
+    private String overlayLabel() {
+        return OverlayCtl.isShown() ? "隐藏悬浮窗 (只收窗口, 不停引擎)"
+                                    : "启动悬浮窗 (跑挂机的唯一开关都在这上面)";
+    }
+
+    /**
+     * 悬浮窗 一键启/隐 —— 主页**唯一**与运行有关的东西。
+     *
+     * <p>它不是一个纯 gate: 已显示时是"隐藏"(不需要任何前置条件), 未显示时才是
+     * "启动"(要悬浮窗权限)。所以不能直接套 {@link Ui#gate} —— 得先自己查一次,
+     * 缺权限时把人送到设置页 ({@link Ui#offerFix}, 与 gate 走同一条路, 不另写跳转)。
+     */
+    private void toggleOverlay() {
+        if (OverlayCtl.isShown()) {
+            OverlayCtl.hide();
+            feed.setTextColor(Ui.OK);
+            feed.setText("✓ 悬浮条已隐藏 (引擎状态不变: "
+                    + (BotService.isRunning() ? "运行中" : "停止") + ")");
+            overlayBtn.setText(overlayLabel());
+            return;
+        }
+        String why = Ui.blockReason(this, Ui.NEED_OVERLAY);
+        if (why != null) {
+            Ui.toast(this, why);
+            feed.setTextColor(Ui.ERR);
+            feed.setText("✗ " + why);
+            Ui.offerFix(this, Ui.NEED_OVERLAY);
+            return;
+        }
+        String e = OverlayCtl.show(this);
+        if (e == null) {
+            feed.setTextColor(Ui.OK);
+            feed.setText("✓ 悬浮条已显示 — 点上面的「开始」就跑; 可拖动, ◀ 折叠\n"
+                    + "  (不需要先起服务; 位置会记住, 下次从原地恢复)");
+        } else {
+            feed.setTextColor(Ui.ERR);
+            feed.setText("✗ " + e);
+        }
+        overlayBtn.setText(overlayLabel());
+    }
+
     /** 当前是不是快速连点模式 (读的是**合并后**的配置, 不是 override 文件本身) */
     private boolean fastOn() {
         try {
@@ -304,11 +330,14 @@ public class MainActivity extends Activity {
             return;
         }
         /* 配置在循环开跑时读一次 ⇒ 改了要重跑才生效 —— 说清楚, 别让用户以为点了没反应。
-         * 「停止引擎」→ 再「启动服务」即换过来 (stop 现在会真的停下循环, 见 BotService.stop)。 */
+         * ⚠️ 2026-10-11 主页的运行键删光之后, 这里的指引必须指向**悬浮窗**上那颗
+         *    「停止」/「开始」—— 文案再写"点主页的停止引擎"就是在指一个不存在的按钮,
+         *    用户按着找一圈只会觉得"点了没反应"。 */
         feed.setTextColor(Ui.OK);
         feed.setText((on ? "✓ 已切回常规模式" : "✓ 已切到快速连点模式")
-                + (BotService.isRunning() ? " — 引擎在跑, 点「停止引擎」再「启动服务」才生效"
-                                          : " — 下次启动即用新模式"));
+                + (BotService.isRunning()
+                        ? " — 引擎在跑: 到悬浮窗上点「停止」再点「开始」才生效"
+                        : " — 下次在悬浮窗上点「开始」就用新模式"));
         if (fastBtn != null) fastBtn.setText(fastLabel());
     }
 

@@ -134,8 +134,14 @@ public final class Ui {
         return null;
     }
 
-    /** 能一步跳到设置页的, 直接跳 (别让用户自己去翻系统设置) */
-    private static void offerFix(Activity a, String need) {
+    /**
+     * 能一步跳到设置页的, 直接跳 (别让用户自己去翻系统设置)。
+     *
+     * <p>对外可见了 (2026-10-11): 主页的「启动悬浮窗」按钮要**先自己查一次**
+     * 再决定跳不跳 —— 它不是一个纯 gate (已显示时是"隐藏", 不走前置检查),
+     * 所以得能单独调到这里。别再各写一份 startActivity(ACTION_MANAGE_OVERLAY_PERMISSION)。
+     */
+    public static void offerFix(Activity a, String need) {
         try {
             if (NEED_OVERLAY.equals(need)) {
                 a.startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,

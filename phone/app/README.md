@@ -36,7 +36,8 @@ phone/app/
 ├── build.sh                  # aapt2 link + javac + dx + apksigner (抄 pfwidget/build.sh)
 ├── AndroidManifest.xml       # 前台服务 + 悬浮窗 + 开机自启, 不申请无障碍/录屏
 └── src/com/zhiyaunhe/sgmbot/
-    ├── MainActivity.java     # 权限引导(Shizuku/悬浮窗) + 状态页 + 「开始/导航/停止」
+    ├── MainActivity.java     # 权限引导(Shizuku/悬浮窗) + 状态页 + 悬浮窗启停
+    │                         #   ⚠️ 运行控制(开始/停止/结束)只在悬浮窗上, 主页不放第二套
     ├── BotService.java       # 前台服务: 主循环线程 (settle/导航状态机), 常驻通知
     ├── ShizukuCtl.java       # Shizuku binder: screencap → Bitmap / input tap|swipe
     ├── Vision.java           # 纯 Java NCC 模板匹配 + 色锚点 (移植 phone/settle match.py 口径)

@@ -98,8 +98,7 @@ public class BotService extends Service {
          *    结果就是用户点「结束」后: 服务没了、悬浮窗还赖在屏幕上 (2026-10-11 用户报障:
          *    「我点结束应该是退出悬浮窗, 咋只是退出服务呢」)。
          *    语义定死: 「停止」= 只停引擎、窗口留着可再开;「结束」= 连窗口一起收 (同 JS exit())。
-         *    也正因为这句, MainActivity 那个按钮的文案「结束服务 (停引擎 + 收服务/通知/悬浮条)」
-         *    才不是空头支票。 */
+         *    2026-10-11 起这条语义只由**悬浮窗**上那两颗键触发 (主页的运行键已按用户要求删光)。 */
         OverlayCtl.hide();
         if (ctx != null) ctx.stopService(new Intent(ctx, BotService.class));
     }

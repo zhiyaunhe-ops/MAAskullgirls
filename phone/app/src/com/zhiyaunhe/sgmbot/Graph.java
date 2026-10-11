@@ -213,7 +213,9 @@ public final class Graph {
         return o instanceof JSONObject ? (JSONObject) o : null;
     }
 
-    /** 泳道布局 — 每条泳道一行, 行内横向排开; y 按泳道序号下推 */
+    /** 泳道布局 — 每条泳道一行, 行内横向排开; y 按泳道序号下推。
+     *  ⚠️ 列距/行距/首点全在 {@link GraphLayout} —— 绘制与命中判定引同一处,
+     *     别在这里再写一遍数字 (写两处就一定会有一次只改一边)。 */
     private static void layout(JSONObject map) throws Exception {
         int[] cnt = new int[64];
         java.util.Iterator<String> it = map.keys();
@@ -228,8 +230,8 @@ public final class Graph {
             int col = cnt[lane]++;
             n.put("lane", lane);
             n.put("col", col);
-            n.put("x", 110 + col * 185);
-            n.put("y", 70 + lane * 128);
+            n.put("x", GraphLayout.x(col));
+            n.put("y", GraphLayout.y(lane));
         }
     }
 
