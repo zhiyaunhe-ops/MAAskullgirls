@@ -309,3 +309,13 @@ python3 phone/app/tools/GraphPageProbe.py
 `tools/GraphProbe.py`（纯 JVM）管的是图**结构**：25 个静态节点 + escape 展开 6 项、
 阈值从 config 回填、布局无重叠、边不悬空、运行时 `Graph.cursor` 锚点全在图上，
 以及**静态装载 / 幂等 / 作废后重建**这三条 `ensureLoaded` 行为。
+
+想在 **PC 上直接看整张图**（不装 APK、不起 8791）：
+
+```bash
+python3 phone/app/tools/gen_graph_preview.py
+```
+
+它把同一套页面用当前 `assets/config.json` 在纯 JVM 上跑一遍、**内联**成自包含 HTML，
+产物落 `debug/graph_preview.html`。⚠️ 产物**不入库**——快照每次现生成，入库就会过期，
+又变成"图与实不符"。

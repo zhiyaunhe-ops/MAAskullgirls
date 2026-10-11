@@ -66,6 +66,10 @@ function ck(name, ok, got) {
 function mkEl(tag) {
   return {
     tagName: tag, attrs: {}, children: [], style: {}, textContent: '',
+    // drawTrace() 要动 <table> 的行 API —— 不给就会以 TypeError 伪装成"页面 bug"
+    rows: [], deleteRow(i) { this.rows.splice(i, 1); },
+    insertRow() { const r = mkEl('tr'); this.rows.push(r); return r; },
+    insertCell() { return mkEl('td'); },
     setAttribute(k, v) { this.attrs[k] = v; },
     appendChild(c) { this.children.push(c); return c; },
     addEventListener(t, f) { this['on' + t] = f; }
@@ -87,13 +91,22 @@ sandbox.D.nodes = data.nodes;
 sandbox.D.edges = data.edges;
 sandbox.D.byNode = data.byNode;
 sandbox.D.cursor = data.cursor;
-sandbox.D.trace = [];
+sandbox.D.trace = data.trace || [];
 
 // ① draw() 不抛 —— "白屏类"故障的唯一判据
 let drew = true, err = '';
 try { vm.runInContext('draw()', sandbox); }
 catch (e) { drew = false; err = String(e); }
 ck('draw() 不抛异常', drew, err);
+
+// ①b drawTrace() 不抛 + 流水行数对 (它碰的是 DOM 表格 API, 最容易在真实浏览器外漏测)
+let trOk = true, trErr = '';
+try { vm.runInContext('drawTrace()', sandbox); }
+catch (e) { trOk = false; trErr = String(e); }
+ck('drawTrace() 不抛异常', trOk, trErr);
+const tbody = store['tr'] || { rows: [] };
+ck('流水表行数 = trace 条数 (' + tbody.rows.length + ')',
+   tbody.rows.length === (data.trace || []).length, tbody.rows.length);
 
 const svg = store['g'] || mkEl('svg');
 const rects = svg.children.filter(c => c.tagName === 'rect');
@@ -172,6 +185,12 @@ def main():
         ],
         'byNode': {'battle': {'score': 0.642, 'hit': False, 'tpl': 'victory'}},
         'cursor': 'cursor_here',
+        'trace': [
+            {'t': 1760164800000, 'node': 'battle', 'tpl': 'victory', 'score': 0.642,
+             'hit': False, 'act': ''},
+            {'t': 1760164801200, 'node': 'rematch', 'tpl': 'btn_rematch', 'score': 0.913,
+             'hit': True, 'act': 'tap'},
+        ],
     }, ensure_ascii=False))
 
     node = find_node()
