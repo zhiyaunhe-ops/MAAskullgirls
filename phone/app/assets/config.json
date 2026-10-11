@@ -220,27 +220,11 @@
      },
      {
        "id": "bigword",
-       "label": "大字首次出现",
+       "label": "大字出现",
        "kind": "match",
        "lane": 3,
-       "cond": "本局第一次见到大字 → 记胜负、转结算",
-       "note": "大字不计场, 计场在点按钮那一刻"
-     },
-     {
-       "id": "first_tap",
-       "label": "先手点右槽",
-       "kind": "tap",
-       "lane": 3,
-       "cond": "按固定坐标先手一按 (免匹配)",
-       "cfg": "first_tap",
-       "note": "胜→CONTINUE / 负→REMATCH"
-     },
-     {
-       "id": "lose1",
-       "label": "败局计场",
-       "kind": "count",
-       "lane": 3,
-       "cond": "负局的先手即 REMATCH — 当场计一场"
+       "cond": "见到大字 → 记胜负(本局首次)并转结算; 点哪个按钮交给 phase 1 匹配",
+       "note": "大字不计场, 计场在 phase 1 点 REMATCH 那一刻"
      },
      {
        "id": "result",
@@ -414,17 +398,8 @@
      },
      {
        "from": "bigword",
-       "to": "first_tap"
-     },
-     {
-       "from": "first_tap",
-       "to": "lose1",
-       "on": "负局"
-     },
-     {
-       "from": "first_tap",
        "to": "result",
-       "on": "胜局"
+       "on": "进结算 (不盲点)"
      },
      {
        "from": "result",
@@ -443,10 +418,6 @@
      },
      {
        "from": "rematch",
-       "to": "count"
-     },
-     {
-       "from": "lose1",
        "to": "count"
      },
      {

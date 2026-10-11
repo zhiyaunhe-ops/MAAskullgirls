@@ -208,6 +208,52 @@ JS 那边同一个模板毫秒级，差别只在引擎。
 若仍按 0.75 筛候选，真弹窗会被筛掉。掉分是高频细节（文字框）被面积平均抹平所致。
 **最终判定仍用原分辨率分数** ⇒ 只会漏检，不会误检，不存在"乱点"风险。
 
+## 结算页判定（REMATCH / CONTINUE）
+
+结算页底部有**三个按钮槽**（`btn_rois`，各 220×68），但**每个页面放什么按钮不一样**：
+
+| 页面 | 左槽 | 中槽 | 右槽 | 该点哪个 |
+|---|---|---|---|---|
+| 胜局奖励页 | HIDE STATS | SELL ALL | **CONTINUE** | CONTINUE（前进） |
+| 胜局奖励页（角色卡那页） | FAVORITE | **REMATCH** | **CONTINUE** | **REMATCH** |
+| 败局页 | QUIT | FAVORITE | **REMATCH** | REMATCH |
+
+判定顺序：先在三个槽里找 `btn_rematch`，**过阈值就点**；找不到才找 `btn_continue`。
+⚠️ **CONTINUE 的代价是回大地图**（打断循环），所以它只该在"这一页确实没有 REMATCH"时被点。
+
+### 为什么会出现"莫名其妙连点两次"（2026-10-11 修复）
+
+旧实现有一条"先手"捷径：**一见到 VICTORY/DEFEAT 大字就盲点固定坐标 `first_tap`(903,512)**，
+省掉一次按钮匹配。问题在于 —— **右槽在"有 REMATCH 的那页"上正好是 CONTINUE**
+（离线实测 `btn_continue` 全帧最佳 0.951 @(810,494)，模板 188×36 ⇒ 按钮中心 (904,512)，
+与 `first_tap` 严丝合缝），所以那一按 = **直接回大地图**。
+
+而 `seen` 标志在"无大字"的过场帧会被复位（结算有多页、每页都有大字），于是
+**同一轮结算会先手两次**：页A 按一下（对，前进）→ 换页时大字闪断 → 页B 又按一下（错，回大地图）。
+用户观察到的「**点得慢一点反而能点对**」也吻合：画面稳定不闪断时 `seen` 不复位，就不会重复先手。
+
+**改法**：`first_tap` 与"败局先手即计场"一并退役。大字只负责"进入结算阶段"，
+点哪个按钮一律交给 `phase 1` 的按钮匹配（REMATCH 优先，找不到才 CONTINUE）；
+败局计场随之挪到 phase 1 点 REMATCH 那一刻（那里本来就有 `countRound`）。
+判定图里的 `first_tap` / `lose1` 两个节点同步删掉，`bigword → result` 直连。
+
+**现场取证工具**：`tools/SlotProbe.java` 对**任意帧**（真机 `adb exec-out screencap -p` 抓的
+原图也行，会自动转正 + 缩到高 576）输出「模板 × 三槽」NCC 峰值矩阵 + 全帧最佳坐标
+（区分"ROI 框错"还是"模板配不上"）+ 三个槽的裁图 + 按 phase1 **真实顺序**的模拟判定，
+直接说明"代码会点哪个、为什么"：
+
+```bash
+cd phone/app
+javac -encoding UTF-8 -nowarn -cp ../../vendor/android-build/platforms/android-34/android.jar \
+      -d /tmp/slotprobe src/com/zhiyaunhe/sgmbot/Vision.java tools/SlotProbe.java
+java -Dfile.encoding=UTF-8 \
+     -cp "/tmp/slotprobe;../../vendor/android-build/platforms/android-34/android.jar" \
+     SlotProbe <帧.png|jpg> assets/templates/ 0.72
+```
+
+`SettleLoop` 每次判定还会往 `logs/app.log` 打一条 `[判]` 行，带**两个模板 × 每个槽的峰值**
+—— 出问题时不必再猜"是 REMATCH 漏识别还是别的槽抢跑"。
+
 ## 弹窗处理
 
 JS 版的弹窗逻辑**分布在三处**，Java 版只搬了其中一处：
@@ -342,7 +388,7 @@ python3 phone/app/tools/GraphPageProbe.py
 3. **真跑** — stub DOM 里执行并调 `draw()`，断言：不抛异常、每个节点渲染出一个
    `rect`、第 3 行是当前阈值、点击后 info 栏含条件与 `cfg` 路径、每个 `rect` 都绑 click。
 
-`tools/GraphProbe.py`（纯 JVM）管的是图**结构**：25 个静态节点 + escape 展开 6 项、
+`tools/GraphProbe.py`（纯 JVM）管的是图**结构**：24 个静态节点 + escape 展开 6 项、
 阈值从 config 回填、布局无重叠、边不悬空、运行时 `Graph.cursor` 锚点全在图上，
 以及**静态装载 / 幂等 / 作废后重建**这三条 `ensureLoaded` 行为。
 

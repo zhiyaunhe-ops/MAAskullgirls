@@ -47,6 +47,9 @@ public final class SettleLoop {
     private long lastAct, battleT0, runStart;
     /** 上次弹窗守卫检查的时刻 (与 lastAct 分开: 守卫可以在"没动作"期间周期性跑) */
     private long lastPopupChk;
+    /** 上次结算页判定结果 + 时刻 — 结果变化(或满 3s)时才记一条含三槽分数的日志 */
+    private String lastPick = "";
+    private long lastJudgeMs;
     private Store daily;
 
     private final ShizukuCtl sh;
@@ -190,34 +193,66 @@ public final class SettleLoop {
                 if (!vic) Trace.put("battle", "match", "defeat", titleR, d == null ? -2 : d[2],
                         def, def ? "→大字判定" : "");
 
-                if (!vic && !def) {
-                    seen = false;                       // 无大字 = 战斗/过场
-                } else if (!seen) {
-                    seen = true;
+                if (vic || def) {
+                    if (!seen) {
+                        seen = true;
+                        lastVic = vic;
+                        Graph.cursor("bigword");
+                        SgmLog.i("场", lastVic ? "VICTORY" : "DEFEAT");
+                    }
+                    /* 大字只负责"进入结算阶段" —— 点哪个按钮一律交给 phase 1 的匹配决定。
+                     * ⚠️ 「先手盲点右槽」已退役 (2026-10-11, 用户报障
+                     *    「有 rematch 的时候点到了 continue, 那就回大地图了」+「莫名其妙连点两次」):
+                     *
+                     *    老实现 = 见到大字就 tap(first_tap=903,512), 省掉一次按钮匹配。
+                     *    但右槽在**有 REMATCH 的结算页**上正好是 CONTINUE —— 离线实测
+                     *    (tools/SlotProbe, VICTORY 页) btn_continue 全帧最佳 0.951 @(810,494),
+                     *    模板 188x36 ⇒ 按钮中心 = (904,512), 与 first_tap(903,512) 严丝合缝。
+                     *    ⇒ 盲点右槽 = 盲点 CONTINUE = 回大地图。
+                     *
+                     *    为什么会连点两次: `seen` 在"无大字"的过场帧被复位 (上面的 else),
+                     *    而结算流程有**多页** (页A 只有 CONTINUE / 页B 是 FAVORITE|REMATCH|CONTINUE,
+                     *    两页都有 VICTORY 大字) ⇒ 页A 先手一下 → 换页时大字闪断 → 页B 又先手一下,
+                     *    第二下就落在页B 的 CONTINUE 上。用户观察到的"点得慢反而对"也吻合:
+                     *    画面稳定不闪断时 seen 不复位, 就不会重复先手。
+                     *
+                     *    改法: 大字无条件进 phase 1 (不再要求 !seen), 点击交给 findSlot ——
+                     *    页A 匹配不到 REMATCH ⇒ 点 CONTINUE (前进, 与原来意图一致);
+                     *    页B 匹配到中槽 REMATCH ⇒ 点 REMATCH (正确, 不再回大地图);
+                     *    败局页匹配到右槽 REMATCH ⇒ 点 REMATCH, 计场在 phase 1 那一步 (countRound),
+                     *    所以原来"败局先手即计场"的那句一并去掉, 免得重复计场。 */
                     phase = 1;
                     noHitRun = 0;
                     battleStalls = 0;                   // 见到大字 = 游戏活着
-                    lastVic = vic;
                     hitThisRound = true;
-                    Graph.cursor("bigword");
-                    SgmLog.i("场", lastVic ? "VICTORY" : "DEFEAT");
-
-                    /* 先手点右槽固定位置 (免按钮匹配) */
-                    Graph.cursor("first_tap");
-                    tap(bmp, firstTapR[0], firstTapR[1]);
-                    lastAct = System.currentTimeMillis();
-                    SgmLog.i("动", "先手 (" + (lastVic ? "CONTINUE" : "REMATCH") + ") → "
-                            + xy(bmp, firstTapR[0], firstTapR[1]));
-                    Trace.put("first_tap", "tap", "", null, 0, true,
-                            lastVic ? "CONTINUE" : "REMATCH");
-                    if (!lastVic) countRound(false, run, cap);   // 败局先手=REMATCH 即一局完成
-                    sleep_(tapDelay);
+                } else {
+                    seen = false;                       // 无大字 = 战斗/过场
                 }
             } else {
                 /* —— 结算/奖励阶段: 只查 REMATCH / CONTINUE (各三槽) —— */
                 Graph.cursor("result");
                 double[] rm = findSlot(work, tRm, btnR, minSim);
-                if (rm != null && rm[2] >= minSim) {
+                boolean rmOk = rm != null && rm[2] >= minSim;
+                double[] ct = rmOk ? null : findSlot(work, tCt, btnR, minSim);
+                boolean ctOk = ct != null && ct[2] >= minSim;
+
+                /* ⚠️ 判定日志 (2026-10-11 用户报障「有 REMATCH 时点到了 CONTINUE, 就回大地图了」):
+                 *    光记一句"点了 CONTINUE"没用 —— 事后必须能分清是
+                 *      ① btn_rematch 在 REMATCH 真身上就没到阈值 (模板过期 / 分辨率掉分 / 通道口径),
+                 *      ② 还是它根本不在这一页 (那点 CONTINUE 就是对的)。
+                 *    所以日志带**两个模板 × 每个槽的各自峰值**。低频: 结果变化或满 3s 才记。 */
+                String pick = rmOk ? "REMATCH" : ctOk ? "CONTINUE" : "none";
+                long tnow = System.currentTimeMillis();
+                if (!pick.equals(lastPick) || tnow - lastJudgeMs > 3000) {
+                    lastPick = pick;
+                    lastJudgeMs = tnow;
+                    SgmLog.i("判", "结算页 → 点 " + pick
+                            + " | rematch" + peaks(work, tRm, btnR)
+                            + " continue" + peaks(work, tCt, btnR)
+                            + " th=" + minSim + " (" + btnR.size() + " 槽)");
+                }
+
+                if (rmOk) {
                     hitThisRound = true;
                     Trace.put("result", "match", "btn_rematch", null, rm[2], true, "→REMATCH");
                     tap(bmp, (float) rm[0], (float) rm[1]);
@@ -230,29 +265,26 @@ public final class SettleLoop {
                     phase = 0;
                     battleT0 = System.currentTimeMillis();
                     sleep_(tapDelay);
+                } else if (ctOk) {
+                    hitThisRound = true;
+                    Trace.put("result", "match", "btn_continue", null, ct[2], true, "→CONTINUE");
+                    tap(bmp, (float) ct[0], (float) ct[1]);
+                    continues++;
+                    lastAct = System.currentTimeMillis();
+                    noHitRun = 0;                    // 保持结算阶段 (可能还有下一页)
+                    Graph.cursor("continue");
+                    SgmLog.i("动", "CONTINUE 略过 → " + xy(bmp, (float) ct[0], (float) ct[1]));
+                    sleep_(tapDelay);
                 } else {
-                    double[] ct = findSlot(work, tCt, btnR, minSim);
                     if (rm != null) Trace.put("result", "match", "btn_rematch", null, rm[2],
                             false, "峰值未过阈");
-                    if (ct != null && ct[2] >= minSim) {
-                        hitThisRound = true;
-                        Trace.put("result", "match", "btn_continue", null, ct[2], true, "→CONTINUE");
-                        tap(bmp, (float) ct[0], (float) ct[1]);
-                        continues++;
-                        lastAct = System.currentTimeMillis();
-                        noHitRun = 0;                    // 保持结算阶段 (可能还有下一页)
-                        Graph.cursor("continue");
-                        SgmLog.i("动", "CONTINUE 略过 → " + xy(bmp, (float) ct[0], (float) ct[1]));
-                        sleep_(tapDelay);
-                    } else {
-                        if (ct != null) Trace.put("result", "match", "btn_continue", null, ct[2],
-                                false, "峰值未过阈");
-                        noHitRun++;
-                        if (noHitRun >= resultFallback) {
-                            phase = 0;
-                            battleT0 = System.currentTimeMillis();
-                            SgmLog.i("转", "进入战斗监测");
-                        }
+                    if (ct != null) Trace.put("result", "match", "btn_continue", null, ct[2],
+                            false, "峰值未过阈");
+                    noHitRun++;
+                    if (noHitRun >= resultFallback) {
+                        phase = 0;
+                        battleT0 = System.currentTimeMillis();
+                        SgmLog.i("转", "进入战斗监测");
                     }
                 }
             }
@@ -434,6 +466,22 @@ public final class SettleLoop {
     private static String xy(Bitmap bmp, float wx, float wy) {
         float s = bmp.getHeight() / (float) ShizukuCtl.WORK_H;
         return "(" + Math.round(wx * s) + "," + Math.round(wy * s) + ")";
+    }
+
+    /**
+     * 三个槽各自的 NCC 峰值 — **只喂日志, 不参与判定**。
+     * th 传 2.0 ⇒ findScored 不会走"过阈值提前返回"的分支, 一定穷举完整个 ROI 再取
+     * 真峰值 (否则第一个过阈值的点就把峰值截断了, 三槽分数之间没有可比性)。
+     */
+    private static String peaks(Vision.Frame work, Vision.Frame tpl, List<int[]> rois) {
+        if (tpl == null) return "[-]";
+        StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; i < rois.size(); i++) {
+            double[] p = Vision.findScored(work, tpl, rois.get(i), 2.0);
+            if (i > 0) sb.append(' ');
+            sb.append(p == null ? "-" : String.format("%.2f", p[2]));
+        }
+        return sb.append(')').toString();
     }
 
     /** 三槽里找按钮, 返回 {命中中心x, 中心y, 峰值}; 未过阈值也带回峰值 (图上好看) */

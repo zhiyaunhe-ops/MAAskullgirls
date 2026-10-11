@@ -46,11 +46,15 @@ nodes = [
     # lane 3 — 战斗阶段
     N('battle', '战斗监测',     'scan',  3, '在 title_roi 内查 VICTORY/DEFEAT 大字',
       cfg='thresholds.min_sim', roi='title_roi', tpl=['victory', 'defeat']),
-    N('bigword','大字首次出现', 'match', 3, '本局第一次见到大字 → 记胜负、转结算',
-      note='大字不计场, 计场在点按钮那一刻'),
-    N('first_tap','先手点右槽',   'tap',   3, '按固定坐标先手一按 (免匹配)',
-      cfg='first_tap', note='胜→CONTINUE / 负→REMATCH'),
-    N('lose1',  '败局计场',     'count', 3, '负局的先手即 REMATCH — 当场计一场'),
+    N('bigword','大字出现',     'match', 3, '见到大字 → 记胜负(本局首次)并转结算; 点哪个按钮交给 phase 1 匹配',
+      note='大字不计场, 计场在 phase 1 点 REMATCH 那一刻'),
+    # ⚠️ 这里原有两个节点 first_tap(先手盲点右槽) 与 lose1(败局先手即计场), 2026-10-11 退役。
+    #    理由: 右槽在**有 REMATCH 的结算页**上正好是 CONTINUE —— 离线实测 (tools/SlotProbe)
+    #    页B 上 btn_continue 全帧最佳 0.951 @(810,494), 模板 188x36 ⇒ 按钮中心 (904,512),
+    #    与 first_tap(903,512) 重合 ⇒ 盲点它 = 回大地图。且 seen 会被过场帧复位 ⇒
+    #    同一结算流程先手两次, 第二下落在有 REMATCH 的页上 (用户报障「莫名其妙连点两次」)。
+    #    现在大字只负责"进结算", 点击统一走 result 节点的按钮匹配 (REMATCH 优先, 找不到才 CONTINUE),
+    #    败局计场也随之挪到 phase 1 点 REMATCH 那一刻 (原 lose1 节点删除)。
     # lane 4 — 结算阶段
     N('result', '结算页',       'scan',  4, '在 btn_rois 三槽内查 REMATCH/CONTINUE',
       cfg='thresholds.min_sim', roi='btn_rois', tpl=['btn_rematch', 'btn_continue']),
@@ -92,10 +96,10 @@ edges = [
     E('phase', 'battle', 'phase=0'), E('phase', 'result', 'phase=1'),
     E('battle', 'bigword', '命中'),
     E('battle', 'stall', '未命中'),
-    E('bigword', 'first_tap'), E('first_tap', 'lose1', '负局'), E('first_tap', 'result', '胜局'),
+    E('bigword', 'result', '进结算 (不盲点)'),
     E('result', 'rematch', 'REMATCH 过阈'), E('result', 'continue', 'CONTINUE 过阈'),
     E('result', 'fallbk', '两者都不过阈'),
-    E('rematch', 'count'), E('lose1', 'count'), E('continue', 'stall', '略过这页'),
+    E('rematch', 'count'), E('continue', 'stall', '略过这页'),
     E('fallbk', 'battle', '转回战斗'),
     E('stall', 'escape'), E('escape', 'escfb', '全不中'), E('escfb', 'stall'),
     E('stall', 'bstl', 'phase=0'), E('bstl', 'heal', '连 3 次'),

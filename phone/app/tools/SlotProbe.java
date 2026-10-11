@@ -184,8 +184,10 @@ public class SlotProbe {
         double tm = mean(t), tsd = sdch(t);
         double best = -2; int bx = 0, by = 0;
         if (tsd < 1e-6 || f.w < t.w || f.h < t.h) return new double[]{0, 0, 0};
-        for (int oy = 0; oy <= f.h - t.h; oy++)
-            for (int ox = 0; ox <= f.w - t.w; ox++) {
+        /* 整帧穷举很贵 (1280x576 x 模板面积), 步距 2 —— 这里只要"大致落在哪"用来
+         * 判断 ROI 框错没错, 不需要 1 像素精度 (三槽里的分数才走 peak() 的步距 1) */
+        for (int oy = 0; oy <= f.h - t.h; oy += 2)
+            for (int ox = 0; ox <= f.w - t.w; ox += 2) {
                 double s = ncc(f, ox, oy, t, tm, tsd, inv);
                 if (s > best) { best = s; bx = ox; by = oy; }
             }
