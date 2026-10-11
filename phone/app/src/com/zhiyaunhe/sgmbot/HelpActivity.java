@@ -204,8 +204,7 @@ public class HelpActivity extends Activity {
 
     private JSONObject sec(String k) {
         try {
-            Config c = BotService.cfg();
-            if (c == null) c = new Config(this);
+            Config c = BotService.cfgOr(this);
             JSONObject o = c.read().optJSONObject(k);
             return o == null ? new JSONObject() : o;
         } catch (Throwable t) {

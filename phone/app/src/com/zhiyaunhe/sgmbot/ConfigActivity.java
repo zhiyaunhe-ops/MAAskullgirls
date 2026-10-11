@@ -52,8 +52,7 @@ public class ConfigActivity extends Activity {
 
     private void build() {
         root.removeAllViews();
-        Config cfg = BotService.cfg();
-        if (cfg == null) cfg = new Config(this);
+        Config cfg = BotService.cfgOr(this);
         cur = cfg.read();
 
         title("运行时参数");

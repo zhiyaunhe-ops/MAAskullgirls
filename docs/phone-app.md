@@ -273,6 +273,29 @@ update_bundle`／HTTP `GET /update`、`POST /update?apk=0|1`。开跑时还会�
   `config_patch.json`。
 - 未授所有文件访问时 shell 读不到 App 私有目录 ⇒ APK 跳过（bundle 照常热更）。
 
+### 界面反馈（2026-10-11 修「点更新版本号不变 / 没进度 / 没提示」）
+
+| 机制 | 位置 | 说明 |
+|---|---|---|
+| 进度 | `Update.stage()` / `pct()` / `busy()` | `down()` 按 Content-Length 报百分比；查询/解包/安装报阶段名。主页**轮询**到 `busy()` 归零才落结果 —— 旧实现是 `postDelayed` **只读一眼**，网络慢就显示"还没拿到结果"，且之后再也不刷新 |
+| 成败 | `Update.lastLevel()` | `LV_OK` ✓绿 / `LV_WARN` !黄 / `LV_ERR` ✗红。**别再在文案里找"失败"两字**：旧判据 `!r.contains("失败")` 对 `"拉取: update.repo 未配 — …"` 判成成功 ⇒ **错误显示成绿 ✓** |
+| 版本 | 状态区 `App 版本` / `bundle 水位` | `versionName` 由 CI 每次构建递增（装上新包必变）；水位显示**本地 → 远端 + 有更新/已最新** |
+| 文案 | `brief()` | **不再显示 `tag=`**：CI 固定 tag `latest` 反复覆盖，tag 恒定 ⇒ 用户以为"版本号没变"（`UpdateProbe` 有专门断言防回归） |
+
+⚠️ **更新入口不依赖服务** ⇒ 配置层一律走 `BotService.cfgOr(ctx)`，不要读 `cfg` 字段。
+服务没起过时 `cfg == null`，而"打开 App 就点更新"恰恰是最常见顺序 —— 旧代码在那条路上
+把 repo 读成空串，永远回「update.repo 未配」，用户明明配了。同一个兜底写法曾经在
+`ConfigActivity`/`HelpActivity`/`StatsActivity`/`DebugHttp` 各抄一份，**唯独 `trigger` 漏了**，
+现在收口到一处。
+
+⚠️ `Update.sec()` 在配置里**没有 `update` 段**时返回空 JSON（不是 null）—— `optJSONObject`
+键不存在时返回 null，而调用方一律 `sec(cfg).optString(...)` ⇒ 一个 NPE 就让整条链在
+background 线程里无声失败（UI 只看到"没反应"）。`meta()` 一直这么防御，`sec()` 曾漏掉。
+
+回归：`python3 phone/app/tools/UpdateProbe.py`（26 项，桩掉 Android 与文件系统，跑**真的**
+`Update.java` + `BotService.java`；含真下载 + 水位推进 + 端到端落临时沙盒）。无网络时
+B/C 组自动标 SKIP。
+
 ## 战绩热力图
 
 「每日战绩」页三个页签：**热力图** / **明细** / **口径说明**。
@@ -339,6 +362,27 @@ python3 phone/app/tools/OverlayProbe.py     # 29 项断言
 
 > 桩是**有代价**的：它只证明我们自己这层的时序与所有权判定对，不证明真 ROM 上
 > 窗口真的消失 —— 那一步只能在真机点一次「结束」确认（见「跑起来」那节的语义表）。
+
+`tools/UpdateProbe.py`（同一套 Android 桩 + 临时沙盒）管**更新链路**，跑的是**真的**
+`Update.java` 与 `BotService.java`：
+
+```bash
+python3 phone/app/tools/UpdateProbe.py      # 26 项断言 (无网络时 B/C 组标 SKIP)
+```
+
+断言分六组：配置层兜底（`cfg=null` 也要读得出 repo）／真链路检查（文案不含恒定 `tag=`）／
+真链路拉取（真下载 → 解包 → **水位推进** → 再查已最新 → APK 被跳过 ⇒ `LV_WARN` 黄不是绿）／
+错误路径级别（`repo` 未配 ⇒ `LV_ERR`，且断言该文案里**没有**"失败"两字 ⇒ 证明旧的
+字符串判据必然把错误显示成绿 ✓）／时间戳格式化／`busy` 不泄漏。
+
+> 2026-10-11 首次跑就抓到一个真 NPE（`sec()` 返回 null）。**探针的价值就在这**: 
+> 这三条缺陷在真机上的表现全是"点了没反应", 不看日志根本分不出是哪一条。
+
+⚠️ 跑 `tools/PyramidProbe.java` 时 classpath 里**真 org.json 必须排在 android.jar 前面**
+（`-cp out:<真 json>:<android.jar>`）：android.jar 里的 `org.json` 是抛 `Stub!` 的桩，
+顺序反了会报 `RuntimeException: Stub!`，看着像探针坏了。
+⚠️ `tools/VisionProbe.java` 的素材/模板目录参数是**字符串拼接**用的，已在代码里补尾斜杠
+归一化 —— 否则会拼出 `assets/templatesvictory.png`，只报一句"无法解码"。
 
 想在 **PC 上直接看整张图**（不装 APK、不起 8791）：
 

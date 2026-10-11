@@ -336,8 +336,7 @@ public class StatsActivity extends Activity {
     /** config.stats: {weeks, levels} */
     private void loadCfg() {
         try {
-            Config c = BotService.cfg();
-            if (c == null) c = new Config(this);
+            Config c = BotService.cfgOr(this);
             JSONObject s = c.read().optJSONObject("stats");
             if (s == null) return;
             int w = s.optInt("weeks", 26);

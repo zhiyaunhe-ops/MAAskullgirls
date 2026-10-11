@@ -143,9 +143,12 @@ public final class DebugHttp {
         reply(s, body);
     }
 
-    /** 配置层: 服务没起过时 BotService.cfg() 是 null, 这里临时造一个 (读同一份文件) */
+    /** 配置层: 服务没起过时 BotService.cfg() 是 null, 兜一个 (读同一份文件)。
+     *  ⚠️ 逻辑已收口到 BotService.cfgOr —— 主页按钮 → trigger 那条路同样需要,
+     *     别再各写一份 (2026-10-11: trigger 那条路就因为漏了兜底, 点更新永远报
+     *     "update.repo 未配")。 */
     private static Config cfg() {
-        Config c = BotService.cfg();
+        Config c = BotService.cfgOr(App.inst);
         return c != null ? c : new Config(App.inst);
     }
 

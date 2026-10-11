@@ -12,6 +12,11 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.TimeZone;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -46,12 +51,74 @@ public final class Update {
     /** 最近一次检查/拉取的一句话结果 — 主页直接回显, 不用翻 /log (2026-10-08) */
     private static volatile String lastResult = "";
 
+    /* ---------------- 进度 / 结果 (UI 直接读; 全部只在进程内, 不写盘) ----------------
+     * ⚠️ 为什么加这一组 (2026-10-11 用户报障「没有进度 / 没有提示 / 版本号不变」):
+     *    原来 UI 是 `postDelayed(showUpdateResult, 2500/6000)` —— **只读一眼**。
+     *    国内直连 api.github.com(查询) 与 objects.githubusercontent.com(下载资产) 都不快,
+     *    那一拍结果还没回来 ⇒ 显示「还没拿到结果」, 而且**之后再也不刷新**。
+     *    加上下载全程没有任何进度上报, 用户看到的就是"点了没反应"。
+     *    这里把"在不在跑 / 跑到哪 / 结果级别"变成可读的状态, 由 UI 轮询。 */
+
+    /** 在跑的重入计数 (>0 ⇒ busy)。check 会内嵌在 apply 里, 所以用计数而不是布尔 */
+    private static final AtomicInteger BUSY = new AtomicInteger();
+    /** 当前阶段的人话 (查询/下载/解包/安装) */
+    private static volatile String stage = "";
+    /** 0~100; -1 = 该阶段没有确定进度 (查询/解包/安装都算"不确定") */
+    private static volatile int pct = -1;
+    /** 最近一轮结果的原始 JSON —— UI 判成败用这个, 别再拿 brief 文案猜 */
+    private static volatile JSONObject lastJson = null;
+    /** 最近一轮结果的级别 (默认 0 = LV_OK; 常量声明在下方) */
+    private static volatile int lastLevel = 0;
+    /** 最近一次网络失败的具体原因 (HTTP 码 / 异常), 让"取 release 失败"不再是黑盒 */
+    private static volatile String netErr = "";
+
+    public static final int LV_OK = 0;      // 全成
+    public static final int LV_WARN = 1;    // 有部分被跳过/失败 (如 APK 装不了) —— 黄, 不是绿
+    public static final int LV_ERR = 2;     // 整体失败
+
+    /** 是否正在跑 (UI 轮询进度用) */
+    public static boolean busy() { return BUSY.get() > 0; }
+    /** 当前阶段人话 */
+    public static String stage() { return stage; }
+    /** 0~100; -1 = 不确定 */
+    public static int pct() { return pct; }
+    /** 最近一轮结果级别: {@link #LV_OK} / {@link #LV_WARN} / {@link #LV_ERR} */
+    public static int lastLevel() { return lastLevel; }
+    /** 最近一轮结果原始 JSON (null = 还没跑过) */
+    public static JSONObject lastJson() { return lastJson; }
+
+    private static void prog(String s, int p) { stage = s; pct = p; }
+
     private Update() { }
 
     /** 给 UI 用的一句话摘要 (空 = 还没查过) */
     public static String lastResult() { return lastResult; }
 
-    /** 人类可读的一句话 (主页状态区显示) */
+    /**
+     * ISO-8601 (UTC, GitHub 资产用的格式) → 本地 "MM-dd HH:mm"。
+     * ⚠️ 必须转本地时区: 直接显 UTC 会比北京晚 8 小时, 用户刚更新完看到"10:16"
+     *    会以为"根本没更新到现在"。
+     */
+    public static String fmtStamp(String iso) {
+        if (iso == null) return "";
+        if (iso.length() < 19) return iso;
+        try {
+            SimpleDateFormat in = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US);
+            in.setTimeZone(TimeZone.getTimeZone("UTC"));
+            Date d = in.parse(iso.substring(0, 19));
+            return new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(d);
+        } catch (Exception e) {
+            return iso;
+        }
+    }
+
+    /**
+     * 人类可读的一句话 (主页状态区 / 反馈行显示)。
+     *
+     * ⚠️ 检查结果里**不显示 tag** (原为 "(tag=latest)"): CI 是固定 tag 反复 --clobber
+     *    覆盖同名资产, tag 恒定不变 ⇒ 用户看到"版本号还是 latest"以为没更新
+     *    (2026-10-11 报障)。真正会变的是资产的 updated_at, 所以改成显示它的本地时间。
+     */
     private static String brief(JSONObject r, boolean applied) {
         if (r == null) return "结果为空";
         String pre = applied ? "拉取: " : "检查: ";
@@ -60,13 +127,49 @@ public final class Update {
         if (applied) {
             int n = r.optInt("bundle_files", -1);
             JSONObject apk = r.optJSONObject("apk");
-            return pre + "bundle=" + (n < 0 ? (nb ? "失败" : "已最新") : n + " 文件")
-                    + " apk=" + (apk == null ? (na ? "失败" : "已最新")
+            return pre + "bundle " + (r.has("bundle_err") ? "下载失败"
+                            : (n < 0 ? (nb ? "失败" : "已最新") : n + " 文件已更新"))
+                    + "; apk " + (apk == null ? (na ? "失败" : "已最新")
                             : (apk.optBoolean("ok") ? "已安装" : apk.optString("msg", "跳过")));
         }
-        return pre + "bundle" + (nb ? "有更新" : "已最新")
-                + " apk" + (na ? "有更新" : "已最新")
-                + " (tag=" + r.optString("tag", "-") + ")";
+        return pre
+                + "bundle " + (nb ? "有更新 " : "已最新 ") + stamp(r, "bundle")
+                + "; apk " + (na ? "有更新 " : "已最新 ") + stamp(r, "apk");
+    }
+
+    /** 远端资产的更新时间 (本地时区短串) —— 这才是"版本"的真实信号 */
+    private static String stamp(JSONObject r, String which) {
+        JSONObject a = r.optJSONObject(which);
+        if (a == null) return "(无此资产)";
+        String s = fmtStamp(a.optString("updated_at", ""));
+        return s.length() == 0 ? "" : "(" + s + ")";
+    }
+
+    /**
+     * 结果级别 —— 决定 UI 用 ✓ / ! / ✗ 哪个记号。
+     *
+     * ⚠️ 原来 UI 是在 brief **文案里找"失败"两个字**判成败
+     *    (MainActivity.showUpdateResult 旧实现):
+     *      boolean ok = !r.startsWith("检查: update.repo") && !r.contains("失败") && !r.contains("超时");
+     *    而 "拉取: update.repo 未配 — config.json 里填 \"owner/name\"" 整句里
+     *    **没有"失败"也没有"超时"** ⇒ 判成成功 ⇒ **错误被显示成绿色 ✓**
+     *    (2026-10-11 用户报障「没有什么提示」的很大一部分: 绿色✓配一句看不懂的话)。
+     *    改由这里给出结构化级别, UI 不再猜字符串。
+     */
+    private static int levelOf(JSONObject r, boolean applied) {
+        if (r == null || !r.optBoolean("ok")) return LV_ERR;
+        if (!applied) return LV_OK;                      // 纯检查能走到这 = 没出错
+        JSONObject apk = r.optJSONObject("apk");
+        boolean partBad = r.has("bundle_err") || (apk != null && !apk.optBoolean("ok"));
+        return partBad ? LV_WARN : LV_OK;                // 有部分被跳过 ⇒ 黄, 不是绿
+    }
+
+    /** 记下最近结果供 UI 回显 (结构化级别 + 原始 JSON + 一句话) */
+    private static JSONObject remember(JSONObject r, boolean applied) {
+        lastJson = r;
+        lastLevel = levelOf(r, applied);
+        try { lastResult = brief(r, applied); } catch (Throwable ignored) { }
+        return r;
     }
 
     /* ---------------- 检查 ---------------- */
@@ -75,13 +178,31 @@ public final class Update {
      * 查 latest release, 与本地 meta 水位比对。
      * 返回 {ok, tag, published_at, need_bundle, need_apk, ver_bundle, ver_apk,
      *       bundle:{name,url,size,updated_at}, apk:{...}, cur:{bundle,apk}}
+     *
+     * 外面这层只管 busy 计数 (UI 轮询进度用); 逻辑在 check0。
      */
     public static JSONObject check(Config cfg) {
+        BUSY.incrementAndGet();
+        try {
+            return check0(cfg);
+        } finally {
+            BUSY.decrementAndGet();
+        }
+    }
+
+    private static JSONObject check0(Config cfg) {
+        prog("查询 GitHub release…", -1);
+        netErr = "";
         JSONObject u = sec(cfg);
         String repo = u.optString("repo", "");
-        if (repo.length() == 0) return remember(err("update.repo 未配 — config.json 里填 \"owner/name\""), false);
+        if (repo.length() == 0)
+            return remember(err("update.repo 未配 — config.json 的 update.repo 填 \"owner/name\""
+                    + (cfg == null ? " (配置层没拿到)" : "")), false);
         JSONObject rel = fetchJson(String.format(API, repo));
-        if (rel == null) return remember(err("取 release 失败 (无网络 / 仓库不存在 / 还没有 release)"), false);
+        if (rel == null)
+            return remember(err("取 release 失败 — "
+                    + (netErr.length() > 0 ? netErr : "无网络")
+                    + " (" + repo + ")"), false);
         if (rel.has("message") && !rel.has("assets"))
             return remember(err("GitHub: " + rel.optString("message")), false);
 
@@ -112,12 +233,6 @@ public final class Update {
         }
     }
 
-    /** 记下最近结果供 UI 回显 */
-    private static JSONObject remember(JSONObject r, boolean applied) {
-        try { lastResult = brief(r, applied); } catch (Throwable ignored) { }
-        return r;
-    }
-
     /* ---------------- 应用 ---------------- */
 
     /**
@@ -125,8 +240,20 @@ public final class Update {
      * 返回 {ok, bundle_files, apk:{...} , reloaded}
      */
     public static JSONObject apply(Context ctx, Config cfg, boolean withApk) {
+        BUSY.incrementAndGet();
+        try {
+            return apply0(ctx, cfg, withApk);
+        } finally {
+            BUSY.decrementAndGet();
+        }
+    }
+
+    private static JSONObject apply0(Context ctx, Config cfg, boolean withApk) {
+        prog("查询远端版本…", -1);
         JSONObject st = check(cfg);
-        if (!st.optBoolean("ok")) { lastResult = brief(st, true); return st; }
+        /* ⚠️ 失败也要过 remember —— 原来这里只写 lastResult, 于是 lastJson/lastLevel
+         *    还停在上一次的值 ⇒ UI 会拿旧的"成功"状态配新的错误文案 (2026-10-11 修)。 */
+        if (!st.optBoolean("ok")) return remember(st, true);
         JSONObject out = new JSONObject();
         try {
             out.put("ok", true).put("tag", st.optString("tag"));
@@ -139,6 +266,7 @@ public final class Update {
             if (!dir.exists() && !dir.mkdirs()) SgmLog.i(T, "建目录失败 " + dir);
             File zip = new File(dir, "bundle.zip");
             if (b != null && down(b.optString("url"), zip)) {
+                prog("解包 bundle…", -1);
                 int n = unzip(zip, new File(Paths.root()));
                 putMeta(cfg, "bundle_version", st.optString("ver_bundle"));
                 SgmLog.i(T, "bundle 已应用 " + n + " 个文件 → " + Paths.root());
@@ -162,6 +290,7 @@ public final class Update {
             if (!dir.exists() && !dir.mkdirs()) SgmLog.i(T, "建目录失败 " + dir);
             File apk = new File(dir, "sgmbot.apk");
             if (a != null && down(a.optString("url"), apk)) {
+                prog("安装 APK…", -1);
                 try { out.put("apk", installApk(cfg, apk, st.optString("ver_apk"))); }
                 catch (Exception ignored) { }
             } else {
@@ -172,6 +301,7 @@ public final class Update {
         }
 
         /* 3) 让引擎重新读 config / 清模板缓存 */
+        prog("重载配置…", -1);
         BotService.trigger("reload");
         try { out.put("reloaded", true); } catch (Exception ignored) { }
         return remember(out, true);
@@ -245,11 +375,13 @@ public final class Update {
             c.setRequestProperty("User-Agent", "sgmbot");
             int code = c.getResponseCode();
             if (code != 200) {
+                netErr = "HTTP " + code;
                 SgmLog.i(T, "HTTP " + code + " — " + url);
                 return null;
             }
             return new JSONObject(readAll(c.getInputStream(), 262144));
         } catch (Exception e) {
+            netErr = e.toString();
             SgmLog.i(T, "取 " + url + " 失败: " + e);
             return null;
         } finally {
@@ -270,13 +402,31 @@ public final class Update {
             c.setRequestProperty("Accept", "application/octet-stream");
             c.setRequestProperty("User-Agent", "sgmbot");
             int code = c.getResponseCode();
-            if (code != 200) { SgmLog.i(T, "下载 HTTP " + code); return false; }
+            if (code != 200) {
+                netErr = "下载 HTTP " + code;
+                SgmLog.i(T, "下载 HTTP " + code);
+                return false;
+            }
+            /* 进度上报 —— 没有它 UI 只能干等 (用户报障"没有进度")。
+             * Content-Length 未必有 (chunked/重定向后可能丢), 到时退化成显示已收 KB。 */
+            int len = c.getContentLength();
+            String nm = dst.getName();
+            prog("下载 " + nm, 0);
             InputStream in = c.getInputStream();
             OutputStream os = new FileOutputStream(tmp);
             byte[] buf = new byte[32768];
-            int n;
+            int n, lastPct = -1;
             long total = 0;
-            while ((n = in.read(buf)) > 0) { os.write(buf, 0, n); total += n; }
+            while ((n = in.read(buf)) > 0) {
+                os.write(buf, 0, n);
+                total += n;
+                if (len > 0) {
+                    int p = (int) (total * 100 / len);
+                    if (p != lastPct) { lastPct = p; prog("下载 " + nm + " " + (total / 1024) + "KB", p); }
+                } else {
+                    prog("下载 " + nm + " " + (total / 1024) + "KB", -1);
+                }
+            }
             os.close();
             in.close();
             if (dst.exists()) dst.delete();
@@ -372,7 +522,13 @@ public final class Update {
 
     static JSONObject sec(Config cfg) {
         JSONObject c = cfg == null ? null : cfg.read();
-        return c == null ? new JSONObject() : c.optJSONObject("update");
+        JSONObject u = c == null ? null : c.optJSONObject("update");
+        /* ⚠️ 不能返回 null: 调用方都是 `sec(cfg).optString(...)`, 一 NPE 就是整条更新链
+         *    无声失败 (在 background 线程里, UI 只看到"没反应")。
+         *    optJSONObject 在**键不存在**时返回 null, 而这是完全可能的:
+         *    用户手改过 config、config_patch.json 覆盖后丢了 update 段、assets 装了旧包。
+         *    下面 meta() 一直是这么防御的, sec() 漏了 (2026-10-11 UpdateProbe 首次跑就抓到)。 */
+        return u == null ? new JSONObject() : u;
     }
 
     private static JSONObject meta(Config cfg) {

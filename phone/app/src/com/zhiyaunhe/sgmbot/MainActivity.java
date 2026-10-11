@@ -179,8 +179,12 @@ public class MainActivity extends Activity {
                 "热重载 config.json + 清模板缓存", feed, () -> {
                     BotService.reload();
                     feed.setTextColor(Ui.OK);
-                    feed.setText("✓ 已重载 — " + (BotService.cfg() == null
-                            ? "配置层未初始化 (服务没起过), 已按默认读" : "配置/模板已刷新"));
+                    /* ⚠️ 别再写"配置层未初始化 (服务没起过)" —— 配置层现在由 cfgOr 兜底,
+                     *    任何时候都读得到。服务没跑时 reload 只作废判定图缓存 (模板缓存
+                     *    本来就不存在), 说清"启动时生效"即可。 */
+                    feed.setText(BotService.isRunning()
+                            ? "✓ 已重载 — 配置/模板已刷新, 下轮生效"
+                            : "✓ 已重读配置 — 引擎没在跑, 下次启动按新配置来");
                 });
 
         Ui.button(this, "查看判定路径图 (实时: 走到哪一步 / 峰值多少)",
@@ -199,13 +203,13 @@ public class MainActivity extends Activity {
         Ui.button(this, "检查更新 (查 GitHub latest release)",
                 "检查中… (查 release 资产的 updated_at 与本地水位比对)", feed, () -> {
                     BotService.trigger("check_update");
-                    h.postDelayed(this::showUpdateResult, 2500);
+                    watchUpdate();
                 });
 
         Ui.button(this, "拉取更新 (bundle 热更 + 尝试装 APK)",
                 "拉取中… bundle 热更; APK 走 pm install (需要 Shizuku + 所有文件访问)", feed, () -> {
                     BotService.trigger("update");
-                    h.postDelayed(this::showUpdateResult, 6000);
+                    watchUpdate();
                 });
 
         /* ---------------- adb ---------------- */
@@ -294,10 +298,19 @@ public class MainActivity extends Activity {
                 .append(" · 累计 ").append(st.totalRounds()).append(" 场 / ")
                 .append(st.activeDays()).append(" 天").append('\n');
         JSONObject m = cfgMeta();
-        sb.append("更新源       ").append(m.optString("repo", "(未配)"))
-                .append(" bundle=").append(m.optString("bv", "0"));
+        sb.append("App 版本     ").append(appVer()).append('\n');
+        sb.append("更新源       ").append(m.optString("repo", "(未配)")).append('\n');
+        sb.append("bundle 水位  ").append(m.optString("bv", "(还没拉取过)"));
+        JSONObject lj = Update.lastJson();
+        if (lj != null && lj.optBoolean("ok")) {
+            String rv = lj.optString("ver_bundle", "");
+            if (rv.length() > 0) {
+                sb.append(" → 远端 ").append(Update.fmtStamp(rv))
+                        .append(lj.optBoolean("need_bundle") ? " (有更新)" : " (已最新)");
+            }
+        }
         String ul = Update.lastResult();
-        if (ul.length() > 0) sb.append("\n更新         ").append(ul);
+        if (ul.length() > 0) sb.append("\n最近更新     ").append(ul);
         sb.append("\n外部根       ").append(Paths.root());
         return sb.toString();
     }
@@ -306,33 +319,93 @@ public class MainActivity extends Activity {
         return ok ? "✓ " + yes : "✗ " + no;
     }
 
-    /** 更新结果回显 — 之前只改一句"检查中…"就没下文了, 用户只能翻 /log 才知道成没成 */
+    /**
+     * 盯更新进度直到结束 —— 轮询 Update.busy()/stage()/pct(), 跑完再落结果。
+     *
+     * ⚠️ 原来是 `h.postDelayed(this::showUpdateResult, 2500/6000)` —— **只读一眼**:
+     *    国内直连 api.github.com(查询) 与 objects.githubusercontent.com(下载资产) 都不快,
+     *    那一拍结果往往还没回来 ⇒ 显示「还没拿到结果」, 而**之后再也不会刷新**
+     *    ⇒ 用户看到的正是"没有进度、没有提示" (2026-10-11 报障)。
+     *    trigger 只是 `new Thread(...).start()`, 线程起来有毫秒级延迟, 所以前 1.5s
+     *    即使 busy() 还是 false 也继续等, 免得抢跑到"上一轮的结果"。
+     */
+    private void watchUpdate() {
+        final long t0 = System.currentTimeMillis();
+        final Runnable[] tick = new Runnable[1];
+        tick[0] = () -> {
+            if (isFinishing()) return;
+            boolean waiting = Update.busy() || System.currentTimeMillis() - t0 < 1500;
+            if (waiting && System.currentTimeMillis() - t0 < 180000) {
+                String s = Update.stage();
+                int p = Update.pct();
+                feed.setTextColor(Ui.SUB);
+                feed.setText("› " + (s.length() == 0 ? "处理中…" : s) + (p >= 0 ? " " + p + "%" : ""));
+                h.postDelayed(tick[0], 400);
+                return;
+            }
+            showUpdateResult();
+        };
+        h.postDelayed(tick[0], 250);
+    }
+
+    /**
+     * 更新结果回显。
+     *
+     * ⚠️ 判成败改看 **结构化的 Update.lastLevel()**, 不再在文案里找字符串。
+     *    旧实现 `boolean ok = !r.startsWith("检查: update.repo") && !r.contains("失败")
+     *    && !r.contains("超时")` 有个致命漏判: "拉取: update.repo 未配 — …" 这句里
+     *    **既没有"失败"也没有"超时"** ⇒ 判成成功 ⇒ **错误被显示成绿色 ✓**
+     *    (2026-10-11 用户报障「没有什么提示」的很大一部分)。
+     *    LV_WARN 用黄色 ! —— 那是"更新成功了但有部分被跳过"(如没授所有文件访问时装不了 APK),
+     *    既不是成功也不是失败, 必须在视觉上区分出来。
+     */
     private void showUpdateResult() {
         h.post(() -> {
-            String r = Update.lastResult();
-            if (r.length() == 0) {
+            if (isFinishing()) return;
+            if (Update.lastJson() == null) {
                 feed.setTextColor(Ui.WARN);
-                feed.setText("· 还没拿到结果 — 可能是网络慢; 稍后再看或翻 logs/app.log");
+                feed.setText("· 还没拿到结果 — 请求可能没发出去; 可翻 logs/app.log 看原因");
             } else {
-                boolean ok = !r.startsWith("检查: update.repo")
-                        && !r.contains("失败") && !r.contains("超时");
-                feed.setTextColor(ok ? Ui.OK : Ui.ERR);
-                feed.setText((ok ? "✓ " : "✗ ") + r);
+                int lv = Update.lastLevel();
+                feed.setTextColor(lv == Update.LV_OK ? Ui.OK
+                        : (lv == Update.LV_WARN ? Ui.WARN : Ui.ERR));
+                feed.setText((lv == Update.LV_OK ? "✓ " : (lv == Update.LV_WARN ? "! " : "✗ "))
+                        + Update.lastResult());
             }
             status.setText(statusText());
         });
     }
 
-    /** 状态页用的更新信息 (repo / 本地 bundle 水位) */
+    /** App 自身版本 (versionName + versionCode)。
+     *  CI 每次构建都会把两者改成递增的值 (见 build-apk.yml 的 Bump versionCode),
+     *  所以**装上新包这里一定会变**。
+     *  ⚠️ 之前界面完全不显示版本号 —— 用户点完更新根本无从判断"到底装上没有",
+     *     只能去系统「应用信息」翻, 而那正是"版本号不变"这种错觉的来源 (2026-10-11 报障)。 */
+    private String appVer() {
+        try {
+            android.content.pm.PackageInfo pi =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            return pi.versionName + " (" + pi.versionCode + ")";
+        } catch (Throwable t) {
+            return "未知";
+        }
+    }
+
+    /** 状态页用的更新信息 (repo / 本地 bundle 水位)
+     *  ⚠️ 走 cfgOr: 服务没起时 BotService.cfg() 是 null, 而"打开 App 就看状态"正是
+     *     服务没起的情形 —— 原来会显示成"更新源  bundle=0"(repo 读成空串) (2026-10-11)。 */
     private JSONObject cfgMeta() {
         try {
-            Config c = BotService.cfg();
+            Config c = BotService.cfgOr(this);
             JSONObject all = c == null ? null : c.read();
             JSONObject u = all == null ? null : all.optJSONObject("update");
             JSONObject m = all == null ? null : all.optJSONObject("meta");
+            String repo = u == null ? "" : u.optString("repo", "");
+            String bv = m == null ? "" : m.optString("bundle_version", "");
+            boolean unset = bv.length() == 0 || "0".equals(bv);
             return new JSONObject()
-                    .put("repo", u == null ? "" : u.optString("repo", ""))
-                    .put("bv", m == null ? "0" : m.optString("bundle_version", "0"));
+                    .put("repo", repo.length() == 0 ? "(未配 — 见 config.update.repo)" : repo)
+                    .put("bv", unset ? "(还没拉取过)" : Update.fmtStamp(bv));
         } catch (Exception e) {
             return new JSONObject();
         }

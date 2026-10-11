@@ -150,6 +150,11 @@ public class VisionProbe {
     public static void main(String[] args) throws Exception {
         String src = args.length > 0 ? args[0] : "D:/Downloads/Telegram Desktop/";
         String tplDir = args.length > 1 ? args[1] : "phone/app/assets/templates/";
+        /* ⚠️ 下面全是字符串拼接 (src + "photo_..."), 传参时漏了尾斜杠就会拼成
+         *    "assets/templatesvictory.png" ⇒ 只报一句"无法解码", 看着像模板丢了。
+         *    在这里归一化 (2026-10-11 踩过)。 */
+        if (!src.endsWith("/")) src += "/";
+        if (!tplDir.endsWith("/")) tplDir += "/";
         String[][] frames = {
                 {"win", src + "photo_2026-09-05_17-34-56.jpg"},    // VICTORY 结算页 (REMATCH 中槽)
                 {"lose", src + "photo_2026-09-05_17-34-49.jpg"},   // DEFEAT 结算页 (REMATCH 右槽)

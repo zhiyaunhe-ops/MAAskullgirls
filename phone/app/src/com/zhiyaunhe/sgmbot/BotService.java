@@ -29,6 +29,8 @@ public class BotService extends Service {
     private static volatile boolean running = false;
     private static volatile String mode = "";
     private static Config cfg;
+    /** 服务没起时的兜底配置层 (cfgOr 用)。与 cfg 读同一份文件, 谁先建都行。 */
+    private static volatile Config loose;
     private static ShizukuCtl sh;
     private static TplStore tpls;
     private static TouchCtl touch;
@@ -40,6 +42,26 @@ public class BotService extends Service {
 
     public static ShizukuCtl sh() { return sh; }
     public static Config cfg() { return cfg; }
+
+    /**
+     * 配置层 (兜底版) — 服务没起过时 {@link #cfg} 是 null, 这里临时造一个读**同一份文件**。
+     *
+     * ⚠️ 为什么非有不可 (2026-10-11 用户报障「点请求更新, 版本号不变 / 没进度 / 没提示」):
+     *    这些操作**都不依赖服务** —— 打开 App 就能点, 而它们全走 trigger/HTTP 读 cfg:
+     *      服务没起 ⇒ cfg == null ⇒ Update.sec(null) 得到空 JSON ⇒ repo 读成 ""
+     *      ⇒ 直接返回「update.repo 未配 — config.json 里填 "owner/name"」,
+     *    可用户明明配了。DebugHttp 早就踩过这个坑并自己兜了底 (DebugHttp.cfg()),
+     *    但**主页按钮 → trigger 这条路漏了** —— 同一个坑修了一处漏一处。
+     *    现在收口到这一处, 两条路共用一个兜底。
+     */
+    public static Config cfgOr(Context ctx) {
+        Config c = cfg;
+        if (c != null) return c;
+        Context x = ctx != null ? ctx : App.inst;
+        if (x == null) return null;
+        if (loose == null) loose = new Config(x);
+        return loose;
+    }
     public static boolean isRunning() { return running; }
     public static String currentMode() { return mode; }
 
@@ -86,9 +108,11 @@ public class BotService extends Service {
             /* 悬浮条独立启停 (不需要服务) — 主页/悬浮条/HTTP 都能调 */
             case "overlay_show": OverlayCtl.show(c); break;
             case "overlay_hide": OverlayCtl.hide(); break;
-            /* 更新: 网络 IO, 一律丢后台线程 (trigger 会被 UI 线程/HTTP 线程直接调) */
+            /* 更新: 网络 IO, 一律丢后台线程 (trigger 会被 UI 线程/HTTP 线程直接调)
+             * ⚠️ 配置一律走 cfgOr(c) 而不是 static cfg —— 服务没起过时 cfg==null,
+             *    而"打开 App 就点更新"是最常见顺序 (服务根本没起)。见 cfgOr 注释。 */
             case "check_update": background(() -> {
-                JSONObject r = Update.check(cfg);
+                JSONObject r = Update.check(cfgOr(c));
                 SgmLog.i("ctl", r.optBoolean("ok")
                         ? "更新检查: bundle" + (r.optBoolean("need_bundle") ? "有" : "无")
                           + " apk" + (r.optBoolean("need_apk") ? "有" : "无")
@@ -96,11 +120,11 @@ public class BotService extends Service {
                         : "更新检查失败 — " + r.optString("msg"));
             }); break;
             case "update": background(() -> {
-                JSONObject r = Update.apply(c, cfg, true);
+                JSONObject r = Update.apply(c, cfgOr(c), true);
                 SgmLog.i("ctl", "update: " + r);
             }); break;
             case "update_bundle": background(() -> {
-                JSONObject r = Update.apply(c, cfg, false);
+                JSONObject r = Update.apply(c, cfgOr(c), false);
                 SgmLog.i("ctl", "update(bundle only): " + r);
             }); break;
             default: SgmLog.i("ctl", "unknown action " + action);
@@ -134,7 +158,7 @@ public class BotService extends Service {
     public void onCreate() {
         super.onCreate();
         App.service = this;
-        if (cfg == null) cfg = new Config(this);
+        if (cfg == null) cfg = cfgOr(this);     // 与"服务没起时的兜底"共用同一个对象
         if (sh == null) sh = new ShizukuCtl();
         if (tpls == null) tpls = new TplStore(this);
         if (touch == null) touch = new TouchCtl(sh);
