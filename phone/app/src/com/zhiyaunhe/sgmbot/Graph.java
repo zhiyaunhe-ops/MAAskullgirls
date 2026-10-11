@@ -89,6 +89,33 @@ public final class Graph {
         edges = outEdges;
     }
 
+    /**
+     * 配置变了 → 立刻把当前图作废, 下次取图/装载时按新配置重建。
+     *
+     * <p>为什么要这一手: {@link #ensureLoaded} 是幂等的 (有节点就不重装), 于是一旦
+     * 静态装载过一次, 后续改配置**图不会跟着变** —— 界面上还印着旧阈值, 就是"图与实
+     * 不符"。配置的每条写入路径都收口在 {@code BotService.reload()}, 在那里统一作废。
+     */
+    public static synchronized void invalidate() {
+        nodes = new JSONObject();
+        edges = new JSONArray();
+        cursor = "";
+    }
+
+    /** 引擎没跑时也要能看 —— 首次取图前用当前配置**静态装载**一次, 幂等。
+     *
+     * <p>⚠️ 上面 javadoc 承诺「静态全图…引擎没跑也要能看」, 但 {@link #load} 原先
+     * 只在 BotService 起跑 / SettleLoop 开跑时被调用 ⇒ **没跑就没图**: 打开判定图
+     * 只会看到「图还没装载」。这正好撞上用户 2026-10-08 纠正的那句话
+     * (「判定图指的是整个程序的, 不是运行到哪」)。由此 HTTP 层在取 /graph 前补一次。
+     *
+     * <p>幂等: 已有节点直接返回 —— 引擎在跑时由 SettleLoop 按热更重装, 这里不抢。
+     */
+    public static synchronized void ensureLoaded(Config c) {
+        if (c == null || nodes.length() > 0) return;
+        load(c.read());
+    }
+
     /** 登记一个节点: 回填阈值到 val, 记下顺序 */
     private static void put(JSONObject map, JSONObject n, int lane) throws Exception {
         String id = n.optString("id", "");

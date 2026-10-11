@@ -111,12 +111,25 @@ curl http://127.0.0.1:8791/log         # app.log
   时页内能直接点「启动服务」。
 - **PC 上**：`adb forward tcp:8791 tcp:8791` 后开 `http://127.0.0.1:8791/`。
 
-页面：SVG 按 config 的 x/y 画节点与边（缺省 grid 自动排），**高亮当前节点**，
-节点下方是该节点最近一次 NCC 峰值（差 0.02 卡住一眼可见），右侧是最近判定流水。
-数据口 `GET /graph` 返回 `{nodes,edges,cursor,byNode,trace}`。
+页面每个节点画三行：**标签 / 最近实测 NCC 峰值 / 当前阈值**。阈值来自节点声明的
+`cfg` 路径（`Graph.load` 时从 config 回填到 `val`），所以**改了 config 图跟着变**，
+不会出现"图上写 0.72 / 实际是 0.75"。**点任意节点**，顶部黄条给出它的完整条件、
+阈值来源路径与实测分数。右侧是最近判定流水。数据口 `GET /graph` 返回
+`{nodes,edges,cursor,byNode,trace}`。
+
+**引擎没跑也要能看图**：`GET /graph` 取数前会调 `Graph.ensureLoaded(cfg())` 做一次
+**静态装载**（幂等）。此前 `Graph.load` 只在 BotService/SettleLoop 起跑时被调用 ⇒
+没跑就没图，页面只剩「图还没装载」——那恰恰违背"判定图指的是整个程序的，不是运行到哪"。
+配置的写入路径统一收口在 `BotService.reload()`，那里会 `Graph.invalidate()`，
+于是改完配置下一次取图按新配置重建（不变量：**界面上印的阈值 = 当前 config**）。
 
 ⚠️ 页面全靠 JS 拉 `/graph` 再画 SVG ⇒ WebView **必须开 JavaScript**（默认是关的），
 否则一片空白且不报错——那种"白屏"最容易误判成接口坏了。
+
+⚠️ 这坨 HTML/JS 是 Java 字符串拼的，而浏览器对 `<script>` 是**原子解析**：一处语法错
+= 全页失效，且手机上没控制台可看。所以硬规则是**只用单引号、不含任何反斜杠**
+（Java 层不吞字符，浏览器侧也不会因转义炸掉整块）。`tools/GraphPageProbe.py` 兜底：
+提取 → `node --check` 语法 → **用 stub DOM 真跑 `draw()`** 并断言阈值/条件/点击都生效。
 
 ## 多分辨率
 
@@ -278,3 +291,21 @@ java -cp out:<真 org.json>:<android.jar> StoreProbe     # 35 项断言
 
 它专门盯三处易错又不显形的地方：跨天把归档一起清了、旧 `store.json`（没 `history`
 键）升级后今天空白、`trim` 把最新几天裁掉。
+
+## 判定图页面回归
+
+页面是**一大坨 Java 字符串拼出来的 HTML/JS**，而浏览器对 `<script>` 是原子解析
+——一处语法错就是整页失效，偏偏手机上没控制台。`tools/GraphPageProbe.py` 盖三层：
+
+```bash
+python3 phone/app/tools/GraphPageProbe.py
+```
+
+1. **提取** — 按 Java 字面量把 `GRAPH_HTML` 拼回来，断言不含反斜杠、`script` 块完整；
+2. **语法** — `node --check` 整段内联 JS；
+3. **真跑** — stub DOM 里执行并调 `draw()`，断言：不抛异常、每个节点渲染出一个
+   `rect`、第 3 行是当前阈值、点击后 info 栏含条件与 `cfg` 路径、每个 `rect` 都绑 click。
+
+`tools/GraphProbe.py`（纯 JVM）管的是图**结构**：25 个静态节点 + escape 展开 6 项、
+阈值从 config 回填、布局无重叠、边不悬空、运行时 `Graph.cursor` 锚点全在图上，
+以及**静态装载 / 幂等 / 作废后重建**这三条 `ensureLoaded` 行为。

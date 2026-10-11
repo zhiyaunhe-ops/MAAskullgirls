@@ -60,6 +60,12 @@ def write_probe():
         'import org.json.JSONObject;import org.json.JSONArray;\n'
         'public class Trace { public static JSONObject byNode() { return new JSONObject(); }\n'
         '  public static JSONArray recent(int n) { return new JSONArray(); } }\n')
+    # Graph.ensureLoaded(Config) 是"引擎没跑也要能看图"的入口 ⇒ 桩要能喂 config
+    open(os.path.join(OUT, 'src', 'Config.java'), 'w', encoding='utf-8').write(
+        'package com.zhiyaunhe.sgmbot;\n'
+        'import org.json.JSONObject;\n'
+        'public class Config { public static JSONObject MOCK = new JSONObject();\n'
+        '  public JSONObject read() { return MOCK; } }\n')
     probe = r'''
 package com.zhiyaunhe.sgmbot;
 import org.json.*;
@@ -74,6 +80,32 @@ public class Probe {
         String cfgPath = a[0];
         String txt = new String(Files.readAllBytes(Paths.get(cfgPath)), "UTF-8");
         JSONObject cfg = new JSONObject(txt);
+        JSONObject raw = cfg.getJSONObject("graph");
+        int rawN = raw.getJSONArray("nodes").length();
+        // 静态节点里有 1 个是 expand 占位 ⇒ 实际 = (rawN-1) + escape 子项
+        JSONArray items = cfg.getJSONObject("escape").getJSONArray("items");
+        int wantN = rawN - 1 + items.length();
+
+        // ---- 引擎没跑也要能看图 (Graph.ensureLoaded, javadoc 承诺的"静态全图") ----
+        // 此前 load() 只在 BotService/SettleLoop 起跑时调用 ⇒ 没跑就没图, 与
+        // "判定图指的是整个程序的, 不是运行到哪" (用户 2026-10-08) 直接冲突。
+        System.out.println("== ensureLoaded (静态装载) ==");
+        Config.MOCK = cfg;
+        Graph.ensureLoaded(new Config());                 // 首次: 应把整张图装上
+        int n1 = Graph.toJson().getJSONArray("nodes").length();
+        Graph.ensureLoaded(new Config());                 // 再次: 幂等, 不重复不翻倍
+        int n2 = Graph.toJson().getJSONArray("nodes").length();
+        ck("未跑时也能装出整张图 nodes=" + n1, n1 == wantN, n1);
+        ck("幂等, 重复调用不翻倍 nodes=" + n2, n2 == n1, n2);
+
+        // 改配置 -> invalidate -> 再取图必须重建 (否则界面印的还是旧阈值 = 图与实不符)
+        Graph.invalidate();
+        int n3 = Graph.toJson().getJSONArray("nodes").length();
+        ck("invalidate 后图作废", n3 == 0, n3);
+        Graph.ensureLoaded(new Config());
+        int n4 = Graph.toJson().getJSONArray("nodes").length();
+        ck("作废后能按新配置重建 nodes=" + n4, n4 == wantN, n4);
+
         Graph.load(cfg);
         JSONObject j = Graph.toJson();
         JSONArray ns = j.getJSONArray("nodes");
@@ -81,12 +113,8 @@ public class Probe {
         System.out.println("== load ==");
         System.out.println("  nodes=" + ns.length() + " edges=" + es.length()
                 + " lanes=" + j.getJSONArray("lanes").length());
-        JSONObject raw = cfg.getJSONObject("graph");
-        int rawN = raw.getJSONArray("nodes").length();
-        // 25 个静态节点里有 1 个是 expand 占位 ⇒ 实际 = 24 + 6 个 escape 子项
-        JSONArray items = cfg.getJSONObject("escape").getJSONArray("items");
         ck("node count = static(" + (rawN - 1) + ") + escape 子项(" + items.length() + ")",
-                ns.length() == rawN - 1 + items.length(), ns.length());
+                ns.length() == wantN, ns.length());
 
         // escape 链展开: 每个子项一个 esc_<tpl> 节点, 且 th 取自 escape.items
         for (int i = 0; i < items.length(); i++) {
@@ -178,20 +206,28 @@ public class Probe {
 
 
 def main():
+    # Windows 下 python 默认按 cp936 编 stdout, 而 java 侧吐的是 UTF-8 ⇒ 断言文案乱码,
+    # 用户看结论只能靠猜。统一按 UTF-8 出。
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     probe = write_probe()
     srcs = [probe,
             os.path.join(SRC, 'Graph.java'),
             os.path.join(OUT, 'src', 'SgmLog.java'),
             os.path.join(OUT, 'src', 'BotService.java'),
-            os.path.join(OUT, 'src', 'Trace.java')]
+            os.path.join(OUT, 'src', 'Trace.java'),
+            os.path.join(OUT, 'src', 'Config.java')]
     cp = os.pathsep.join([JSON_REAL, PLAT])
-    r = subprocess.run([JAVA, '-encoding', 'UTF-8', '-nowarn', '-d', OUT, '-cp', cp] + srcs,
-                       capture_output=True)
+    # ⚠️ -Dfile.encoding=UTF-8 是必需的: Windows 上 JVM 的 System.out 默认按 cp936 码页
+    #    输出, 而这边按 UTF-8 解码 ⇒ 断言文案全成乱码, 用户根本读不出结论。
+    r = subprocess.run([JAVA, '-J-Dfile.encoding=UTF-8', '-encoding', 'UTF-8', '-nowarn',
+                        '-d', OUT, '-cp', cp] + srcs, capture_output=True)
     if r.returncode != 0:
         sys.stdout.write(r.stderr.decode('utf-8', 'replace'))
         sys.exit(1)
     cfg = os.path.join(ROOT, 'assets', 'config.json')
-    r = subprocess.run([JAVA_RUN, '-cp', os.pathsep.join([OUT, JSON_REAL]),
+    r = subprocess.run([JAVA_RUN, '-Dfile.encoding=UTF-8', '-cp',
+                        os.pathsep.join([OUT, JSON_REAL]),
                         'com.zhiyaunhe.sgmbot.Probe', cfg], capture_output=True)
     out = (r.stdout + r.stderr).decode('utf-8', 'replace')
     sys.stdout.write(out)

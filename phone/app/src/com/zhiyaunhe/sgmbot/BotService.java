@@ -98,6 +98,10 @@ public class BotService extends Service {
 
     /** 配置/模板热更 (POST /reload、bundle 落盘后、主页按钮共用) */
     public static void reload() {
+        // ⚠️ 作废必须在下面的 cfg 门禁**之前**: 引擎没跑时 cfg==null, 门禁里不 load,
+        //    而"没跑"恰恰是静态装载出来的那张图被看到的情形 (Graph.ensureLoaded)。
+        //    不作废的话改完配置界面还是旧阈值 —— 图与实不符。
+        Graph.invalidate();
         if (cfg != null) {
             if (tpls != null) tpls.clear();     // 模板热更: 下次取模板重新解码
             JSONObject c = cfg.read();

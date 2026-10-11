@@ -76,6 +76,7 @@ public final class DebugHttp {
                 return;
             }
             if (path.startsWith("/graph")) {
+                Graph.ensureLoaded(cfg());   // 引擎没跑也要能看到整张图 (幂等; 不跑则这里静态装载)
                 body = Graph.toJson().toString(2);
             } else if (path.startsWith("/config")) {
                 if ("POST".equals(method)) body = writeConfig(payload);
@@ -291,6 +292,7 @@ public final class DebugHttp {
         + ".ok{color:#16a34a}.no{color:#dc2626}"
         + "a{color:#2563eb}"
         + "label{font-size:12px;display:flex;gap:4px;align-items:center}"
+        + ".info{padding:6px 16px;background:#fffbeb;border-bottom:1px solid #fde68a;color:#92400e;font-size:12px}"
         + "</style></head><body>"
         + "<header><h1>SGM 判定路径图</h1>"
         + "<span class='pill' id='cnt'>-</span>"
@@ -299,6 +301,8 @@ public final class DebugHttp {
         + "<label><input type='checkbox' id='auto' checked>自动刷新</label>"
         + "<span class='dim'><a href='/status'>/status</a> <a href='/log'>/log</a> "
         + "<a href='/config'>/config</a> <a href='/update'>/update</a></span></header>"
+        + "<div id='info' class='info'>点任意节点 → 这里显示它的条件 / 阈值来源 / 最近实测分数。"
+        + "节点第 3 行 = 当前阈值 (val), 第 2 行 = 最近实测峰值 (NCC)。</div>"
         + "<main><div class='card grow'><div id='empty' class='dim' style='display:none'>"
         + "图还没装载 (引擎没在跑, 或 config 里没有 graph 段)</div>"
         + "<svg id='g'></svg></div>"
@@ -313,6 +317,14 @@ public final class DebugHttp {
         + "function el(t,a){var e=document.createElementNS(NS,t);for(var k in a){e.setAttribute(k,a[k]);}return e;}"
         + "function find(id){for(var i=0;i<D.nodes.length;i++){if(D.nodes[i].id===id)return D.nodes[i];}return null;}"
         + "function hhmm(t){var d=new Date(t);return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2);}"
+        + "function pathOf(o){var p=o.cfg||o.of||'';var v=(o.val===undefined||o.val===null)?'空':o.val;"
+        + " return p?('  ['+p+' = '+v+']'):(o.kind?'  (类别 '+o.kind+', 无阈值)':'');}"
+        + "function thText(o){var v=o.val;if(v===undefined||v===null||v===''){return o.kind||'';}return '阈 '+v;}"
+        + "function mkClick(o){return function(){info(o);};}"
+        + "function info(o){var b=D.byNode[o.id];var sc=' · 最近无实测记录';"
+        + " if(b&&b.score>-2){sc=' · 最近实测 '+((b.score<0)?'—':(b.score).toFixed(3))+(b.hit?' 命中':' 未过阈')+(b.tpl?(' ('+b.tpl+')'):'');}"
+        + " document.getElementById('info').textContent=(o.label||o.id)+' — '+(o.cond||'(无说明)')+pathOf(o)+sc"
+        + " +(o.note?('  · '+o.note):'');}"
         + "function draw(){"
         + " var s=document.getElementById('g');s.innerHTML='';"
         + " var n=D.nodes||[];"
@@ -337,12 +349,15 @@ public final class DebugHttp {
         + " for(i=0;i<n.length;i++){var o=n[i];"
         + "  var w=152,h=54,x=(+o.x)-w/2,y=(+o.y)-h/2;"
         + "  var isc=(D.cursor===o.id);"
-        + "  s.appendChild(el('rect',{x:x,y:y,width:w,height:h,rx:9,ry:9,fill:KIND[o.kind]||'#eef2f7',class:isc?'node cur':'node'}));"
+        + "  var rc=el('rect',{x:x,y:y,width:w,height:h,rx:9,ry:9,fill:KIND[o.kind]||'#eef2f7',class:isc?'node cur':'node'});"
+        + "  rc.style.cursor='pointer';rc.addEventListener('click',mkClick(o));"
+        + "  var tt=el('title',{});tt.textContent=(o.label||o.id)+(o.cond?' — '+o.cond:'')+pathOf(o);rc.appendChild(tt);"
+        + "  s.appendChild(rc);"
         + "  var t1=el('text',{x:o.x,y:(+o.y)-4,class:'nl'});t1.textContent=o.label||o.id;s.appendChild(t1);"
         + "  var b=D.byNode[o.id];var s2='-',cls='ns dim';"
         + "  if(b&&b.score>-2){s2=(b.score<0?'':(b.score).toFixed(3))+(b.hit?' / '+(b.act||'命中'):' 未过阈');cls=b.hit?'ns ok':'ns no';}"
         + "  var t2=el('text',{x:o.x,y:(+o.y)+14,class:cls});t2.textContent=s2;s.appendChild(t2);"
-        + "  var t3=el('text',{x:o.x,y:(+o.y)+26,class:'el'});t3.textContent=o.kind||'';s.appendChild(t3);}}"
+        + "  var t3=el('text',{x:o.x,y:(+o.y)+26,class:'el'});t3.textContent=thText(o);s.appendChild(t3);}}"
         + "function drawTrace(){"
         + " var tb=document.getElementById('tr');"
         + " while(tb.rows.length>1){tb.deleteRow(1);}"
