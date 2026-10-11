@@ -82,6 +82,14 @@
   "after_sec": 5,
   "every_sec": 5
  },
+ "map_check": {
+  "on": true,
+  "every_s": 300,
+  "tpl": "home",
+  "th": 0.85,
+  "roi": [0, 0, 180, 70],
+  "note": "大保底: 每 every_s 在左上角找 home 房子图标 = 已退到大地图/大厅 → 复检一帧确认后停车。th 默认 0.85 (36x36 小图标 NCC 易虚高); 日志每次都带峰值, 误停调高 th / 漏报调低"
+ },
  "fast": {
   "enable": false,
   "xy": null,
@@ -90,7 +98,13 @@
   "round_gap_s": 5,
   "idle_stop_s": 300,
   "popup_pause_ms": 2000,
-  "note": "快速连点模式: 主线程盲点 xy (缺省 = btn_rois 中槽中心, 再绕开 avoid 挡块), 独立观察线程负责弹窗/计场/停车",
+  "fight_wait_s": 15,
+  "fight_scan_ms": 500,
+  "fight": {
+   "tpl": "vs_fight",
+   "note": "剥弹窗后 fight_wait_s 内持续找这个模板; th/roi 缺省继承 escape.items 同名项 (vs_fight: th=0.75, roi=[1020,0,260,130]) — 要覆盖就在这里显式写 th/roi"
+  },
+  "note": "快速连点模式: 主线程盲点 xy (缺省 = btn_rois 中槽中心, 再绕开 avoid 挡块), 独立观察线程负责弹窗/FIGHT追踪/计场/停车",
   "avoid": [
    [
     604,
@@ -297,13 +311,24 @@
        "cfg": "result_fallback"
      },
      {
-       "id": "stall",
-       "label": "无动作超时",
-       "kind": "heal",
-       "lane": 5,
-       "cond": "距上次有效动作超过阈值 → 走逃生链",
-       "cfg": "timing.stall_sec"
-     },
+      "id": "stall",
+      "label": "无动作超时",
+      "kind": "heal",
+      "lane": 5,
+      "cond": "距上次有效动作超过阈值 → 走逃生链",
+      "cfg": "timing.stall_sec"
+    },
+    {
+      "id": "mapchk",
+      "label": "大保底 (map_check)",
+      "kind": "heal",
+      "lane": 5,
+      "cond": "每 every_s 在左上角 home_roi 找 home 图标; 连续两帧命中 = 已退到大地图/大厅 → 停车",
+      "cfg": "map_check.every_s",
+      "roi": "map_check.roi [0,0,180,70]",
+      "tpl": "home",
+      "note": "两个模式都挂 (fast 观察线程 / 常规主循环)。防误停: 单帧命中先复检一帧; 不命中绝不停车, 只记峰值日志。只停不点 — 重进要等 NavChain (M2)"
+    },
      {
        "id": "escape",
        "label": "弹窗逃生链",
@@ -386,14 +411,25 @@
        "note": "与连点器并行; 只有它在截屏"
      },
      {
-       "id": "fxpop",
-       "label": "弹窗逃生",
-       "kind": "chain",
-       "lane": 7,
-       "cond": "复用同一条 escape 链; 命中后连点暂停让画面稳定",
-       "cfg": "fast.popup_pause_ms",
-       "note": "保留弹窗检测, 但搬出热路径"
-     },
+      "id": "fxpop",
+      "label": "弹窗逃生",
+      "kind": "chain",
+      "lane": 7,
+      "cond": "复用同一条 escape 链; 命中后连点暂停让画面稳定",
+      "cfg": "fast.popup_pause_ms",
+      "note": "保留弹窗检测, 但搬出热路径"
+    },
+    {
+      "id": "fxfight",
+      "label": "FIGHT 追踪窗口",
+      "kind": "tap",
+      "lane": 7,
+      "cond": "剥完弹窗后 fight_wait_s 内持续找 vs_fight; 命中即点并立刻恢复连点; 超时未命中也恢复 (不停车)",
+      "cfg": "fast.fight_wait_s",
+      "roi": "fast.fight.roi (缺省继承 escape 链同名项)",
+      "tpl": "vs_fight",
+      "note": "弹窗剥完常正落在战斗准备界面, 连点器不知道该按谁; 窗口内采样提到 fight_scan_ms"
+    },
      {
        "id": "fxbig",
        "label": "大字计场",
@@ -451,13 +487,23 @@
        "on": "循环"
      },
      {
-       "from": "fxobs",
-       "to": "fxpop"
-     },
-     {
-       "from": "fxpop",
-       "to": "fxbig"
-     },
+      "from": "fxobs",
+      "to": "fxpop"
+    },
+    {
+      "from": "fxpop",
+      "to": "fxfight",
+      "on": "剥完开窗口"
+    },
+    {
+      "from": "fxfight",
+      "to": "fxtap",
+      "on": "命中即点 / 超时恢复"
+    },
+    {
+      "from": "fxfight",
+      "to": "fxbig"
+    },
      {
        "from": "fxbig",
        "to": "fxidle"
@@ -497,13 +543,28 @@
        "to": "roimap"
      },
      {
-       "from": "roimap",
-       "to": "popup"
-     },
-     {
-       "from": "popup",
-       "to": "phase"
-     },
+      "from": "roimap",
+      "to": "mapchk"
+    },
+    {
+      "from": "mapchk",
+      "to": "popup",
+      "on": "未退图"
+    },
+    {
+      "from": "mapchk",
+      "to": "fxobs",
+      "on": "fast 模式在观察线程跑"
+    },
+    {
+      "from": "mapchk",
+      "to": "capend",
+      "on": "两帧确认 = 已退大地图 → 停车"
+    },
+    {
+      "from": "popup",
+      "to": "phase"
+    },
      {
        "from": "popup",
        "to": "escape",

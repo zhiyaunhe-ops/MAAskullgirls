@@ -38,6 +38,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   前提是「一直胜利 + 该页没有额外奖励按钮 (SELL ALL / HIDE STATS)」, 故默认关。
  *   弹窗检测保留, 但搬出热路径: 连点器只点不截屏, 截屏/弹窗/计场交给**独立的观察线程**
  *   (每 observe_ms 一帧, 默认 1s)。
+ *   剥弹窗后进 **FIGHT 追踪窗口** (fast.fight_wait_s, 默认 15s): 弹窗剥完常常正落在
+ *   战斗准备界面 (右上角 FIGHT!), 连点器不知道此刻该按谁 ⇒ 窗口内持续找 vs_fight,
+ *   命中即点并立刻恢复连点; 超时未命中也恢复 (下一站可能不是战斗页, 不干等)。
+ *
+ * 大保底 (config.map_check, 2026-10-11 用户提出): 每 every_s (默认 5min) 在左上角
+ *   home_roi 找 home 图标 —— 挂机一旦被顶回大地图/大厅, 左上角必然出现那颗房子钮;
+ *   连续两帧确认 (防单帧误判) → 停车。两个模式都挂: 常规模式的 stall 链对"干净的
+ *   大地图"无计可施 (没弹窗可剥, selfHeal 只记日志), 只能在这里保底。
  *
  * 逃生链 (stall / 战斗超时) 全部走 config 的 escape 表 — 新弹窗 = 加一条配置。
  * ⚠️ 没模板的界面一律不盲点 (安全规则同 autojs 版): 自愈导航/PLAY 拉回待 M2 的
@@ -89,6 +97,29 @@ public final class SettleLoop {
     private volatile int fxTaps = 0;
     /** 本线程跑的是不是 fast 分支 — 状态快照里区分 mode */
     private volatile boolean fastOn = false;
+
+    /* ---- FIGHT 追踪窗口 (fast 剥弹窗后) + 大保底 (map_check) ---- */
+    /** >0: 剥弹窗后的 fight 追踪截止时刻 (work 时间轴); 命中/超时/缺模板都清零 */
+    private volatile long fxFightUntil = 0;
+    /** fight 窗口内点 FIGHT 的次数 (状态快照) */
+    private volatile int fightTaps = 0;
+    /** fast.fight 判据: 模板名/th/roi(原始) — th/roi 缺省继承 escape.items 同名项 */
+    private String fightTpl = "vs_fight";
+    private double fightTh = 0.75;
+    private int[] fightRoiRaw;
+    private long fightWaitMs, fightScanMs = 500;
+    /** 大保底 (map_check): 两模式共用 */
+    private boolean mapOn = true;
+    private long mapEveryMs = 300_000;
+    private String mapTpl = "home";
+    private double mapTh = 0.85;
+    private int[] mapRoiRaw;
+    private long lastMapChk;
+    private int mapChecks;
+    /** 懒解析缓存: 模板按屏幕缩放 + ROI 按当前 work 尺寸; 分辨率变了才重算 */
+    private Vision.Frame tFight, tHome;
+    private int[] fightR, homeR;
+    private int chkW = -1, chkH = -1;
 
     public SettleLoop(ShizukuCtl sh, TplStore tpls, OverlayBar bar) {
         this.sh = sh;
@@ -151,6 +182,7 @@ public final class SettleLoop {
         runStart = System.currentTimeMillis();
         lastAct = runStart;
         battleT0 = runStart;
+        parseMapCfg(c);                       // 大保底判据 (两模式共用)
 
         /* 快速连点模式: 换一条完全不同的循环 (盲点 + 独立观察线程), 见 runFast 注释。
          * 放在模板/上限/路径图都就绪**之后** —— 两条路共用同一套前置检查。 */
@@ -212,6 +244,12 @@ public final class SettleLoop {
                     SgmLog.i("弹", "守卫剥弹窗 → 回到原相位 (phase=" + phase + ")");
                 }
             }
+
+            /* —— 大保底 (map_check): 每 every_s 看一眼左上角 ——
+             * 被顶回大地图/大厅 = 脱离战斗流程, 后面所有判定都不会再命中; stall 链
+             * 对"干净的大地图"无计可施 (没弹窗可剥, selfHeal 只记日志) ⇒ 只能在这里
+             * 保底。判据与停车细节见 mapGuard。 */
+            if (mapOn && now - lastMapChk >= mapEveryMs && mapGuard(work, run)) break;
 
             if (phase == 0) {
                 /* —— 战斗阶段: 只查两个大字 —— */
@@ -399,13 +437,18 @@ public final class SettleLoop {
         final int pauseMs = Math.max(0, fx.optInt("popup_pause_ms", 2000));
         final int maxMinutes = sub(c, "run").optInt("max_minutes", 0);
         final JSONArray fxy = fx.optJSONArray("xy");
+        parseFightCfg(c);                     // FIGHT 追踪判据 (观察线程用)
 
         SgmLog.i("快", "快速连点模式 — 连点 " + tapMs + "ms / 观察 " + obsMs + "ms / 落点 "
                 + (fxy != null && fxy.length() >= 2
                     ? "fast.xy(" + (int) fxy.optDouble(0) + "," + (int) fxy.optDouble(1) + ")"
                     : "缺省 = btn_rois 中槽中心, 再绕开 avoid 挡块")
                 + " / 一局去抖 " + gapS + "s / 无进展停车 "
-                + (idleS > 0 ? idleS + "s" : "关") + " — 关掉改 config.fast.enable=false");
+                + (idleS > 0 ? idleS + "s" : "关")
+                + " / 剥弹窗后找 FIGHT "
+                + (fightWaitMs > 0 ? (fightWaitMs / 1000) + "s (tpl=" + fightTpl + " th=" + fightTh + ")"
+                                   : "关")
+                + " — 关掉改 config.fast.enable=false");
 
         Thread obs = new Thread(
                 () -> observeFast(run, c, cap, obsMs, gapS, idleS, pauseMs, maxMinutes),
@@ -493,9 +536,47 @@ public final class SettleLoop {
                     pops++;
                     lastAct = t0;
                     fxGateUntil = t0 + pauseMs;
-                    SgmLog.i("弹", "快速模式剥弹窗 → 连点暂停 " + pauseMs + "ms (第 " + pops + " 次)");
+                    /* 剥完弹窗常常正落在战斗准备界面 (右上角 FIGHT!) — 连点器不知道
+                     * 此刻该按谁, 盲点可能点在 FIGHT 页的空白处。开一个追踪窗口:
+                     * fight_wait_s 内持续找 vs_fight, 命中即点; 缺模板/关开关就不开,
+                     * 保持原来的死等 pauseMs 行为。 */
+                    boolean fightOk = fightWaitMs > 0 && resolveFight(work);
+                    fxFightUntil = fightOk ? t0 + fightWaitMs : 0;
+                    SgmLog.i("弹", "快速模式剥弹窗 → 连点暂停 " + pauseMs + "ms (第 " + pops + " 次)"
+                            + (fightOk ? " → 接下来 " + (fightWaitMs / 1000)
+                                       + "s 内持续找 FIGHT! (tpl=" + fightTpl + ")" : ""));
                 }
             }
+
+            /* ⓪ FIGHT 追踪窗口: 窗口内每帧找 vs_fight, 命中即点并**立刻**恢复连点;
+             * 超时未命中也恢复 (只是恢复, 绝不因为"没等到 FIGHT"停车)。 */
+            if (t0 < fxFightUntil) {
+                if (resolveFight(work)) {
+                    Graph.cursor("fxfight");
+                    double[] f = Vision.findScored(work, tFight, fightR, fightTh);
+                    boolean hitF = f != null && f[2] >= fightTh;
+                    Trace.put("fxfight", "match", fightTpl, fightR,
+                            f == null ? -2 : f[2], hitF, hitF ? "点 FIGHT → 恢复连点" : "");
+                    if (hitF) {
+                        tap(bmp, (float) (f[0] + tFight.w / 2f), (float) (f[1] + tFight.h / 2f));
+                        fightTaps++;
+                        fxFightUntil = 0;
+                        fxGateUntil = 0;              // 立刻恢复连点 (不等 pauseMs 走完)
+                        lastAct = t0;
+                        SgmLog.i("快", "见到 FIGHT! → 点击进战斗 (第 " + fightTaps
+                                + " 次, 峰值 " + fmt1(f[2]) + ") → 立刻恢复连点");
+                    }
+                } else {
+                    fxFightUntil = 0;                 // 缺模板: 窗口无意义, 直接恢复
+                    SgmLog.i("快", "缺 " + fightTpl + " 模板 — FIGHT 追踪不可用, 直接恢复连点");
+                }
+            } else if (fxFightUntil > 0) {            // 窗口刚自然过期 (进来就清, 只记一次)
+                fxFightUntil = 0;
+                SgmLog.i("快", "fight 窗口内没见到 FIGHT! — 恢复连点 (弹窗后的下一站可能不是战斗页)");
+            }
+
+            /* ⓪b 大保底: 已退到大地图就停车 (内部自带 every_s 闸, 不命中绝不停车) */
+            if (mapGuard(work, run)) break;
 
             /* ② 大字 → 计场 */
             double[] v = Vision.findScored(work, tVic, titleR, minSim);
@@ -567,11 +648,132 @@ public final class SettleLoop {
             snapshot();
             bmp.recycle();
             long used = System.currentTimeMillis() - t0;
-            if (used < obsMs) sleep_(obsMs - used);
+            /* fight 追踪窗口内把采样节奏提到 fight_scan_ms (默认 500ms):
+             * 15s 窗口按 1s 采样只看 15 帧, FIGHT 按钮亮着的时间不长, 采样太疏会错过 */
+            long want = t0 < fxFightUntil ? Math.min(obsMs, fightScanMs) : obsMs;
+            if (used < want) sleep_(want - used);
         }
         SgmLog.i("快", "观察线程退出 — 共 " + frames + " 帧 / 剥弹窗 " + pops + " 次 / 连点 "
                 + fxTaps + " 次");
     }
+
+    /* ==================== FIGHT 追踪窗口 + 大保底 (map_check) ==================== */
+
+    /**
+     * fast.fight 判据: {tpl, th, roi} — 缺省 tpl=vs_fight; **th/roi 缺省继承
+     * escape.items 里同名项**。同一素材只标定一次, 两处不会漂移 (这里抄一份配置,
+     * 日后改了 escape 阈值忘了这边, 追踪口径就变了 —— 继承从根上免掉这个问题)。
+     * 都没有时才回落 th=0.75 / roi=[1020,0,260,130] (escape 链里 vs_fight 的原值)。
+     */
+    private void parseFightCfg(JSONObject c) {
+        JSONObject fx = sub(c, "fast");
+        JSONObject fc = fx.optJSONObject("fight");
+        fightTpl = fc == null ? "vs_fight" : fc.optString("tpl", "vs_fight");
+        double thv = fc == null ? -1 : fc.optDouble("th", -1);
+        JSONArray roi = fc == null ? null : fc.optJSONArray("roi");
+        JSONArray items = c.optJSONObject("escape") == null
+                ? null : c.optJSONObject("escape").optJSONArray("items");
+        if (items != null) {
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject it = items.optJSONObject(i);
+                if (it == null || !fightTpl.equals(it.optString("tpl"))) continue;
+                if (thv < 0) thv = it.optDouble("th", -1);
+                if (roi == null) roi = it.optJSONArray("roi");
+                break;
+            }
+        }
+        fightTh = thv > 0 ? thv : 0.75;
+        fightRoiRaw = roi != null && roi.length() >= 4 ? ia(roi)
+                : new int[]{1020, 0, 260, 130};
+        fightWaitMs = Math.max(0, fx.optInt("fight_wait_s", 15)) * 1000L;
+        fightScanMs = Math.max(200, fx.optInt("fight_scan_ms", 500));
+        fxFightUntil = 0;                      // 换配置后旧窗口作废
+    }
+
+    /** map_check 判据: {on, every_s, tpl, th, roi} — 大保底, 两模式共用 */
+    private void parseMapCfg(JSONObject c) {
+        JSONObject m = sub(c, "map_check");
+        mapOn = m.optBoolean("on", true);
+        mapEveryMs = Math.max(30, m.optInt("every_s", 300)) * 1000L;
+        mapTpl = m.optString("tpl", "home");
+        mapTh = m.optDouble("th", 0.85);
+        JSONArray r = m.optJSONArray("roi");
+        mapRoiRaw = r != null && r.length() >= 4 ? ia(r) : new int[]{0, 0, 180, 70};
+        lastMapChk = 0;
+        tHome = null; homeR = null;
+    }
+
+    /** fight 模板/ROI 懒解析 (分辨率变了才重算); 缺模板返回 false — 追踪不可用 */
+    private boolean resolveFight(Vision.Frame work) {
+        if (tFight != null && fightR != null && work.w == chkW && work.h == chkH) return true;
+        tFight = tpls.getScaled(fightTpl,
+                Roi.scaleX(cfgRef, work.w, work.h), Roi.scaleY(cfgRef, work.w, work.h));
+        fightR = Roi.resolve(cfgRef, fightRoiRaw, work.w, work.h);
+        chkW = work.w; chkH = work.h;
+        return tFight != null;
+    }
+
+    /** home 模板/ROI 懒解析 (同上) */
+    private boolean resolveHome(Vision.Frame work) {
+        if (tHome != null && homeR != null && work.w == chkW && work.h == chkH) return true;
+        tHome = tpls.getScaled(mapTpl,
+                Roi.scaleX(cfgRef, work.w, work.h), Roi.scaleY(cfgRef, work.w, work.h));
+        homeR = Roi.resolve(cfgRef, mapRoiRaw, work.w, work.h);
+        chkW = work.w; chkH = work.h;
+        return tHome != null;
+    }
+
+    /**
+     * 大保底 — 检测"是否已退到大地图/大厅" (左上角 home_roi 里出现 home 房子钮)。
+     *
+     * <p>返回 true = 已停车 (run 置 false)。铁律:
+     * <ul>
+     *   <li>不命中**绝不**停车 — 单帧峰值、日志照记, 让现场能拿它调 th;</li>
+     *   <li>命中先**复检一帧** (隔 800ms 重新截屏再判) — 36x36 的小图标纹理少,
+     *       NCC 易在别的界面虚高, 两帧连续过阈才认。误杀一次 = 用户整轮挂机白跑,
+     *       保守方向是"漏报"不是"误报"。</li>
+     * </ul>
+     *
+     * <p>⚠️ 只截屏判定, **不点击** — 大地图上该去哪 (重进 EVENTS/PLAY) 属于
+     * NavChain (M2), 没导航链之前唯一安全的动作就是停下来, 留给用户或下次开跑。
+     */
+    private boolean mapGuard(Vision.Frame work, AtomicBoolean run) {
+        long now = System.currentTimeMillis();
+        if (now - lastMapChk < mapEveryMs) return false;
+        lastMapChk = now;
+        if (!resolveHome(work)) return false;
+        double[] h1 = Vision.findScored(work, tHome, homeR, mapTh);
+        double s1 = h1 == null ? -2 : h1[2];
+        mapChecks++;
+        boolean hit1 = s1 >= mapTh;
+        SgmLog.i("图", "大保底检查 → home 峰值 " + fmt1(s1) + " th=" + mapTh
+                + (hit1 ? " 命中! 复检一帧…" : ""));
+        if (!hit1) return false;
+        Trace.put("mapchk", "match", mapTpl, homeR, s1, true, "首帧命中 → 复检");
+        sleep_(800);                           // 复检间隔; 5min 才一次, 阻塞无碍
+        Bitmap b2 = sh.capture();
+        if (b2 == null) {
+            SgmLog.i("图", "复检截屏失败 — 本轮不停车 (下个周期再看)");
+            return false;
+        }
+        Vision.Frame w2 = Vision.toWork(b2);
+        double[] h2 = Vision.findScored(w2, tHome, homeR, mapTh);
+        double s2 = h2 == null ? -2 : h2[2];
+        b2.recycle();
+        if (s2 < mapTh) {
+            Trace.put("mapchk", "match", mapTpl, homeR, s2, false, "复检未过阈 — 判误报");
+            SgmLog.i("图", "复检峰值 " + fmt1(s2) + " 未过阈 — 判为误报, 继续挂机");
+            return false;
+        }
+        Graph.cursor("mapchk");
+        Trace.put("mapchk", "match", mapTpl, homeR, s2, true, "两帧确认 → 停车");
+        SgmLog.i("停", "大保底: 左上角连着两帧都是 home 图标 (峰值 " + fmt1(s1) + "/"
+                + fmt1(s2) + ") — 已退到大地图/大厅, 停车 (关掉改 config.map_check.on=false)");
+        run.set(false);
+        return true;
+    }
+
+    private static String fmt1(double v) { return v < -1 ? "-" : String.format("%.2f", v); }
 
     /* ---- ROI / 坐标的多分辨率映射 ---- */
 
@@ -861,6 +1063,7 @@ public final class SettleLoop {
                     .put("rounds", rounds).put("wins", wins).put("loses", loses)
                     .put("rematches", rematches).put("continues", continues)
                     .put("fast", fastOn).put("fast_taps", fxTaps)
+                    .put("fast_fight", fightTaps).put("map_checks", mapChecks)
                     .put("fast_xy", (int) fxX + "," + (int) fxY)
                     .put("fast_xy_why", WorkPoint.describe(fxState))
                     .put("matcher", Vision.modeText())

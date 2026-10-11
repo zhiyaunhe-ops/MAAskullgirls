@@ -99,6 +99,19 @@ public class ConfigActivity extends Activity {
         intEdit("fast.idle_stop_s", "无进展停车 (s, 0=关)", sec("fast", "idle_stop_s", 300), 0, 3600);
         intEdit("fast.popup_pause_ms", "剥弹窗后暂停连点 (ms)",
                 sec("fast", "popup_pause_ms", 2000), 0, 10000);
+        intEdit("fast.fight_wait_s", "剥弹窗后找 FIGHT (s, 0=关)",
+                sec("fast", "fight_wait_s", 15), 0, 120);
+        hint("剥弹窗后常正落在战斗准备界面 (右上角 FIGHT!) — 窗口内持续找 vs_fight: "
+                + "命中就点它进战斗并立刻恢复连点; 到点没见到也恢复连点, 不停车。"
+                + "判据 th/roi 缺省继承 escape 链里 vs_fight 那条。");
+
+        /* ---- 大保底 ---- */
+        section("大保底 (map_check) — 防止已退到大地图还在傻点");
+        boolEdit("map_check.on", "开启大保底检测", bool("map_check", "on", true));
+        intEdit("map_check.every_s", "检测间隔 (s)", sec("map_check", "every_s", 300), 30, 3600);
+        hint("判据: 左上角 (home_roi) 出现 home 房子图标 = 挂机被顶回大地图/大厅。"
+                + "命中先复检一帧 (防单帧误判), 连续两帧才停车 — 只停不点, 重进要等导航链。\n"
+                + "每次检测都记 home 峰值日志: 误停调高 map_check.th, 漏报调低。");
         hint("落点 fast.xy 缺省 = 结算按钮行中间那颗的中心, **再绕开 fast.avoid 挡块**。"
                 + "那条挡块是实测量出来的: 战斗界面的 1x/3x 速度泡正好压在中槽中心, 不绕开"
                 + "就会一路点到速度泡 (2026-10-11 实报)。换设备撞上别的 HUD 就往 avoid 里加一条。"

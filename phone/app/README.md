@@ -47,6 +47,7 @@ phone/app/
     ├── Vision.java           # 纯 Java NCC 模板匹配 + 色锚点 (移植 phone/settle match.py 口径)
     ├── NavChain.java         # 移植 pf_nav: waitHall→EVENTS→目标卡→王关锚点→FIGHT→AUTO/3x
     ├── SettleLoop.java       # 移植 settle_bot: 两阶段状态机 + stall 逃生 + 自愈导航
+    │                         #   fast: 盲点连点 + 观察线程(剥弹窗→FIGHT追踪窗口/计场/大保底)
     ├── OverlayBar.java       # 悬浮控制条 (WindowManager TYPE_APPLICATION_OVERLAY)
     │                         #   五键: 开始(=暂停后变「继续」)/导航/暂停/结束/◀
     ├── Config.java           # config.json 装载/热重载 (assets 默认 + /sdcard 覆盖)
@@ -115,6 +116,8 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
 - APK 第二条路（系统安装器）需要一次「安装未知应用」授权；另外 Android 10+ 禁止
   后台起 Activity ⇒ 这条路只在**用户主动点「拉取更新」**时才有效（自动检查从不装 APK）。
   真机上还没点过 —— 待确认项见 `docs/phone-app.md` 末的「待真机确认」。
+- map_check 的 `th=0.85` 没有真机峰值数据（36×36 小图标 NCC 易虚高）—— 首轮挂机看
+  `[图]` 日志：人已在大地图而峰值不够 ⇒ 调低；战斗页就冒 0.9+ ⇒ 调高。
 
 ## 回归
 
@@ -125,5 +128,6 @@ python3 tools/GraphLayoutProbe.py   # 判定图几何 (纯 java, 无需 Android 
 python3 tools/OverlayProbe.py       # 悬浮条生命周期 + 暂停/继续键名
 python3 tools/UpdateProbe.py        # 更新链路 + APK 两条安装路 (含源码级接线断言)
 python3 tools/PathsProbe.py         # 外部根与授权状态 (6 场景各起一个 JVM)
+python3 tools/MapFightProbe.py      # fast FIGHT 追踪窗口 + map_check 大保底 (源码级)
 # tools/StoreProbe.java 手动跑 (纯 JVM + 真 org.json, 见 docs/phone-app.md)
 ```

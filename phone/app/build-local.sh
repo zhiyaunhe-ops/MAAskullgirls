@@ -52,6 +52,9 @@ echo "== aapt2 =="
 
 echo "== javac =="
 { find src "$OUT/gen" libs/aidl-src -name '*.java'; } > "$OUT/sources.txt"
+# ⚠️ 必须先清掉上一轮的 class: javac 失败被 `|| true` 吞掉后, 哨兵 test -f 会被
+#    旧 class 骗过 ⇒ 拿旧字节码出包还显示成功 (2026-10-11 实栽: 包体积都变了)。
+rm -rf "$OUT/classes"; mkdir -p "$OUT/classes"
 javac -encoding UTF-8 -classpath "$CP" -d "$OUT/classes" @"$OUT/sources.txt" 2>&1 \
     | iconv -f GBK -t UTF-8 || true
 test -f "$OUT/classes/com/zhiyaunhe/sgmbot/MainActivity.class" || { echo "[!!] javac 失败"; exit 1; }
