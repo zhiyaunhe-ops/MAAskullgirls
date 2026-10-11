@@ -55,4 +55,6 @@ docs/screenshots/
 # phone/app/ = 原生挂机 App (2026-10-05 起入库, 构建链复用 vendor)
 /phone/app/build/
 /phone/app/build-local/
+# 构建目录挪走后留下的副本 (沙箱批量删除受限时的临时手段, 别误提交)
+/phone/app/build-local.old.*/
 !/phone/app/

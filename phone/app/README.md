@@ -21,7 +21,8 @@ apksigner + android-34 platform，**无 Gradle / 无 Android Studio**，`build.s
    可加 OCR/新锚点类型。
 3. **可更新** — APK 只装引擎; `bundle/` (templates + config + characters.json)
    走版本化更新: App 内检查 GitHub raw / TailShare 拉新包 → 校验 → 热加载。
-   模板重裁不用发版。
+   模板重裁不用发版。整包也能自更新 (下载 → `pm install -r`) —— 前提与判定口径见
+   [../docs/phone-app.md](../docs/phone-app.md)「APK 自更新」。
 4. **adb 可调试** — 三通道控制面:
    - 文件: 外部根 `logs/app.log` + `state.json` (当前状态机/计数) — 路径见上;
    - 广播: `adb shell am broadcast -a com.zhiyaunhe.sgmbot.CMD -e action start_nav|stop|reload`;

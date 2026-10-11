@@ -400,7 +400,7 @@ Java 版**没有导航链**（`BotService` 里 `MODE_NAV` 退化为直接跑结�
 | 资产 | 内容 | 落点 |
 |---|---|---|
 | `bundle.zip` | `templates/*.png` + `config.json` | 解到 `Paths.root()`，热更（下轮生效，不必停引擎） |
-| `sgmbot.apk` | 整包 | `pm install -r`（需 Shizuku 就绪 + **所有文件访问**） |
+| `sgmbot.apk` | 整包 | `pm install -r`（需 Shizuku 就绪 + shell **实测**读得到下载路径） |
 
 版本判据用资产的 `updated_at`（CI 是固定 tag `latest` 反复 `--clobber` 覆盖同名
 资产，tag 恒不变，只有 `updated_at` 会动），本地水位记在 config 的
@@ -413,6 +413,30 @@ update_bundle`／HTTP `GET /update`、`POST /update?apk=0|1`。开跑时还会�
 - bundle 里的 `config.json` **只补新键**，不覆盖本地手改；想强制覆盖就放
   `config_patch.json`。
 - 未授所有文件访问时 shell 读不到 App 私有目录 ⇒ APK 跳过（bundle 照常热更）。
+
+### APK 自更新：判据是「shell 实测」，不是 App 侧旗标（2026-10-11）
+
+装 APK 前先让 shell 自己去读一下文件，命令的真假**不依赖任何 App 侧推断**：
+
+```
+shell$ test -r <下载路径> && echo SGMBOT_READABLE || echo SGMBOT_DENIED
+```
+
+读得到 → `pm install -r`；读不到 → 跳过并报**真实路径**。
+`Paths.legacy()`（"App 认为自己有没有授权"）只用来在失败时补一句有信息量的差别文字。
+
+⚠️ 为什么不能拿旗标当闸：旗标曾经因 `Paths.init` 提前返回而**恒为 false**
+（冷启动时 `root` 的静态初值恰好等于目标值 ⇒ 直接 return ⇒ 赋值那行永远轮不到 ——
+详见 `tools/PathsProbe.py` 头注释）。后果是**明明授过权的机器被一口咬定"未授"，
+APK 永远装不上**，文案还主动把人往"去授权"的错方向带。用户报障原话：
+「我早就授权了所有文件访问，为啥他还自己安装不了啊？说 shell 读不到」。
+现在即使旗标再错，shell 说读得到就照装 —— 这类「状态推断错 ⇒ 功能静默关闭」不会再发生。
+
+⚠️ 另一个**独立**的装不上原因是版本降级：本地构建包（`build-local.sh` 故意把
+`versionCode` 抬到 9999，好让本地包能盖住 CI 包）会永远压住 CI 包，`pm` 回
+`INSTALL_FAILED_VERSION_DOWNGRADE`。此时会自动带 `-d` 再试一次（平台只对 debuggable
+包放行降级，不保证成），并把 `pm` 的**首行原因**写进 `apk.msg` 显示到界面上 ——
+以前这条路径不写 `msg`，`brief()` 取默认值"跳过"，界面上只剩两个字。
 
 ### 界面反馈（2026-10-11 修「点更新版本号不变 / 没进度 / 没提示」）
 
@@ -433,9 +457,10 @@ update_bundle`／HTTP `GET /update`、`POST /update?apk=0|1`。开跑时还会�
 键不存在时返回 null，而调用方一律 `sec(cfg).optString(...)` ⇒ 一个 NPE 就让整条链在
 background 线程里无声失败（UI 只看到"没反应"）。`meta()` 一直这么防御，`sec()` 曾漏掉。
 
-回归：`python3 phone/app/tools/UpdateProbe.py`（26 项，桩掉 Android 与文件系统，跑**真的**
-`Update.java` + `BotService.java`；含真下载 + 水位推进 + 端到端落临时沙盒）。无网络时
-B/C 组自动标 SKIP。
+回归：`python3 phone/app/tools/UpdateProbe.py`（38 项，桩掉 Android 与文件系统，跑**真的**
+`Update.java` + `BotService.java`；含真下载 + 水位推进 + 端到端落临时沙盒 +
+**H 组「旗标错也不许挡住安装」**）。无网络时 B/C/H 组自动标 SKIP。
+`Paths` 那条根因另见 `python3 phone/app/tools/PathsProbe.py`（6/6 场景）。
 
 ## 战绩热力图
 
@@ -508,13 +533,25 @@ python3 phone/app/tools/OverlayProbe.py     # 29 项断言
 `Update.java` 与 `BotService.java`：
 
 ```bash
-python3 phone/app/tools/UpdateProbe.py      # 26 项断言 (无网络时 B/C 组标 SKIP)
+python3 phone/app/tools/UpdateProbe.py      # 38 项断言 (无网络时 B/C/H 组标 SKIP)
 ```
 
-断言分六组：配置层兜底（`cfg=null` 也要读得出 repo）／真链路检查（文案不含恒定 `tag=`）／
+断言分八组：配置层兜底（`cfg=null` 也要读得出 repo）／真链路检查（文案不含恒定 `tag=`）／
 真链路拉取（真下载 → 解包 → **水位推进** → 再查已最新 → APK 被跳过 ⇒ `LV_WARN` 黄不是绿）／
 错误路径级别（`repo` 未配 ⇒ `LV_ERR`，且断言该文案里**没有**"失败"两字 ⇒ 证明旧的
-字符串判据必然把错误显示成绿 ✓）／时间戳格式化／`busy` 不泄漏。
+字符串判据必然把错误显示成绿 ✓）／时间戳格式化／`busy` 不泄漏／配置缺 `update` 段不 NPE／
+**能不能装 = shell 实测说了算**（H 组，见下）。
+
+`tools/PathsProbe.py` 单独管**外部根与授权状态**（跑真的 `Paths.java`，6 个场景各起一个 JVM
+—— 它的状态全是 static，一个进程里没法重来）：
+
+```bash
+python3 phone/app/tools/PathsProbe.py       # 6/6 场景
+```
+
+覆盖：冷启动已授权 ／ 跑着才授权 ／ 一直没授权 ／ 授权先给后撤 ／ 反复 `init` 幂等 ／
+`updateDir()` 跟着 `root` 走。**这条是 2026-10-11「早就授权了却装不了」的根因所在**
+（`Paths.init` 提前返回 ⇒ `legacy()` 恒 false，见该文件头注释）。
 
 > 2026-10-11 首次跑就抓到一个真 NPE（`sec()` 返回 null）。**探针的价值就在这**: 
 > 这三条缺陷在真机上的表现全是"点了没反应", 不看日志根本分不出是哪一条。

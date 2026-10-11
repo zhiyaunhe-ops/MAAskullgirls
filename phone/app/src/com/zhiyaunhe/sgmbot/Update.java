@@ -36,9 +36,12 @@ import java.util.zip.ZipInputStream;
  *   {"repo":"owner/name", "bundle_asset":"bundle.zip", "apk_asset":"sgmbot.apk",
  *    "auto_check_h":12, "allow_apk":true}
  *
- * ⚠️ APK 自更新要求**已授所有文件访问**: pm install 由 Shizuku(shell uid) 执行,
- *    shell 读不到 App 私有目录 (/sdcard/Android/data/<pkg>/files) ⇒ 未授时跳过 APK,
- *    只热更 bundle (bundle 是 App 自己读, 私有目录照样能用)。
+ * ⚠️ APK 自更新要求下载目录**对 shell 可读**: pm install 由 Shizuku(shell uid) 执行,
+ *    shell 读不到 App 私有目录 (/sdcard/Android/data/<pkg>/files) ⇒ 只热更 bundle
+ *    (bundle 是 App 自己读, 私有目录照样能用)。
+ *    判据是**让 shell 实测 `test -r`**, 不是看 App 侧"授没授权"的旗标 —— 旗标曾因
+ *    Paths.init 的提前返回而恒为 false, 导致早有授权的机器被误报"shell 读不到"
+ *    (2026-10-11 报障, 见 installApk 注释)。
  * 入口: 主页按钮 / 广播 CMD?action=update / HTTP GET /update 与 POST /update?apk=1。
  */
 public final class Update {
@@ -227,7 +230,7 @@ public final class Update {
                     .put("ver_bundle", vB).put("ver_apk", vA)
                     .put("need_bundle", b != null && vB.length() > 0 && !vB.equals(curB))
                     .put("need_apk", a != null && vA.length() > 0 && !vA.equals(curA))
-                    .put("apk_ok", Paths.legacy()), false);     // 未授所有文件访问 ⇒ shell 读不到, 装不了
+                    .put("apk_ok", Paths.legacy()), false);     // 仅"授权状态"供界面读数; 真正的装不装由 installApk 里 shell 实测决定
         } catch (Exception e) {
             return remember(err("组装结果失败: " + e), false);
         }
@@ -310,28 +313,72 @@ public final class Update {
     /** pm install -r; 2>&1 是因为 pm 的结果在新版上走 stderr, 只抓 stdout 会看到空输出 */
     private static JSONObject installApk(Config cfg, File apk, String ver) {
         JSONObject r = new JSONObject();
-        try { r.put("path", apk.getAbsolutePath()); } catch (Exception ignored) { }
-        if (!Paths.legacy()) {
-            String msg = "未授「所有文件访问」— shell 读不到 " + apk.getParent()
-                    + ", 跳过 APK (bundle 已可热更)";
-            SgmLog.i(T, msg);
-            try { r.put("ok", false).put("msg", msg); } catch (Exception ignored) { }
-            return r;
-        }
+        String path = apk.getAbsolutePath();
+        try { r.put("path", path); } catch (Exception ignored) { }
         if (BotService.sh() == null || !ShizukuCtl.ready()) {
             String msg = "Shizuku 未就绪 — 装不了 APK (bundle 不受影响)";
             SgmLog.i(T, msg);
             try { r.put("ok", false).put("msg", msg); } catch (Exception ignored) { }
             return r;
         }
-        String out = ShizukuCtl.exec("pm install -r \"" + apk.getAbsolutePath() + "\" 2>&1");
+        /* ⚠️⚠️ 判据是**让 shell 自己去读一下这个文件**, 不是看 App 侧的 legacy 旗标。
+         *
+         *   旗标回答的是"App 认为自己有没有授权", 与"shell 到底读不读得到这个路径"是两件事。
+         *   2026-10-11 的报障就是旗标自己错了 (Paths.init 提前返回, 见 Paths 注释):
+         *   用户早就授了权, 却被我们一口咬定"未授", APK 直接跳过 —— **状态推断错 ⇒
+         *   功能静默关闭**, 而且文案还主动把人往错误方向带。
+         *
+         *   现在由 shell 用 `test -r` 回一句话, 命令的真假不依赖任何 App 侧推断;
+         *   legacy 只用来在失败时补一句"显示已授但实测读不了"这种有信息量的差别。
+         *   ⚠️ 用独有标记串 (SGMBOT_READABLE) 而不是解析 `test` 的退出码 —— exec() 只回
+         *      stdout, 拿不到 exit status, 靠输出里的固定串才稳。 */
+        String probe = ShizukuCtl.exec("test -r \"" + path + "\" && echo SGMBOT_READABLE"
+                + " || echo SGMBOT_DENIED");
+        boolean canRead = probe != null && probe.indexOf("SGMBOT_READABLE") >= 0;
+        if (!canRead) {
+            String msg = "shell 读不到 " + path + " (所有文件访问"
+                    + (Paths.legacy() ? "显示已授, 但实测读不了 —— 多半是路径/授权已失效"
+                                      : "未授")
+                    + ") — 跳过 APK, bundle 已可热更";
+            SgmLog.i(T, msg + " | probe=" + (probe == null ? "" : probe.trim()));
+            try { r.put("ok", false).put("msg", msg); } catch (Exception ignored) { }
+            return r;
+        }
+        String out = ShizukuCtl.exec("pm install -r \"" + path + "\" 2>&1");
         boolean ok = out != null && out.indexOf("Success") >= 0;
+        /* ⚠️ 降级被拒是「本地构建包压着」的典型症状: build-local.sh 故意把本地包的
+         *    versionCode 抬到 9999 (好让本地包能盖住 CI 包), 反过来 CI 包就永远盖不回
+         *    本地包 —— pm 回 INSTALL_FAILED_VERSION_DOWNGRADE, 而**功能看起来是"装不上"**。
+         *    先带 -d 再试一次 (平台只对 debuggable 包放行降级, 所以不保证成), 不成也要把
+         *    原因 + 出路写进 msg 让 UI 显示得出来, 别让人对着"装不上"干瞪眼。 */
+        boolean downgrade = out != null && out.indexOf("VERSION_DOWNGRADE") >= 0;
+        if (!ok && downgrade) {
+            SgmLog.i(T, "版本降级被拒 — 重试 pm install -r -d");
+            out = ShizukuCtl.exec("pm install -r -d \"" + path + "\" 2>&1");
+            ok = out != null && out.indexOf("Success") >= 0;
+        }
         SgmLog.i(T, "pm install " + (ok ? "成功" : "失败") + " — " + (out == null ? "" : out.trim()));
         if (ok) putMeta(cfg, "apk_version", ver);
         try {
             r.put("ok", ok).put("out", out == null ? "" : out.trim());
+            /* 以前这条路径**不写 msg** ⇒ brief() 取默认值"跳过", 明明 pm 报了一堆原因,
+             * 界面上只有"apk 跳过"三个字 (用户报障"没有什么提示"的一部分)。 */
+            if (!ok) r.put("msg", downgrade
+                    ? "机上版本比远端的还新 (本地构建包 versionCode=9999 会一直压住 CI 包)"
+                      + " — 卸载重装一次即可"
+                    : "pm install 失败 — " + firstLine(out));
         } catch (Exception ignored) { }
         return r;
+    }
+
+    /** pm 输出取第一行非空 —— 塞进一句话文案里用的 (完整输出在 out / 日志里) */
+    private static String firstLine(String s) {
+        if (s == null) return "(无输出)";
+        for (String ln : s.split("\\r?\\n")) {
+            String t = ln.trim();
+            if (t.length() > 0) return t.length() > 120 ? t.substring(0, 120) + "…" : t;
+        }
+        return "(无输出)";
     }
 
     /* ---------------- 自动检查 (开跑时顺手, 不阻塞) ---------------- */

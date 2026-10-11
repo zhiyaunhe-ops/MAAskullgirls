@@ -21,13 +21,21 @@
 断言清单:
   A. 配置层兜底: cfg=null 时 check 报 repo 未配 (锁定根因) / cfgOr 给出配置层 /
      能读出 repo / 幂等 / 服务起来后 cfgOr 返回服务那份
-  B. 真链路检查 (需网络): ok / need_bundle / 文案不含恒定 tag= 且含远端时间 / LV_OK
+  B. 真链路检查 (需网络): ok / need_bundle / 文案不含恒定 tag= 且含远端时间 /
+     LV_OK
   C. 真链路拉取 (需网络): bundle 落盘 / 水位推进 / 再查已最新 / APK 跳过 ⇒ LV_WARN
   D. 错误路径级别: repo 未配 ⇒ LV_ERR, 且文案里没有"失败"两字
      (这条正是旧 UI 把错误显示成绿 ✓ 的直接证据)
   E. fmtStamp: UTC→本地格式 / 空串与 null 不炸
+  F. busy 计数不泄漏 / stage 有内容
+  G. 配置缺 update 段 ⇒ 报"repo 未配"而不是 NPE
+  H. **能不能装 = shell 实测说了算** (2026-10-11「早就授权了却装不了」):
+     H1 旗标 false 但 shell 可读 ⇒ 照样 pm install 且水位推进、LV_OK;
+     H2 shell 真读不到 ⇒ 跳过、**不白发** pm install、文案带真实路径、LV_WARN;
+     H3 pm 回"版本降级" ⇒ 带 -d 重试, 仍失败也把出路(卸载重装)写进文案
+     (Paths 那条根因另见 tools/PathsProbe.py —— 这里 Paths 是桩)
 
-用法: python3 tools/UpdateProbe.py           (无网络时 B/C 组自动标 SKIP, 不算失败)
+用法: python3 tools/UpdateProbe.py           (无网络时 B/C/H 组自动标 SKIP, 不算失败)
 """
 import io, os, shutil, subprocess, sys
 
@@ -106,18 +114,30 @@ public class Config {
 }
 '''
 
-# 覆盖 ShizukuCtl: 补 exec(), 并让它可控成功/失败
+# 覆盖 ShizukuCtl: 补 exec(), 并可编程 —— 因为"能不能装"现在由 **shell 实测**说了算,
+# 桩必须能分别模拟「shell 读得到」与「shell 读不到」两种情况 (见 H 组)。
 STUBS['com/zhiyaunhe/sgmbot/ShizukuCtl.java'] = '''\
 package com.zhiyaunhe.sgmbot;
 import android.content.Context; import android.graphics.Bitmap;
 public class ShizukuCtl {
     public static int execCount = 0;
-    public static String execOut = "Failure [INSTALL_FAILED_TEST_ONLY]";
+    /** 最后一条 shell 命令 —— 断言"到底有没有真的去 pm install" */
+    public static String lastCmd = "";
+    /** pm install 的输出 (任意串; "Success" = 装上) */
+    public static String pmOut = "Failure [INSTALL_FAILED_TEST_ONLY]";
+    /** true ⇒ shell 说文件读得到 (test -r 回 SGMBOT_READABLE) */
+    public static boolean shellCanRead = false;
     public static boolean isReady = true;
     public static boolean ready() { return isReady; }
     public static boolean serverUp() { return true; }
     public static void tryBind(Context c) { }
-    public static String exec(String cmd) { execCount++; return execOut; }
+    public static String exec(String cmd) {
+        execCount++; lastCmd = cmd;
+        if (cmd.indexOf("SGMBOT_READABLE") >= 0)
+            return shellCanRead ? "SGMBOT_READABLE" : "SGMBOT_DENIED";
+        if (cmd.indexOf("pm install") >= 0) return pmOut;
+        return pmOut;
+    }
     public Bitmap capture() { return null; }
 }
 '''
@@ -181,6 +201,32 @@ public class Probe {
         } catch (Exception e) {
             return new JSONObject();
         }
+    }
+
+    static void writeJson(String path, JSONObject o) {
+        try {
+            File f = new File(path);
+            File p = f.getParentFile();
+            if (p != null && !p.exists()) p.mkdirs();
+            java.io.FileOutputStream os = new java.io.FileOutputStream(f);
+            os.write(o.toString(2).getBytes("UTF-8"));
+            os.close();
+        } catch (Exception e) { }
+    }
+
+    /** 本地 config 的水位 (meta.<key>) */
+    static String watermark(String key) {
+        JSONObject m = readJson(Paths.config()).optJSONObject("meta");
+        return m == null ? "" : m.optString(key, "");
+    }
+
+    /** 把本地 APK 水位清掉 ⇒ 下一轮 check 必然判 need_apk */
+    static void resetApkWatermark() {
+        JSONObject c = readJson(Paths.config());
+        JSONObject m = c.optJSONObject("meta");
+        if (m == null) { m = new JSONObject(); c.put("meta", m); }
+        m.put("apk_version", "");
+        writeJson(Paths.config(), c);
     }
 
     /** 手驱一次"服务起来" —— 只为让 BotService.cfg 从 null 变成有值 */
@@ -252,7 +298,7 @@ public class Probe {
                         bv.equals(st.optString("ver_bundle")), bv + " vs " + st.optString("ver_bundle"));
 
                 JSONObject apk = out.optJSONObject("apk");
-                ck("APK 被跳过 (probe.legacy=false ⇒ 没授所有文件访问)",
+                ck("APK 被跳过 (桩的 shell 回 SGMBOT_DENIED ⇒ 实测读不到)",
                         apk != null && !apk.optBoolean("ok"), apk);
                 ck("跳过原因说人话 (含'所有文件访问')",
                         apk != null && apk.optString("msg").contains("所有文件访问"),
@@ -275,6 +321,63 @@ public class Probe {
         ck("错误文案里**没有**'失败'两字 ⇒ 旧判据(!contains(失败))必然失灵",
                 err.indexOf("失败") < 0, err);
         ck("错误文案给出具体原因 (不是黑盒)", err.indexOf("update.repo") >= 0, err);
+
+        // ============ H. 能不能装 = shell 实测说了算 ============
+        // 2026-10-11 报障「我早就授权了所有文件访问, 为啥他还自己安装不了, 说 shell 读不到」:
+        // 旧实现拿 `Paths.legacy()` (App 侧旗标) 当闸 —— 而那个旗标当时恒为 false
+        // (Paths.init 提前返回, 见 tools/PathsProbe.py), 于是**真正可读的机器也被跳过**。
+        // 现在闸换成 shell 的 `test -r` 实测。H1 就是"旗标说不行、shell 说行" ⇒ 必须装。
+        System.out.println("== H 能不能装由 shell 实测说了算 (不看 App 侧旗标) ==");
+        if (!online) {
+            sk("H 组", "无网络");
+        } else {
+            Config cfg2 = BotService.cfgOr(ctx);
+            // H1: 旗标 = false (probe.legacy 没开), 但 shell 实测读得到
+            resetApkWatermark();
+            ShizukuCtl.shellCanRead = true;
+            ShizukuCtl.pmOut = "Success";
+            JSONObject o1 = Update.apply(ctx, cfg2, true);
+            JSONObject a1 = o1.optJSONObject("apk");
+            ck("旗标 false 但 shell 可读 ⇒ **仍然真的去 pm install** (修复的核心)",
+                    ShizukuCtl.lastCmd.indexOf("pm install") >= 0, ShizukuCtl.lastCmd);
+            ck("H1 apk.ok=true (装上了)", a1 != null && a1.optBoolean("ok"), a1);
+            ck("H1 APK 水位推进 (装了才记)",
+                    watermark("apk_version").length() > 0, watermark("apk_version"));
+            ck("H1 全成 ⇒ LV_OK (绿✓, 不是黄!)",
+                    Update.lastLevel() == Update.LV_OK, Update.lastLevel());
+
+            // H2: shell 实测读不到 ⇒ 跳过, 且**不该**白发一条注定失败的 pm install
+            resetApkWatermark();
+            ShizukuCtl.shellCanRead = false;
+            ShizukuCtl.lastCmd = "";
+            JSONObject o2 = Update.apply(ctx, cfg2, true);
+            JSONObject a2 = o2.optJSONObject("apk");
+            ck("H2 shell 读不到 ⇒ 不去 pm install (别白跑一趟)",
+                    ShizukuCtl.lastCmd.indexOf("pm install") < 0, ShizukuCtl.lastCmd);
+            ck("H2 先探后装 (最后一条命令是 test -r)",
+                    ShizukuCtl.lastCmd.indexOf("SGMBOT_READABLE") >= 0, ShizukuCtl.lastCmd);
+            ck("H2 文案含真实路径 + '读不到'",
+                    a2 != null && a2.optString("msg").contains("读不到")
+                            && a2.optString("msg").contains("sgmbot.apk"),
+                    a2 == null ? null : a2.optString("msg"));
+            ck("H2 部分跳过 ⇒ LV_WARN", Update.lastLevel() == Update.LV_WARN, Update.lastLevel());
+
+            // H3: shell 读得到, 但 pm 说"版本降级" —— 本地构建包 (versionCode 9999)
+            //     压着 CI 包。必须带 -d 重试一次, 且**把出路写进文案**。
+            resetApkWatermark();
+            ShizukuCtl.shellCanRead = true;
+            ShizukuCtl.pmOut = "Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]";
+            ShizukuCtl.lastCmd = "";
+            JSONObject o3 = Update.apply(ctx, cfg2, true);
+            JSONObject a3 = o3.optJSONObject("apk");
+            ck("H3 降级被拒 ⇒ 带 -d 重试 (不只试一次)",
+                    ShizukuCtl.lastCmd.indexOf("pm install -r -d") >= 0, ShizukuCtl.lastCmd);
+            ck("H3 仍失败 ⇒ apk.ok=false", a3 != null && !a3.optBoolean("ok"), a3);
+            ck("H3 文案给出**出路** (卸载重装), 不是把 Failure 原样丢回来",
+                    a3 != null && a3.optString("msg").contains("卸载重装"), 
+                    a3 == null ? null : a3.optString("msg"));
+            ck("H3 部分跳过 ⇒ LV_WARN", Update.lastLevel() == Update.LV_WARN, Update.lastLevel());
+        }
 
         // ============ E. fmtStamp ============
         System.out.println("== E 时间戳格式化 ==");
