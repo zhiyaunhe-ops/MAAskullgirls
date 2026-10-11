@@ -39,7 +39,14 @@
   "chan": "blue",
   "step": 2,
   "refine": 2,
-  "work_h": 576
+  "work_h": 576,
+  "pyramid": {
+   "level": 2,
+   "cost": 200000000,
+   "relax": 0.3,
+   "floor": 0.5,
+   "top": 16
+  }
  },
  "screen": {
   "roi_mode": "abs",
@@ -70,6 +77,11 @@
    }
   ]
  },
+ "popup": {
+  "guard": true,
+  "after_sec": 5,
+  "every_sec": 5
+ },
  "run": {
   "max_minutes": 0,
   "pause_from": "",
@@ -79,119 +91,418 @@
   "trace_size": 200
  },
  "graph": {
-  "layout": "grid",
-  "nodes": [
-   {
-    "id": "battle",
-    "label": "战斗监测",
-    "kind": "scan",
-    "tpl": [
-     "victory",
-     "defeat"
-    ],
-    "roi": "title_roi",
-    "th": 0.72
-   },
-   {
-    "id": "bigword",
-    "label": "大字判定",
-    "kind": "match",
-    "on_hit": "记胜负"
-   },
-   {
-    "id": "first_tap",
-    "label": "先手点右槽",
-    "kind": "tap"
-   },
-   {
-    "id": "result",
-    "label": "结算页",
-    "kind": "scan",
-    "tpl": [
-     "btn_rematch",
-     "btn_continue"
-    ],
-    "roi": "btn_rois",
-    "th": 0.72
-   },
-   {
-    "id": "rematch",
-    "label": "REMATCH 计场",
-    "kind": "tap"
-   },
-   {
-    "id": "continue",
-    "label": "CONTINUE 略过",
-    "kind": "tap"
-   },
-   {
-    "id": "escape",
-    "label": "弹窗逃生链",
-    "kind": "chain"
-   },
-   {
-    "id": "stall",
-    "label": "超时自愈",
-    "kind": "heal"
-   }
-  ],
-  "edges": [
-   {
-    "from": "battle",
-    "to": "bigword",
-    "on": "命中大字"
-   },
-   {
-    "from": "bigword",
-    "to": "first_tap",
-    "on": "首次 seen"
-   },
-   {
-    "from": "first_tap",
-    "to": "result",
-    "on": ""
-   },
-   {
-    "from": "result",
-    "to": "rematch",
-    "on": "命中 REMATCH"
-   },
-   {
-    "from": "rematch",
-    "to": "battle",
-    "on": "计场后"
-   },
-   {
-    "from": "result",
-    "to": "continue",
-    "on": "命中 CONTINUE"
-   },
-   {
-    "from": "continue",
-    "to": "result",
-    "on": "还有下一页"
-   },
-   {
-    "from": "result",
-    "to": "battle",
-    "on": "连续无按钮"
-   },
-   {
-    "from": "battle",
-    "to": "stall",
-    "on": "超时"
-   },
-   {
-    "from": "result",
-    "to": "escape",
-    "on": "stall"
-   },
-   {
-    "from": "stall",
-    "to": "battle",
-    "on": "拉回后"
-   }
-  ]
+   "layout": "lane",
+   "lanes": [
+     {
+       "id": 0,
+       "name": "开跑门槛"
+     },
+     {
+       "id": 1,
+       "name": "主循环守卫"
+     },
+     {
+       "id": 2,
+       "name": "取帧 / ROI 映射"
+     },
+     {
+       "id": 3,
+       "name": "战斗阶段 (phase 0)"
+     },
+     {
+       "id": 4,
+       "name": "结算阶段 (phase 1)"
+     },
+     {
+       "id": 5,
+       "name": "stall 逃生 / 自愈"
+     },
+     {
+       "id": 6,
+       "name": "计场与落盘"
+     }
+   ],
+   "nodes": [
+     {
+       "id": "tpl",
+       "label": "模板就绪",
+       "kind": "guard",
+       "lane": 0,
+       "cond": "victory/defeat 都取到才开跑",
+       "src": "assets/templates"
+     },
+     {
+       "id": "roisc",
+       "label": "模板按屏幕缩放",
+       "kind": "roi",
+       "lane": 0,
+       "cond": "按当前屏幕取 x/y 缩放倍数",
+       "cfg": "screen.roi_mode"
+     },
+     {
+       "id": "cap0",
+       "label": "每日上限",
+       "kind": "guard",
+       "lane": 0,
+       "cond": "今日场数已达上限则不开跑",
+       "cfg": "daily_cap",
+       "note": "0 = 不限"
+     },
+     {
+       "id": "run",
+       "label": "循环运行中",
+       "kind": "loop",
+       "lane": 1,
+       "cond": "run 标志为真"
+     },
+     {
+       "id": "pause",
+       "label": "夜间暂停",
+       "kind": "loop",
+       "lane": 1,
+       "cond": "当前时间在暂停时段内则不截屏不点击",
+       "cfg": "run.pause_from~pause_to",
+       "note": "跨夜也支持"
+     },
+     {
+       "id": "maxmin",
+       "label": "单次最长",
+       "kind": "loop",
+       "lane": 1,
+       "cond": "已跑超过单次上限则停",
+       "cfg": "run.max_minutes",
+       "note": "0 = 不限"
+     },
+     {
+       "id": "shot",
+       "label": "截屏",
+       "kind": "scan",
+       "lane": 2,
+       "cond": "Shizuku shell 截屏; 失败下一轮重试"
+     },
+     {
+       "id": "roimap",
+       "label": "ROI 多分辨率映射",
+       "kind": "roi",
+       "lane": 2,
+       "cond": "work 宽高变了才重算 ROI",
+       "cfg": "screen.profiles",
+       "note": "abs/center/rel/fit 四选一"
+     },
+     {
+       "id": "popup",
+       "label": "弹窗守卫",
+       "kind": "chain",
+       "lane": 2,
+       "cond": "距上次动作 > after_sec 就周期性剥弹窗 (任何相位都跑)",
+       "cfg": "popup.after_sec",
+       "note": "间隔 every_sec; guard=false 可关。JS 版这条逻辑在 pf_nav.waitHall 里每帧跑, 这里挂在结算循环上 (没有导航链)"
+     },
+     {
+       "id": "phase",
+       "label": "相位选择",
+       "kind": "branch",
+       "lane": 2,
+       "cond": "phase==0 走战斗监测, 否则走结算页"
+     },
+     {
+       "id": "battle",
+       "label": "战斗监测",
+       "kind": "scan",
+       "lane": 3,
+       "cond": "在 title_roi 内查 VICTORY/DEFEAT 大字",
+       "cfg": "thresholds.min_sim",
+       "roi": "title_roi",
+       "tpl": [
+         "victory",
+         "defeat"
+       ]
+     },
+     {
+       "id": "bigword",
+       "label": "大字首次出现",
+       "kind": "match",
+       "lane": 3,
+       "cond": "本局第一次见到大字 → 记胜负、转结算",
+       "note": "大字不计场, 计场在点按钮那一刻"
+     },
+     {
+       "id": "first_tap",
+       "label": "先手点右槽",
+       "kind": "tap",
+       "lane": 3,
+       "cond": "按固定坐标先手一按 (免匹配)",
+       "cfg": "first_tap",
+       "note": "胜→CONTINUE / 负→REMATCH"
+     },
+     {
+       "id": "lose1",
+       "label": "败局计场",
+       "kind": "count",
+       "lane": 3,
+       "cond": "负局的先手即 REMATCH — 当场计一场"
+     },
+     {
+       "id": "result",
+       "label": "结算页",
+       "kind": "scan",
+       "lane": 4,
+       "cond": "在 btn_rois 三槽内查 REMATCH/CONTINUE",
+       "cfg": "thresholds.min_sim",
+       "roi": "btn_rois",
+       "tpl": [
+         "btn_rematch",
+         "btn_continue"
+       ]
+     },
+     {
+       "id": "rematch",
+       "label": "REMATCH 命中",
+       "kind": "tap",
+       "lane": 4,
+       "cond": "REMATCH 峰值过阈 → 点它并计一场",
+       "note": "一局恰计一次"
+     },
+     {
+       "id": "continue",
+       "label": "CONTINUE 命中",
+       "kind": "tap",
+       "lane": 4,
+       "cond": "CONTINUE 峰值过阈 → 点它略过这一页",
+       "note": "留在结算阶段, 可能还有下一页"
+     },
+     {
+       "id": "fallbk",
+       "label": "连续未命中",
+       "kind": "heal",
+       "lane": 4,
+       "cond": "连续无命中到上限 → 转回战斗监测",
+       "cfg": "result_fallback"
+     },
+     {
+       "id": "stall",
+       "label": "无动作超时",
+       "kind": "heal",
+       "lane": 5,
+       "cond": "距上次有效动作超过阈值 → 走逃生链",
+       "cfg": "timing.stall_sec"
+     },
+     {
+       "id": "escape",
+       "label": "弹窗逃生链",
+       "kind": "chain",
+       "lane": 5,
+       "cond": "按配置顺序逐个试; 命中即点",
+       "expand": "escape",
+       "note": "每项的 th 各不相同, 见链上标注"
+     },
+     {
+       "id": "escfb",
+       "label": "三槽兜底",
+       "kind": "heal",
+       "lane": 5,
+       "cond": "链上全不中 → 用结算按钮位置兜底点一下",
+       "cfg": "btn_rois"
+     },
+     {
+       "id": "bstl",
+       "label": "战斗超时",
+       "kind": "heal",
+       "lane": 5,
+       "cond": "入战斗起超过阈值仍无结果 → 计一次超时跳",
+       "cfg": "timing.battle_stall_sec"
+     },
+     {
+       "id": "heal",
+       "label": "自愈",
+       "kind": "heal",
+       "lane": 5,
+       "cond": "连续 3 次同类超时 → selfHeal()",
+       "note": "PLAY 拉回待 NavChain (M2), 缺它不盲点"
+     },
+     {
+       "id": "count",
+       "label": "计一场",
+       "kind": "count",
+       "lane": 6,
+       "cond": "胜负按上一局记下的 VICTORY/DEFEAT"
+     },
+     {
+       "id": "save",
+       "label": "落盘",
+       "kind": "count",
+       "lane": 6,
+       "cond": "每场写完 store.json — 崩溃/被杀不丢"
+     },
+     {
+       "id": "capend",
+       "label": "到上限停车",
+       "kind": "guard",
+       "lane": 6,
+       "cond": "计完这场打到上限 → run=false"
+     }
+   ],
+   "edges": [
+     {
+       "from": "tpl",
+       "to": "roisc"
+     },
+     {
+       "from": "roisc",
+       "to": "cap0"
+     },
+     {
+       "from": "cap0",
+       "to": "run"
+     },
+     {
+       "from": "run",
+       "to": "pause",
+       "on": "是"
+     },
+     {
+       "from": "pause",
+       "to": "run",
+       "on": "不在暂停时段"
+     },
+     {
+       "from": "run",
+       "to": "maxmin",
+       "on": "是"
+     },
+     {
+       "from": "maxmin",
+       "to": "shot",
+       "on": "未超时"
+     },
+     {
+       "from": "shot",
+       "to": "roimap"
+     },
+     {
+       "from": "roimap",
+       "to": "popup"
+     },
+     {
+       "from": "popup",
+       "to": "phase"
+     },
+     {
+       "from": "popup",
+       "to": "escape",
+       "on": "命中即点"
+     },
+     {
+       "from": "phase",
+       "to": "battle",
+       "on": "phase=0"
+     },
+     {
+       "from": "phase",
+       "to": "result",
+       "on": "phase=1"
+     },
+     {
+       "from": "battle",
+       "to": "bigword",
+       "on": "命中"
+     },
+     {
+       "from": "battle",
+       "to": "stall",
+       "on": "未命中"
+     },
+     {
+       "from": "bigword",
+       "to": "first_tap"
+     },
+     {
+       "from": "first_tap",
+       "to": "lose1",
+       "on": "负局"
+     },
+     {
+       "from": "first_tap",
+       "to": "result",
+       "on": "胜局"
+     },
+     {
+       "from": "result",
+       "to": "rematch",
+       "on": "REMATCH 过阈"
+     },
+     {
+       "from": "result",
+       "to": "continue",
+       "on": "CONTINUE 过阈"
+     },
+     {
+       "from": "result",
+       "to": "fallbk",
+       "on": "两者都不过阈"
+     },
+     {
+       "from": "rematch",
+       "to": "count"
+     },
+     {
+       "from": "lose1",
+       "to": "count"
+     },
+     {
+       "from": "continue",
+       "to": "stall",
+       "on": "略过这页"
+     },
+     {
+       "from": "fallbk",
+       "to": "battle",
+       "on": "转回战斗"
+     },
+     {
+       "from": "stall",
+       "to": "escape"
+     },
+     {
+       "from": "escape",
+       "to": "escfb",
+       "on": "全不中"
+     },
+     {
+       "from": "escfb",
+       "to": "stall"
+     },
+     {
+       "from": "stall",
+       "to": "bstl",
+       "on": "phase=0"
+     },
+     {
+       "from": "bstl",
+       "to": "heal",
+       "on": "连 3 次"
+     },
+     {
+       "from": "heal",
+       "to": "run"
+     },
+     {
+       "from": "count",
+       "to": "save"
+     },
+     {
+       "from": "save",
+       "to": "capend",
+       "on": "达上限"
+     },
+     {
+       "from": "save",
+       "to": "run",
+       "on": "未达"
+     }
+   ],
+   "title": "SGM 结算循环 — 全程序判定图",
+   "note": "阈值按 cfg 路径从当前 config 实时回填; 改了 config 图跟着变。escape 链节点由 Graph.load 按 escape.items 动态展开。"
  },
  "update": {
   "repo": "zhiyaunhe-ops/MAAskullgirls",

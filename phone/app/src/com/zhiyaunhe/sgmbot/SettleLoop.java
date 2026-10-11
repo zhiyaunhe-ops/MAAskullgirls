@@ -45,6 +45,8 @@ public final class SettleLoop {
     private int rounds, wins, loses, rematches, continues;
     private int stallRuns, battleStalls;
     private long lastAct, battleT0, runStart;
+    /** 上次弹窗守卫检查的时刻 (与 lastAct 分开: 守卫可以在"没动作"期间周期性跑) */
+    private long lastPopupChk;
     private Store daily;
 
     private final ShizukuCtl sh;
@@ -102,6 +104,13 @@ public final class SettleLoop {
         final int adHit = ad == null ? 350 : ad.optInt("hit_ms", 350);
         final int adMiss = ad == null ? 900 : ad.optInt("miss_ms", 900);
 
+        /* 弹窗守卫: 「无动作超过 after_sec」就开始周期性剥弹窗 (间隔 every_sec)。
+         * 判据用"无动作"而不是"卡在某个界面" —— 弹窗出现必然挡住按钮 ⇒ 必然无动作。 */
+        JSONObject pu = sub(c, "popup");
+        final boolean popupGuard = pu == null || pu.optBoolean("guard", true);
+        final long popupAfterMs = Math.max(1, pu == null ? 5 : pu.optInt("after_sec", 5)) * 1000L;
+        final long popupEveryMs = Math.max(1, pu == null ? 5 : pu.optInt("every_sec", 5)) * 1000L;
+
         if (!loadTpls(1.0, 1.0)) {
             SgmLog.i("bot", "缺模板 victory/defeat — 不开跑 (assets/templates 或 "
                     + Paths.tplDir() + " 下补齐)");
@@ -150,6 +159,24 @@ public final class SettleLoop {
             long now = System.currentTimeMillis();
             syncRoi(work, titleRoi, btnRois, firstTap);
             boolean hitThisRound = false;
+
+            /* —— 弹窗守卫 (任何相位都跑) ——
+             * JS 的弹窗处理分散在两处: pf_nav.waitHall **每帧**剥 (启动/导航阶段),
+             * settle_bot 只在 stall 30s 后剥。Java 版没有导航链, 所以把"每帧剥"
+             * 这条语义挂到结算循环上 —— 否则启动时正好停在网络错误弹窗上, 要等满
+             * 30s 才试第一次, 且剥完之后仍然不知道该去哪 (导航仍是 M2 待办)。
+             * 触发判据 = 距上次有效动作超过 after_sec: 弹窗必然挡住按钮 ⇒ 必然无动作。 */
+            if (popupGuard && now - lastPopupChk >= popupEveryMs
+                    && now - lastAct >= popupAfterMs) {
+                lastPopupChk = now;
+                Graph.cursor("popup");
+                if (escape(work, bmp, c)) {
+                    hitThisRound = true;
+                    lastAct = now;
+                    noHitRun = 0;
+                    SgmLog.i("弹", "守卫剥弹窗 → 回到原相位 (phase=" + phase + ")");
+                }
+            }
 
             if (phase == 0) {
                 /* —— 战斗阶段: 只查两个大字 —— */
