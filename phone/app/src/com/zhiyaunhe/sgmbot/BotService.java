@@ -77,7 +77,15 @@ public class BotService extends Service {
     }
 
     /** 停止 = 暂停引擎 (服务/悬浮条保留, 可再点开始) */
-    public static void stop(Context ctx) { running = false; }
+    public static void stop(Context ctx) {
+        /* ⚠️ 必须**连 RUN 一起置**。早先只置 running=false, 而循环判的是 `run.get()`
+         *    (=RUN) ⇒ 「停止引擎」按钮其实停不下来, 循环照跑; 更糟的是再点「开始」时
+         *    spawn() 只看 running, 于是又起一个线程 —— 两个循环同时在点。
+         *    (2026-10-11 加「运行模式」切换按钮时发现: 用户切换后要「停止再开始」,
+         *     这条路的头一步就是坏的。) */
+        running = false;
+        RUN.set(false);
+    }
 
     /** 结束 = 退出脚本同义: 引擎停 + 服务停 + 悬浮窗/通知一并收掉 (JS endBot → exit()) */
     public static void end(Context ctx) {
@@ -215,6 +223,7 @@ public class BotService extends Service {
     private void spawn(String m) {
         if (running) return;
         running = true;
+        RUN.set(true);              // 与 onStartCommand 对齐: stop 会清 RUN, 这里必须重新置
         mode = m;
         new Thread(() -> runBot(m), "bot-" + m).start();
     }

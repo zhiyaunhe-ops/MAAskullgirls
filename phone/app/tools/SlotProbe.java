@@ -144,6 +144,17 @@ public class SlotProbe {
         double vs = peak(f, tpl[3], new int[]{400, 20, 480, 100});
         System.out.println("  顺带: victory 在 title_roi 峰值 " + fmt(vs)
                 + (vs >= th ? "  (大字判得到)" : "  (<th — 大字也判不到!)"));
+
+        /* ---- 4. 快速连点 (config.fast) 默认落点体检 ----
+         * 缺省落点 = btn_rois 中槽中心 (SettleLoop.resolveFastPoint)。这里把每个模板
+         * **正对该点**的 NCC 打出来 —— 盲点的就是这一格, 它是什么按钮一目了然。 */
+        int fxpX = SLOTS[1][0] + SLOTS[1][2] / 2, fxpY = SLOTS[1][1] + SLOTS[1][3] / 2;
+        System.out.println("\n== 快速连点缺省落点 = 中槽中心 (" + fxpX + "," + fxpY + ") ==");
+        for (int i = 0; i < TPLS.length; i++) {
+            if (tpl[i] == null) continue;
+            double s = Vision.scoreAt(f, tpl[i], fxpX - tpl[i].w / 2, fxpY - tpl[i].h / 2);
+            System.out.printf("  %-14s 正中 %.3f%s%n", TPLS[i], s, s >= th ? "   ← 落点这格就是它" : "");
+        }
     }
 
     /* ---------------- 同口径原语 ---------------- */

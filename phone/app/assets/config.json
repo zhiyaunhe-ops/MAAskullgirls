@@ -82,6 +82,16 @@
   "after_sec": 5,
   "every_sec": 5
  },
+ "fast": {
+  "enable": false,
+  "xy": null,
+  "tap_ms": 300,
+  "observe_ms": 1000,
+  "round_gap_s": 5,
+  "idle_stop_s": 300,
+  "popup_pause_ms": 2000,
+  "note": "快速连点模式: 主线程盲点 xy (缺省 = btn_rois 中槽中心), 独立观察线程负责弹窗/计场/停车"
+ },
  "run": {
   "max_minutes": 0,
   "pause_from": "",
@@ -120,6 +130,10 @@
      {
        "id": 6,
        "name": "计场与落盘"
+     },
+     {
+       "id": 7,
+       "name": "快速连点 (fast)"
      }
    ],
    "nodes": [
@@ -147,6 +161,15 @@
        "cond": "今日场数已达上限则不开跑",
        "cfg": "daily_cap",
        "note": "0 = 不限"
+     },
+     {
+       "id": "fmode",
+       "label": "模式选择",
+       "kind": "branch",
+       "lane": 0,
+       "cond": "fast.enable 为真则走快速连点, 否则走常规判定",
+       "cfg": "fast.enable",
+       "note": "快速连点 = 盲点固定坐标换速度, 前提是「一直胜利 + 无额外奖励页」; 默认关"
      },
      {
        "id": "run",
@@ -324,6 +347,51 @@
        "kind": "guard",
        "lane": 6,
        "cond": "计完这场打到上限 → run=false"
+     },
+     {
+       "id": "fxtap",
+       "label": "连点器 (主线程)",
+       "kind": "tap",
+       "lane": 7,
+       "cond": "按 tap_ms 盲点 fast.xy (缺省 = btn_rois 中槽中心)",
+       "cfg": "fast.tap_ms",
+       "note": "不截屏不匹配 —— 这是快的地方。战斗中点到那里无害"
+     },
+     {
+       "id": "fxobs",
+       "label": "观察线程",
+       "kind": "loop",
+       "lane": 7,
+       "cond": "独立线程每 observe_ms 截一帧, 干弹窗/计场/停车三件事",
+       "cfg": "fast.observe_ms",
+       "note": "与连点器并行; 只有它在截屏"
+     },
+     {
+       "id": "fxpop",
+       "label": "弹窗逃生",
+       "kind": "chain",
+       "lane": 7,
+       "cond": "复用同一条 escape 链; 命中后连点暂停让画面稳定",
+       "cfg": "fast.popup_pause_ms",
+       "note": "保留弹窗检测, 但搬出热路径"
+     },
+     {
+       "id": "fxbig",
+       "label": "大字计场",
+       "kind": "count",
+       "lane": 7,
+       "cond": "大字 + latch + 时间下限 round_gap_s → 一局恰计一次",
+       "cfg": "fast.round_gap_s",
+       "note": "1s 采样下换页闪断一般采不到; 双保险防重复计场"
+     },
+     {
+       "id": "fxidle",
+       "label": "无进展停车",
+       "kind": "heal",
+       "lane": 7,
+       "cond": "idle_stop_s 内一次都没计到场 → 停车 (多半已脱离战斗流程)",
+       "cfg": "fast.idle_stop_s",
+       "note": "0 = 关"
      }
    ],
    "edges": [
@@ -337,7 +405,49 @@
      },
      {
        "from": "cap0",
-       "to": "run"
+       "to": "fmode"
+     },
+     {
+       "from": "fmode",
+       "to": "run",
+       "on": "否 (常规)"
+     },
+     {
+       "from": "fmode",
+       "to": "fxtap",
+       "on": "是 (fast)"
+     },
+     {
+       "from": "fxtap",
+       "to": "fxobs",
+       "on": "并行"
+     },
+     {
+       "from": "fxobs",
+       "to": "fxtap",
+       "on": "循环"
+     },
+     {
+       "from": "fxobs",
+       "to": "fxpop"
+     },
+     {
+       "from": "fxpop",
+       "to": "fxbig"
+     },
+     {
+       "from": "fxbig",
+       "to": "fxidle"
+     },
+     {
+       "from": "fxidle",
+       "to": "fxobs",
+       "on": "继续"
+     },
+     {
+       "from": "fxidle",
+       "to": "capend",
+       "on": "停车"
      },
      {
        "from": "run",
@@ -609,10 +719,6 @@
    482
   ]
  },
- "first_tap": [
-  903,
-  512
- ],
  "btn_rois": [
   [
    265,

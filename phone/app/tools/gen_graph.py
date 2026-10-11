@@ -29,6 +29,8 @@ nodes = [
     N('roisc',  '模板按屏幕缩放','roi',   0, '按当前屏幕取 x/y 缩放倍数',  cfg='screen.roi_mode'),
     N('cap0',   '每日上限',     'guard', 0, '今日场数已达上限则不开跑',    cfg='daily_cap',
       note='0 = 不限'),
+    N('fmode',  '模式选择',     'branch',0, 'fast.enable 为真则走快速连点, 否则走常规判定',
+      cfg='fast.enable', note='快速连点 = 盲点固定坐标换速度, 前提是「一直胜利 + 无额外奖励页」; 默认关'),
     # lane 1 — 主循环守卫
     N('run',    '循环运行中',   'loop',  1, 'run 标志为真'),
     N('pause',  '夜间暂停',     'loop',  1, '当前时间在暂停时段内则不截屏不点击',
@@ -83,10 +85,29 @@ nodes = [
     N('count',  '计一场',       'count', 6, '胜负按上一局记下的 VICTORY/DEFEAT'),
     N('save',   '落盘',         'count', 6, '每场写完 store.json — 崩溃/被杀不丢'),
     N('capend', '到上限停车',   'guard', 6, '计完这场打到上限 → run=false'),
+    # lane 7 — 快速连点 (fast)
+    #   2026-10-11 用户提出: 结算页第一个界面的 CONTINUE 与第二个界面的 REMATCH
+    #   **落在同一个点** (都是按钮行里居中的那颗, K70 真机帧实测中心 (640,512),
+    #   见 tools/SlotProbe 输出) ⇒ 一直点它就能 页A 前进 / 页B 重开, 不必逐帧匹配。
+    N('fxtap',  '连点器 (主线程)', 'tap',  7, '按 tap_ms 盲点 fast.xy (缺省 = btn_rois 中槽中心)',
+      cfg='fast.tap_ms', note='不截屏不匹配 —— 这是快的地方。战斗中点到那里无害'),
+    N('fxobs',  '观察线程',     'loop',  7, '独立线程每 observe_ms 截一帧, 干弹窗/计场/停车三件事',
+      cfg='fast.observe_ms', note='与连点器并行; 只有它在截屏'),
+    N('fxpop',  '弹窗逃生',     'chain', 7, '复用同一条 escape 链; 命中后连点暂停让画面稳定',
+      cfg='fast.popup_pause_ms', note='保留弹窗检测, 但搬出热路径'),
+    N('fxbig',  '大字计场',     'count', 7, '大字 + latch + 时间下限 round_gap_s → 一局恰计一次',
+      cfg='fast.round_gap_s', note='1s 采样下换页闪断一般采不到; 双保险防重复计场'),
+    N('fxidle', '无进展停车',   'heal',  7, 'idle_stop_s 内一次都没计到场 → 停车 (多半已脱离战斗流程)',
+      cfg='fast.idle_stop_s', note='0 = 关'),
 ]
 
 edges = [
-    E('tpl', 'roisc'), E('roisc', 'cap0'), E('cap0', 'run'),
+    E('tpl', 'roisc'), E('roisc', 'cap0'), E('cap0', 'fmode'),
+    E('fmode', 'run', '否 (常规)'), E('fmode', 'fxtap', '是 (fast)'),
+    # fast 子图: 连点器与观察线程**并行**跑, 观察线程串起弹窗/计场/停车
+    E('fxtap', 'fxobs', '并行'), E('fxobs', 'fxtap', '循环'),
+    E('fxobs', 'fxpop'), E('fxpop', 'fxbig'), E('fxbig', 'fxidle'),
+    E('fxidle', 'fxobs', '继续'), E('fxidle', 'capend', '停车'),
     E('run', 'pause', '是'), E('pause', 'run', '不在暂停时段'),
     E('run', 'maxmin', '是'), E('maxmin', 'shot', '未超时'),
     E('shot', 'roimap'), E('roimap', 'popup'), E('popup', 'phase'),
@@ -115,6 +136,7 @@ lanes = [
     {'id': 4, 'name': '结算阶段 (phase 1)'},
     {'id': 5, 'name': 'stall 逃生 / 自愈'},
     {'id': 6, 'name': '计场与落盘'},
+    {'id': 7, 'name': '快速连点 (fast)'},
 ]
 
 graph = {

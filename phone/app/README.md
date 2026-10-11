@@ -75,8 +75,11 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
   与 aapt2 打包脚本。
 - **M2 结算循环**：SettleLoop 移植（VICTORY/DEFEAT → CONTINUE/REMATCH，计数=REMATCH 驱动，
   stall 逃生: srv_retry/scene_x/modal_x/三槽按钮 → 3 轮无解重跑导航）。
-- **M3 导航链**：NavChain 移植（目标卡 Pillow Talk、地图右移×2、绿✓锚点、FIGHT!、
-  开场脑子+速度判档）。到这步功能即与 autojs 版打平。
+- **M2+ 快速连点模式**（2026-10-11，`config.fast`，默认关）：结算页第一个界面的 CONTINUE 与
+  第二个界面的 REMATCH 落在**同一个点**（按钮行居中那颗），所以盲点它就能"前进/重开"，
+  不必逐帧匹配；弹窗检测保留但搬到**独立观察线程**（1s 一帧）做弹窗/计场/停车。
+  前提、兜底与现场核对办法见 [../docs/phone-app.md](../docs/phone-app.md)「快速连点模式」。
+- **M3 导航链**：NavChain 移植（目标卡 Pillow Talk、地图右移×2、绿✓锚点、FIGHT!、  开场脑子+速度判档）。到这步功能即与 autojs 版打平。
 - **M4 稳定性**：前台服务保活、开机自启、通知栏控制、store.json 兼容迁移。
 - **M5 角色资料**：`data/sgm/characters.json`（本仓库维护，名字/图标/属性/出处），
   App 从 GitHub raw 拉取或随包更新；扫仓库 = 橱柜逐屏截图 + 名字区 OCR（ML Kit，离线）

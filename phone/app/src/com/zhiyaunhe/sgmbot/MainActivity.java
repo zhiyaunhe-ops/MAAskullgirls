@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.View;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -35,6 +36,7 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends Activity {
     private TextView status;
     private TextView feed;          // 点击反馈行 (只由 Ui.act/gate 写)
+    private Button fastBtn;         // 运行模式切换按钮 (文案随当前模式变, 每秒刷)
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -44,6 +46,7 @@ public class MainActivity extends Activity {
             }
             Paths.init(MainActivity.this);   // 授权"所有文件访问"回来后自动换根, 不必重启
             status.setText(statusText());
+            if (fastBtn != null) fastBtn.setText(fastLabel());
             h.postDelayed(this, 1000);
         }
     };
@@ -168,6 +171,16 @@ public class MainActivity extends Activity {
                             + (BotService.isRunning() ? "运行中" : "停止") + ")");
                 });
 
+        /* ---------------- 运行模式 ---------------- */
+        Ui.add(this, Ui.section(this, "运行模式"));
+        Ui.add(this, Ui.hint(this,
+                "常规: 每帧模板匹配认结算页 —— 稳, 但一轮要等截屏 + 匹配 (~1.5s)。\n"
+                + "快速连点: 盲点结算按钮行里居中那颗。第一个界面的 CONTINUE 与第二个界面的 "
+                + "REMATCH 是**同一个点**, 所以一直点它就能 前进 / 重开, 一轮 ~0.6s。\n"
+                + "⚠️ 前提是「一直胜利 + 该页没有额外奖励按钮 (SELL ALL / HIDE STATS)」。"
+                + "弹窗检测仍然保留 (搬到了独立观察线程, 每秒一帧)。"));
+        fastBtn = Ui.button(this, fastLabel(), "", feed, this::toggleFast);
+
         /* ---------------- 配置 / 查看 ---------------- */
         Ui.add(this, Ui.section(this, "配置与查看"));
 
@@ -264,6 +277,41 @@ public class MainActivity extends Activity {
 
     /* ---------------- 行为 ---------------- */
 
+    /** 当前是不是快速连点模式 (读的是**合并后**的配置, 不是 override 文件本身) */
+    private boolean fastOn() {
+        try {
+            Config c = BotService.cfgOr(this);
+            JSONObject all = c == null ? null : c.read();
+            JSONObject f = all == null ? null : all.optJSONObject("fast");
+            return f != null && f.optBoolean("enable", false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private String fastLabel() {
+        return fastOn() ? "运行模式: 快速连点 ⇄ (点一下切回常规)"
+                : "运行模式: 常规 ⇄ (点一下切快速连点)";
+    }
+
+    /** 一键在「常规 / 快速连点」之间切 —— 写 override 单键 + 热重载 */
+    private void toggleFast() {
+        boolean on = fastOn();
+        String err = ConfigActivity.setOverride(this, "fast.enable", !on);
+        if (err != null) {
+            feed.setTextColor(Ui.ERR);
+            feed.setText("✗ 切换失败: " + err);
+            return;
+        }
+        /* 配置在循环开跑时读一次 ⇒ 改了要重跑才生效 —— 说清楚, 别让用户以为点了没反应。
+         * 「停止引擎」→ 再「启动服务」即换过来 (stop 现在会真的停下循环, 见 BotService.stop)。 */
+        feed.setTextColor(Ui.OK);
+        feed.setText((on ? "✓ 已切回常规模式" : "✓ 已切到快速连点模式")
+                + (BotService.isRunning() ? " — 引擎在跑, 点「停止引擎」再「启动服务」才生效"
+                                          : " — 下次启动即用新模式"));
+        if (fastBtn != null) fastBtn.setText(fastLabel());
+    }
+
     private void connectShizuku() {
         if (!ShizukuCtl.serverUp()) {
             feed.setTextColor(Ui.ERR);
@@ -293,6 +341,7 @@ public class MainActivity extends Activity {
         sb.append("所有文件访问 ").append(Paths.legacy() ? "已授" : "未授 (退私有目录)").append('\n');
         sb.append("引擎         ").append(BotService.isRunning()
                 ? "运行中 (" + BotService.currentMode() + ")" : "停止").append('\n');
+        sb.append("运行模式     ").append(fastOn() ? "快速连点 (fast)" : "常规").append('\n');
         Store st = Store.load();
         sb.append("战绩         ").append(st.text(0))
                 .append(" · 累计 ").append(st.totalRounds()).append(" 场 / ")

@@ -31,6 +31,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   matcher.chan / step / refine            匹配口径
  *   graph.nodes / edges + Trace            判定路径图 (结构全在 config, 见 Graph)
  *
+ * 快速连点模式 (config.fast, 2026-10-11 用户提出) — 见 {@link #runFast}:
+ *   结算页第一个界面的 CONTINUE 与第二个界面的 REMATCH **落在同一个点** (都是按钮行里
+ *   居中那颗; K70 真机帧实测中心 (640,512), 即 btn_rois 中槽中心, 见 tools/SlotProbe),
+ *   所以"一直点它"就能做到 页A 前进 / 页B 重开 —— 不必逐帧做模板匹配。
+ *   前提是「一直胜利 + 该页没有额外奖励按钮 (SELL ALL / HIDE STATS)」, 故默认关。
+ *   弹窗检测保留, 但搬出热路径: 连点器只点不截屏, 截屏/弹窗/计场交给**独立的观察线程**
+ *   (每 observe_ms 一帧, 默认 1s)。
+ *
  * 逃生链 (stall / 战斗超时) 全部走 config 的 escape 表 — 新弹窗 = 加一条配置。
  * ⚠️ 没模板的界面一律不盲点 (安全规则同 autojs 版): 自愈导航/PLAY 拉回待 M2 的
  *    NavChain 接入, 当前只记日志。
@@ -61,11 +69,21 @@ public final class SettleLoop {
     private int roiW = -1, roiH = -1;
     private int[] titleR = null;
     private List<int[]> btnR = null;
-    private float[] firstTapR = null;
     private JSONObject cfgRef;
     /** 模板缩放倍数 (非 abs/center 分辨率模式下 ≠1) — 变了就重新取缩放版模板 */
     private double tplSX = 1.0, tplSY = 1.0;
     private Vision.Frame tVic, tDef, tRm, tCt;
+
+    /* ---- 快速连点模式 (fast) 的跨线程状态 ---- */
+    /** 连点器与观察线程共享的落点 (work 坐标); 观察线程解析出来后连点器才开点 */
+    private volatile float fxX = 640, fxY = 512;
+    private volatile boolean fxReady = false;
+    /** 连点闸门时刻: 剥完弹窗后短暂停手, 让画面稳下来再点 (避免一掌拍在弹窗按钮上) */
+    private volatile long fxGateUntil = 0;
+    /** 连点次数 (观察线程日志里报) */
+    private volatile int fxTaps = 0;
+    /** 本线程跑的是不是 fast 分支 — 状态快照里区分 mode */
+    private volatile boolean fastOn = false;
 
     public SettleLoop(ShizukuCtl sh, TplStore tpls, OverlayBar bar) {
         this.sh = sh;
@@ -97,7 +115,6 @@ public final class SettleLoop {
         final int resultFallback = c.optInt("result_fallback", 3);
         final int maxMinutes = sub(c, "run").optInt("max_minutes", 0);
         final int[] titleRoi = arr(c, "title_roi", new int[]{400, 20, 480, 100});
-        final float[] firstTap = farr(c, "first_tap", new float[]{903, 512});
         final List<int[]> btnRois = rois(c, "btn_rois");
 
         JSONObject ad = sub(c, "scan").optJSONObject("adaptive");
@@ -129,6 +146,16 @@ public final class SettleLoop {
         runStart = System.currentTimeMillis();
         lastAct = runStart;
         battleT0 = runStart;
+
+        /* 快速连点模式: 换一条完全不同的循环 (盲点 + 独立观察线程), 见 runFast 注释。
+         * 放在模板/上限/路径图都就绪**之后** —— 两条路共用同一套前置检查。 */
+        if (sub(c, "fast").optBoolean("enable", false)) {
+            fastOn = true;
+            runFast(run, c, cap);
+            summary();
+            return;
+        }
+
         long lastUi = 0;
         SgmLog.i("bot", "结算循环开始 — " + daily.text(cap) + " 上限=" + (cap > 0 ? cap : "不限")
                 + " | 匹配=" + Vision.modeText() + " | 扫描=" + battleMs + "/" + resultMs
@@ -160,7 +187,7 @@ public final class SettleLoop {
             }
             Vision.Frame work = Vision.toWork(bmp);
             long now = System.currentTimeMillis();
-            syncRoi(work, titleRoi, btnRois, firstTap);
+            syncRoi(work, titleRoi, btnRois);
             boolean hitThisRound = false;
 
             /* —— 弹窗守卫 (任何相位都跑) ——
@@ -330,7 +357,212 @@ public final class SettleLoop {
             sleep_(adaptive ? clamp(hitThisRound ? adHit : adMiss, adMin, adMax)
                     : (phase == 0 ? battleMs : resultMs));
         }
+        summary();
+    }
+
+    private void summary() {
         SgmLog.i("bot", "结算循环结束 — 本次 " + rounds + " 场 " + wins + "胜" + loses + "负");
+    }
+
+    /* ==================== 快速连点模式 (config.fast) ==================== */
+
+    /**
+     * 快速连点 — 用户 2026-10-11 提的"状态切换"：结算页第一个界面的 CONTINUE 与第二个
+     * 界面的 REMATCH 落在**同一个点**（按钮行居中那颗），所以一直点它就能
+     * 页A 前进 → 页B 重开，整条结算-再战链不需要任何模板匹配。
+     *
+     * <p>分工（这是它快的全部原因）：
+     * <ul>
+     *   <li><b>主线程 = 连点器</b>：只 {@code input tap} 固定点，**不截屏不匹配**。
+     *       截屏（`screencap` 一趟几百毫秒）是整条链最贵的一步，省掉它 + tap_delay
+     *       从 1200ms 降到 tap_ms（默认 300）⇒ 一个结算周期从 ~3s 掉到 ~0.6s。</li>
+     *   <li><b>观察线程 = 安全网</b>（独立线程, 每 observe_ms 截一帧, 默认 1s）：
+     *       剥弹窗（复用同一条 escape 链）/ 大字计场 / 每日上限 / 无进展停车 / 状态快照。
+     *       只让**一个**线程截屏，避免两路 screencap 互相拖慢。</li>
+     * </ul>
+     *
+     * <p>⚠️ 前提是用户说的两条：**一直胜利** + **该页没有额外奖励按钮**
+     * （有 SELL ALL / HIDE STATS 的那版奖励页，中间那颗是 SELL ALL，盲点会卖道具）。
+     * 所以 {@code fast.enable} 默认 false，必须显式开。
+     */
+    private void runFast(AtomicBoolean run, JSONObject c, int cap) {
+        JSONObject fx = sub(c, "fast");
+        final int tapMs = Math.max(60, fx.optInt("tap_ms", 300));
+        final int obsMs = Math.max(200, fx.optInt("observe_ms", 1000));
+        final int gapS = Math.max(1, fx.optInt("round_gap_s", 5));
+        final int idleS = Math.max(0, fx.optInt("idle_stop_s", 300));
+        final int pauseMs = Math.max(0, fx.optInt("popup_pause_ms", 2000));
+        final int maxMinutes = sub(c, "run").optInt("max_minutes", 0);
+        final JSONArray fxy = fx.optJSONArray("xy");
+
+        SgmLog.i("快", "快速连点模式 — 连点 " + tapMs + "ms / 观察 " + obsMs + "ms / 落点 "
+                + (fxy != null && fxy.length() >= 2
+                    ? "fast.xy(" + (int) fxy.optDouble(0) + "," + (int) fxy.optDouble(1) + ")"
+                    : "缺省 = btn_rois 中槽中心")
+                + " / 一局去抖 " + gapS + "s / 无进展停车 "
+                + (idleS > 0 ? idleS + "s" : "关") + " — 关掉改 config.fast.enable=false");
+
+        Thread obs = new Thread(
+                () -> observeFast(run, c, cap, obsMs, gapS, idleS, pauseMs, maxMinutes),
+                "fast-observer");
+        obs.setDaemon(true);
+        obs.start();
+
+        long lastUi = 0;
+        while (run.get()) {
+            if (inPause(c)) { sleep_(1000); continue; }        // 夜间暂停: 不点, 挂着等
+            long now = System.currentTimeMillis();
+            /* 等观察线程给出第一帧的落点 (它要同步 ROI / 分辨率档) —— 顶多等 1 个 observe_ms */
+            if (fxReady && now >= fxGateUntil) {
+                sh.tapWork(fxX, fxY);
+                fxTaps++;
+            }
+            if (now - lastUi > 2000) {
+                lastUi = now;
+                phaseText = "快速连点";
+                pushUi(cap);
+            }
+            sleep_(tapMs);
+        }
+        /* 连点器先退, 观察线程最多再跑一帧就自己看到 run=false 退出 */
+        try { obs.join(obsMs + 2000L); } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * 观察线程 —— 快速连点模式里唯一截屏、唯一做判定的地方。三件事，全部低频：
+     *   ① 弹窗: 距上次有效动作超过 popup.after_sec 就走 escape 链; 剥成功则闸住连点一小会儿;
+     *   ② 计场: 大字 + latch + 时间下限。latch 保证"同一屏的大字只算一次"(结算页会持续
+     *      显示 VICTORY! 好几秒); 时间下限 round_gap_s 再兜一层, 防换页闪断被采样到;
+     *   ③ 停车: 每日上限 (countRound 内)、单次最长、以及**无进展** (idle_stop_s 内一场没计到,
+     *      说明连点没把流程推下去 —— 多半已经脱离战斗界面)。
+     */
+    private void observeFast(AtomicBoolean run, JSONObject c, int cap, int obsMs, int gapS,
+                             int idleS, int pauseMs, int maxMinutes) {
+        final double minSim = th(c, "min_sim", 0.72);
+        final int[] titleRoi = arr(c, "title_roi", new int[]{400, 20, 480, 100});
+        final List<int[]> btnRois = rois(c, "btn_rois");
+        final JSONArray fxy = sub(c, "fast").optJSONArray("xy");
+        JSONObject pu = sub(c, "popup");
+        final boolean guard = pu == null || pu.optBoolean("guard", true);
+        final long afterMs = Math.max(1, pu == null ? 5 : pu.optInt("after_sec", 5)) * 1000L;
+
+        long lastBig = System.currentTimeMillis();     // 上次计场时刻 (无进展停车看它)
+        boolean bigLatch = false;                      // 大字 latch: 中间见过"无大字"才允许再计
+        long lastLog = 0;
+        String lastSeen = "";
+        int frames = 0, pops = 0;
+        int homeSlot = -1;                             // 落点落在第几格 (体检用); -1 = 不在任何槽里
+
+        while (run.get()) {
+            long t0 = System.currentTimeMillis();
+            if (inPause(c)) { sleep_(obsMs); continue; }
+            if (maxMinutes > 0 && t0 - runStart > maxMinutes * 60000L) {
+                SgmLog.i("停", "已达单次最长 " + maxMinutes + " 分钟 — 停止 (run.max_minutes)");
+                run.set(false);
+                break;
+            }
+            Bitmap bmp = sh.capture();
+            if (bmp == null) { SgmLog.i("快", "观察线程截屏失败 — 下帧重试"); sleep_(obsMs); continue; }
+            Vision.Frame work = Vision.toWork(bmp);
+            syncRoi(work, titleRoi, btnRois);
+            if (!fxReady) {
+                resolveFastPoint(fxy);
+                fxReady = true;
+                lastAct = t0;
+                homeSlot = slotOfPoint();
+                SgmLog.i("快", "落点就绪 work(" + work.w + "x" + work.h + ") → 点 ("
+                        + (int) fxX + "," + (int) fxY + ")"
+                        + (homeSlot >= 0 ? " = 第 " + (homeSlot + 1) + " 格" : " (不在任何按钮槽里)"));
+            }
+            frames++;
+
+            /* ① 弹窗 (任何时刻: 判据是"距上次有效动作太久" ⇒ 一定有个东西挡着) */
+            if (guard && t0 - lastAct >= afterMs) {
+                Graph.cursor("popup");
+                if (escape(work, bmp, c)) {
+                    pops++;
+                    lastAct = t0;
+                    fxGateUntil = t0 + pauseMs;
+                    SgmLog.i("弹", "快速模式剥弹窗 → 连点暂停 " + pauseMs + "ms (第 " + pops + " 次)");
+                }
+            }
+
+            /* ② 大字 → 计场 */
+            double[] v = Vision.findScored(work, tVic, titleR, minSim);
+            boolean vic = v != null && v[2] >= minSim;
+            double[] d = vic ? null : Vision.findScored(work, tDef, titleR, minSim);
+            boolean def = !vic && d != null && d[2] >= minSim;
+            if (vic || def) {
+                if (!bigLatch && t0 - lastBig >= gapS * 1000L) {
+                    lastBig = t0;
+                    lastVic = vic;                      // 记下胜负 (与常规模式同一条口径)
+                    Graph.cursor("bigword");
+                    countRound(vic, run, cap);          // 前提"一直胜利"不成立时这里也会如实记负
+                }
+                bigLatch = true;
+            } else {
+                bigLatch = false;
+            }
+
+            /* ③ 顺手判"这是哪个页"—— 只喂日志/状态, 不参与点击 (点击是连点器的事) */
+            double[] rp = peakArr(work, tRm, btnR);
+            double[] cp = peakArr(work, tCt, btnR);
+            String seen = seenOf(rp, cp, minSim, vic || def);
+            /* 低频日志: **状态变化**或满 10s 才记一条 (连点 300ms/轮, 每帧刷屏没意义)。
+             * 带两个模板 × 三个槽的峰值 —— 现场只用这一条就能回答
+             * 「落点 (640,512) 这格到底是什么按钮」这个唯一悬而未决的问题。 */
+            if (!seen.equals(lastSeen) || t0 - lastLog > 10000) {
+                lastSeen = seen;
+                lastLog = t0;
+                SgmLog.i("观", "第 " + frames + " 帧 → " + seen
+                        + " | rematch" + fmt(rp) + " continue" + fmt(cp)
+                        + " | 落点(" + (int) fxX + "," + (int) fxY + ")"
+                        + " 已连点 " + fxTaps + " 次 / 剥弹窗 " + pops + " 次 / 本轮 " + rounds + " 场");
+            }
+
+            /* ③b 落点体检 —— 这条是**真的会拦车**的, 判据精确到"落点那一格"。
+             *
+             * 快速连点唯一的假设是「落点那格正是 CONTINUE 或 REMATCH」。一旦观察到
+             * **结算按钮过阈了、但不在落点那一格**, 说明中间那颗是别的按钮
+             * (有 SELL ALL / HIDE STATS 的那版奖励页中间就是 SELL ALL —— 盲点它 = 卖道具),
+             * 此时继续盲点有害无益 ⇒ 立刻停车。
+             *
+             * 战斗中/过场帧一个都不过阈 ⇒ 不触发, 不会误停。 */
+            if (homeSlot >= 0) {
+                boolean here = rp[homeSlot] >= minSim || cp[homeSlot] >= minSim;
+                int other = -1;
+                for (int i = 0; i < rp.length; i++)
+                    if (i != homeSlot && (rp[i] >= minSim || cp[i] >= minSim)) { other = i; break; }
+                if (!here && other >= 0) {
+                    Graph.cursor("fxidle");
+                    SgmLog.i("!!", "落点体检不通过 → 停车: 落点(第 " + (homeSlot + 1) + " 格)不是结算按钮, "
+                            + "而第 " + (other + 1) + " 格有。盲点它会点到别的按钮 (SELL ALL 之类)。"
+                            + " | rematch" + fmt(rp) + " continue" + fmt(cp));
+                    run.set(false);
+                    break;
+                }
+            }
+
+            /* ④ 无进展停车 */
+            if (idleS > 0 && t0 - lastBig > idleS * 1000L) {
+                Graph.cursor("fxidle");
+                SgmLog.i("停", "快速模式: 连续 " + idleS + "s 一场没计到 — 停车 "
+                        + "(多半已脱离战斗流程; 调 config.fast.idle_stop_s 或关掉它)");
+                run.set(false);
+                break;
+            }
+
+            Graph.cursor("fxobs");
+            phaseText = "快速连点";
+            snapshot();
+            bmp.recycle();
+            long used = System.currentTimeMillis() - t0;
+            if (used < obsMs) sleep_(obsMs - used);
+        }
+        SgmLog.i("快", "观察线程退出 — 共 " + frames + " 帧 / 剥弹窗 " + pops + " 次 / 连点 "
+                + fxTaps + " 次");
     }
 
     /* ---- ROI / 坐标的多分辨率映射 ---- */
@@ -344,7 +576,7 @@ public final class SettleLoop {
         return tVic != null && tDef != null;
     }
 
-    private void syncRoi(Vision.Frame work, int[] titleRoi, List<int[]> btnRois, float[] firstTap) {
+    private void syncRoi(Vision.Frame work, int[] titleRoi, List<int[]> btnRois) {
         if (work.w == roiW && work.h == roiH && titleR != null) return;
         roiW = work.w; roiH = work.h;
         double sx = Roi.scaleX(cfgRef, work.w, work.h);
@@ -357,10 +589,31 @@ public final class SettleLoop {
         titleR = Roi.resolve(cfgRef, titleRoi, work.w, work.h);
         btnR = new ArrayList<>();
         for (int[] r : btnRois) btnR.add(Roi.resolve(cfgRef, r, work.w, work.h));
-        firstTapR = Roi.resolvePoint(cfgRef, firstTap, work.w, work.h);
         SgmLog.i("屏", work.w + "x" + work.h + " (ar=" + String.format("%.2f", work.w / (float) work.h)
                 + ") 档=" + Roi.profileOf(cfgRef, work.w, work.h)
                 + " mode=" + Roi.modeOf(cfgRef, work.w, work.h));
+    }
+
+    /**
+     * 快速连点模式的落点解析:
+     *   ① config.fast.xy 有值 → 按当前屏幕映射 (与其它标定坐标同口径);
+     *   ② 缺省 → **btn_rois 中槽的中心**。取中槽不是随手挑的: 结算页的按钮行是**整行居中**
+     *      的, 所以"单按钮页" (MATCH REWARDS: 只有 CONTINUE) 和"三按钮页"
+     *      (FAVORITE|REMATCH|CONTINUE) 的中间一颗落在**同一个 x** —— 这就是用户说的
+     *      「第一个界面的 CONTINUE 和第二个界面的 REMATCH 在同一个位置」。
+     *      由 btn_rois 推出来还有个好处: 换分辨率时跟着 ROI 映射一起走, 不必另行标定。
+     */
+    private void resolveFastPoint(JSONArray fxy) {
+        if (fxy != null && fxy.length() >= 2) {
+            float[] p = Roi.resolvePoint(cfgRef, new float[]{
+                    (float) fxy.optDouble(0), (float) fxy.optDouble(1)}, roiW, roiH);
+            if (p != null && p.length >= 2) { fxX = p[0]; fxY = p[1]; return; }
+        }
+        if (btnR != null && btnR.size() > 1) {
+            int[] r = btnR.get(1);
+            fxX = r[0] + r[2] / 2f;
+            fxY = r[1] + r[3] / 2f;
+        }
     }
 
     private static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -435,9 +688,11 @@ public final class SettleLoop {
                 return true;
             }
         }
-        /* 兜底: 三槽按钮 (把卡住的结算页推一把) */
+        /* 兜底: 三槽按钮 (把卡住的结算页推一把)
+         * ⚠️ 用**已解析**的 btnR (字段), 不是 rois(c,"btn_rois") 的原始像素 ——
+         *    原始值只在 abs 模式下成立, 非 abs (center/rel/fit) 屏上会点偏。 */
         double minSim = th(c, "min_sim", 0.72);
-        List<int[]> btnRois = rois(c, "btn_rois");
+        List<int[]> btnRois = btnR != null ? btnR : rois(c, "btn_rois");
         double[] rb = findSlot(work, tRm, btnRois, minSim);
         boolean isRm = rb != null && rb[2] >= minSim;
         double[] hb = isRm ? rb : findSlot(work, tCt, btnRois, minSim);
@@ -474,14 +729,48 @@ public final class SettleLoop {
      * 真峰值 (否则第一个过阈值的点就把峰值截断了, 三槽分数之间没有可比性)。
      */
     private static String peaks(Vision.Frame work, Vision.Frame tpl, List<int[]> rois) {
-        if (tpl == null) return "[-]";
-        StringBuilder sb = new StringBuilder("(");
+        return fmt(peakArr(work, tpl, rois));
+    }
+
+    /**
+     * 每个槽各自的 NCC 峰值 —— **只喂日志/体检, 不参与常规判定**。
+     * th 传 2.0 ⇒ findScored 不会走"过阈值提前返回"的分支, 一定穷举完整个 ROI 再取
+     * 真峰值 (否则第一个过阈值的点就把峰值截断了, 槽与槽之间没有可比性)。
+     */
+    private static double[] peakArr(Vision.Frame work, Vision.Frame tpl, List<int[]> rois) {
+        double[] out = new double[rois == null ? 0 : rois.size()];
+        if (tpl == null || rois == null) { java.util.Arrays.fill(out, -2); return out; }
         for (int i = 0; i < rois.size(); i++) {
             double[] p = Vision.findScored(work, tpl, rois.get(i), 2.0);
+            out[i] = p == null ? -2 : p[2];
+        }
+        return out;
+    }
+
+    private static String fmt(double[] v) {
+        StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; i < v.length; i++) {
             if (i > 0) sb.append(' ');
-            sb.append(p == null ? "-" : String.format("%.2f", p[2]));
+            sb.append(v[i] < -1 ? "-" : String.format("%.2f", v[i]));
         }
         return sb.append(')').toString();
+    }
+
+    /** 峰值数组 → 人话页面名 (只用于日志) */
+    private static String seenOf(double[] rp, double[] cp, double minSim, boolean big) {
+        for (double v : rp) if (v >= minSim) return "REMATCH页";
+        for (double v : cp) if (v >= minSim) return "CONTINUE页";
+        return big ? "大字页" : "其他(战斗)";
+    }
+
+    /** 落点落在第几格 (0 起); 不在任何槽里返回 -1 —— 快速模式的落点体检用 */
+    private int slotOfPoint() {
+        if (btnR == null) return -1;
+        for (int i = 0; i < btnR.size(); i++) {
+            int[] r = btnR.get(i);
+            if (fxX >= r[0] && fxX <= r[0] + r[2] && fxY >= r[1] && fxY <= r[1] + r[3]) return i;
+        }
+        return -1;
     }
 
     /** 三槽里找按钮, 返回 {命中中心x, 中心y, 峰值}; 未过阈值也带回峰值 (图上好看) */
@@ -508,10 +797,12 @@ public final class SettleLoop {
     private void snapshot() {
         try {
             SgmLog.state(new JSONObject()
-                    .put("mode", "settle").put("running", true)
-                    .put("phase", phase == 0 ? "battle" : "result")
+                    .put("mode", fastOn ? "settle-fast" : "settle").put("running", true)
+                    .put("phase", fastOn ? "fast" : (phase == 0 ? "battle" : "result"))
                     .put("rounds", rounds).put("wins", wins).put("loses", loses)
                     .put("rematches", rematches).put("continues", continues)
+                    .put("fast", fastOn).put("fast_taps", fxTaps)
+                    .put("fast_xy", (int) fxX + "," + (int) fxY)
                     .put("matcher", Vision.modeText())
                     .put("roi_mode", Roi.modeOf(cfgRef, roiW, roiH))
                     .put("work", roiW + "x" + roiH)

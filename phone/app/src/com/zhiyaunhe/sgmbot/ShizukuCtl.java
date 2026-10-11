@@ -118,7 +118,7 @@ public final class ShizukuCtl {
             // mkdir -p: 目录不存在时 screencap 报 "Error opening file" 且不自建目录
             String out = exec("mkdir -p \"" + d + "\" && screencap -p \"" + p + "\"");
             Bitmap b = decode(p);
-            if (b != null) { capFails = 0; capOk = d; return b; }
+            if (b != null) { capFails = 0; capOk = d; lastScale = b.getHeight() / (float) WORK_H; return b; }
             capOut = out;
         }
         if (capFails++ % 20 == 0) {   // 每 20 次报一次, 别刷屏
@@ -171,6 +171,40 @@ public final class ShizukuCtl {
     public void tapWork(Bitmap frame, float wx, float wy) {
         float s = frame.getHeight() / (float) WORK_H;
         exec("input tap " + Math.round(wx * s) + " " + Math.round(wy * s));
+    }
+
+    /** 最近一次成功截屏推断出的缩放倍数 (实机高 / WORK_H); 还没截过 = 0 */
+    private static volatile float lastScale;
+
+    /**
+     * 无帧点击 —— 快速连点模式 (SettleLoop.runFast) 用。
+     *
+     * <p>那里**刻意不逐帧截屏** (截屏是整条链最贵的一步, 连点器省掉它才快),
+     * 于是拿不到 {@link Bitmap} 来算缩放倍数。缩放改从两处取:
+     * ① 观察线程最近一次截屏的高度 (它一直在截, 正常情况下一直是新值);
+     * ② 一次都没截过时 (冷启动的头几百毫秒) 兜底查一次 `wm size`。
+     * 两条都拿不到就按 1 倍 —— 宁可点偏也不抛异常打断循环。
+     */
+    public void tapWork(float wx, float wy) {
+        float s = lastScale;
+        if (s <= 0) s = lastScale = probeScale();
+        exec("input tap " + Math.round(wx * s) + " " + Math.round(wy * s));
+    }
+
+    /**
+     * `wm size` → 缩放倍数。
+     * ⚠️ 输出形如 "Physical size: 1080x2400\nOverride size: 1080x2400" ——
+     *    必须取**最后一个** size 行 (Override 才是实际生效的那个),
+     *    且数值对之间以 'x' 分隔、与中文/说明文字混排, 所以用正则挑出所有 WxH 取末个。
+     */
+    private static float probeScale() {
+        String out = exec("wm size");
+        if (out == null) return 1f;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(\\d+)\\s*x\\s*(\\d+)").matcher(out);
+        float h = 0;
+        while (m.find()) h = Float.parseFloat(m.group(2));
+        return h > 0 ? h / WORK_H : 1f;
     }
 
     public void swipeWork(Bitmap frame, float x1, float y1, float x2, float y2, long ms) {

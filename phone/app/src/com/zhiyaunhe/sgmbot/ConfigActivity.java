@@ -1,6 +1,7 @@
 package com.zhiyaunhe.sgmbot;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -83,6 +84,23 @@ public class ConfigActivity extends Activity {
         intEdit("run.max_minutes", "单次最长 (分钟)", sec("run", "max_minutes", 0), 0, 1440);
         textEdit("run.pause_from", "暂停起 (HH:MM)", str("run", "pause_from", ""));
         textEdit("run.pause_to", "暂停止 (HH:MM)", str("run", "pause_to", ""));
+
+        /* ---- 快速连点 ---- */
+        section("快速连点模式 (fast) — 用盲点换速度");
+        hint("前提: 一直胜利 + 该结算页没有额外奖励按钮 (SELL ALL / HIDE STATS)。\n"
+                + "原理: 结算页第一个界面的 CONTINUE 和第二个界面的 REMATCH 是**同一个点**"
+                + "(按钮行里居中那颗), 所以一直点它就能 前进 / 重开, 不必逐帧做模板匹配。\n"
+                + "分工: 主线程只连点; 弹窗检测/计场/停车交给一个独立线程 (每 observe_ms 一帧)。\n"
+                + "⚠️ 战斗中点到那里无害, 但**开着的时候别让游戏停在不认识的页面上**。");
+        boolEdit("fast.enable", "开启快速连点 (默认关)", bool("fast", "enable", false));
+        intEdit("fast.tap_ms", "连点间隔 (ms)", sec("fast", "tap_ms", 300), 60, 2000);
+        intEdit("fast.observe_ms", "观察线程周期 (ms)", sec("fast", "observe_ms", 1000), 200, 5000);
+        intEdit("fast.round_gap_s", "计场最小间隔 (s)", sec("fast", "round_gap_s", 5), 1, 60);
+        intEdit("fast.idle_stop_s", "无进展停车 (s, 0=关)", sec("fast", "idle_stop_s", 300), 0, 3600);
+        intEdit("fast.popup_pause_ms", "剥弹窗后暂停连点 (ms)",
+                sec("fast", "popup_pause_ms", 2000), 0, 10000);
+        hint("落点 fast.xy 缺省 = 结算按钮行中间那颗的中心 (换分辨率会自动跟着 ROI 映射走)。"
+                + "要手改坐标请直接编辑 config.json —— 坐标是标定项, 这里不暴露。");
 
         /* ---- 流水 ---- */
         section("判定流水");
@@ -179,8 +197,36 @@ public class ConfigActivity extends Activity {
         }
     }
 
-    private static JSONObject existingOverride() {
+    /**
+     * 从别的页面改**一个** override 键 —— 主页那个「快速连点模式」一键开关用。
+     *
+     * <p>走的是与 {@link #save} **同一条落地路径** (Config.merge 保留之前写过的其它键 →
+     * 写 Paths.config() → BotService.reload())。不另搞一套的理由见类注释:
+     * 两条路各写各的会产出语义不同的文件, 也会把没碰过的默认值"固化"进 override。
+     *
+     * @return null 成功; 否则是人话错误
+     */
+    static String setOverride(Context ctx, String path, Object val) {
         try {
+            JSONObject ov = new JSONObject();
+            put(ov, path, String.valueOf(val));
+            JSONObject merged = Config.merge(existingOverride(), ov);
+            File f = new File(Paths.config());
+            File p = f.getParentFile();
+            if (p != null && !p.exists()) p.mkdirs();
+            FileOutputStream os = new FileOutputStream(f);
+            os.write(merged.toString(2).getBytes("UTF-8"));
+            os.close();
+            BotService.reload();
+            SgmLog.i("cfg", "override 单键写入 " + path + "=" + val + " → " + f.getAbsolutePath());
+            return null;
+        } catch (Throwable t) {
+            SgmLog.i("cfg", "override 单键写入失败: " + t);
+            return t.toString();
+        }
+    }
+
+    private static JSONObject existingOverride() {        try {
             File f = new File(Paths.config());
             if (f.exists() && f.length() > 0)
                 return Config.load(new java.io.FileInputStream(f));
