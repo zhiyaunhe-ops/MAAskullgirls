@@ -69,6 +69,9 @@ public final class SettleLoop {
     private int roiW = -1, roiH = -1;
     private int[] titleR = null;
     private List<int[]> btnR = null;
+    /** 快速连点落点要绕开的 HUD 挡块 (已按当前分辨率解析); 见 WorkPoint */
+    private List<int[]> avoidR = null;
+    private int avoidGap = WorkPoint.DEFAULT_GAP;
     private JSONObject cfgRef;
     /** 模板缩放倍数 (非 abs/center 分辨率模式下 ≠1) — 变了就重新取缩放版模板 */
     private double tplSX = 1.0, tplSY = 1.0;
@@ -78,6 +81,8 @@ public final class SettleLoop {
     /** 连点器与观察线程共享的落点 (work 坐标); 观察线程解析出来后连点器才开点 */
     private volatile float fxX = 640, fxY = 512;
     private volatile boolean fxReady = false;
+    /** 落点是怎么算出来的 (WorkPoint 状态码) — 日志用, 见 {@link #fxPointText()} */
+    private volatile int fxState = 0;
     /** 连点闸门时刻: 剥完弹窗后短暂停手, 让画面稳下来再点 (避免一掌拍在弹窗按钮上) */
     private volatile long fxGateUntil = 0;
     /** 连点次数 (观察线程日志里报) */
@@ -398,7 +403,7 @@ public final class SettleLoop {
         SgmLog.i("快", "快速连点模式 — 连点 " + tapMs + "ms / 观察 " + obsMs + "ms / 落点 "
                 + (fxy != null && fxy.length() >= 2
                     ? "fast.xy(" + (int) fxy.optDouble(0) + "," + (int) fxy.optDouble(1) + ")"
-                    : "缺省 = btn_rois 中槽中心")
+                    : "缺省 = btn_rois 中槽中心, 再绕开 avoid 挡块")
                 + " / 一局去抖 " + gapS + "s / 无进展停车 "
                 + (idleS > 0 ? idleS + "s" : "关") + " — 关掉改 config.fast.enable=false");
 
@@ -472,9 +477,12 @@ public final class SettleLoop {
                 fxReady = true;
                 lastAct = t0;
                 homeSlot = slotOfPoint();
-                SgmLog.i("快", "落点就绪 work(" + work.w + "x" + work.h + ") → 点 ("
-                        + (int) fxX + "," + (int) fxY + ")"
-                        + (homeSlot >= 0 ? " = 第 " + (homeSlot + 1) + " 格" : " (不在任何按钮槽里)"));
+                SgmLog.i("快", "落点就绪 work(" + work.w + "x" + work.h + ") → 点 " + fxPointText()
+                        + (homeSlot >= 0 ? " = 第 " + (homeSlot + 1) + " 格" : " (不在任何按钮槽里)")
+                        + " | 挡块 " + avoidText());
+                if (fxState == 3)
+                    SgmLog.i("!!", "落点仍落在挡块 " + avoidText() + " 里且槽内无处可挪 — "
+                            + "会点到 HUD (战斗界面就是 1x/3x 速度泡)。请手改 fast.xy 挑一个干净坐标。");
             }
             frames++;
 
@@ -589,30 +597,81 @@ public final class SettleLoop {
         titleR = Roi.resolve(cfgRef, titleRoi, work.w, work.h);
         btnR = new ArrayList<>();
         for (int[] r : btnRois) btnR.add(Roi.resolve(cfgRef, r, work.w, work.h));
+        avoidR = resolveAvoid(work.w, work.h);
         SgmLog.i("屏", work.w + "x" + work.h + " (ar=" + String.format("%.2f", work.w / (float) work.h)
                 + ") 档=" + Roi.profileOf(cfgRef, work.w, work.h)
                 + " mode=" + Roi.modeOf(cfgRef, work.w, work.h));
     }
 
     /**
+     * 解析「要绕开的 HUD 挡块」到当前分辨率。
+     *
+     * <p>config.fast.avoid 缺省时回落到 {@link WorkPoint#DEFAULT_AVOID} —— 那条是
+     * K70 真机实测的战斗速度泡, **不能因为配置里没写就当没有**: 少了它落点会重新
+     * 落回速度泡中心 (2026-10-11 用户报障「会点到 x3 那里」)。
+     */
+    private List<int[]> resolveAvoid(int w, int h) {
+        JSONObject f = sub(cfgRef, "fast");
+        avoidGap = f == null ? WorkPoint.DEFAULT_GAP : clamp(f.optInt("avoid_gap", WorkPoint.DEFAULT_GAP), 0, 200);
+        JSONArray raw = f == null ? null : f.optJSONArray("avoid");
+        if (raw == null || raw.length() == 0) return WorkPoint.defaultAvoid();
+        List<int[]> l = new ArrayList<int[]>(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            JSONArray e = raw.optJSONArray(i);
+            if (e == null || e.length() < 4) continue;
+            l.add(Roi.resolve(cfgRef, new int[]{
+                    (int) e.optDouble(0), (int) e.optDouble(1),
+                    (int) e.optDouble(2), (int) e.optDouble(3)}, w, h));
+        }
+        return l.isEmpty() ? WorkPoint.defaultAvoid() : l;
+    }
+
+    /** 落点的一句话描述 (就绪日志 + 状态快照共用) */
+    private String fxPointText() {
+        return "(" + (int) fxX + "," + (int) fxY + ") " + WorkPoint.describe(fxState);
+    }
+
+    /** 挡块表的人话 (日志用); 空表 = 没配也没回落到出厂值, 不该发生 */
+    private String avoidText() {
+        if (avoidR == null || avoidR.isEmpty()) return "无";
+        StringBuilder sb = new StringBuilder("间距" + avoidGap + " [");
+        for (int i = 0; i < avoidR.size(); i++) {
+            int[] r = avoidR.get(i);
+            if (i > 0) sb.append(' ');
+            sb.append(r[0]).append(',').append(r[1]).append(',')
+              .append(r[2]).append(',').append(r[3]);
+        }
+        return sb.append(']').toString();
+    }
+
+    /**
      * 快速连点模式的落点解析:
      *   ① config.fast.xy 有值 → 按当前屏幕映射 (与其它标定坐标同口径);
-     *   ② 缺省 → **btn_rois 中槽的中心**。取中槽不是随手挑的: 结算页的按钮行是**整行居中**
-     *      的, 所以"单按钮页" (MATCH REWARDS: 只有 CONTINUE) 和"三按钮页"
-     *      (FAVORITE|REMATCH|CONTINUE) 的中间一颗落在**同一个 x** —— 这就是用户说的
-     *      「第一个界面的 CONTINUE 和第二个界面的 REMATCH 在同一个位置」。
-     *      由 btn_rois 推出来还有个好处: 换分辨率时跟着 ROI 映射一起走, 不必另行标定。
+     *   ② 缺省 → **btn_rois 中槽中心, 再绕开 HUD 挡块**。
+     *
+     * <p>取中槽不是随手挑的: 结算页的按钮行是**整行居中**的, 所以"单按钮页"
+     * (MATCH REWARDS: 只有 CONTINUE) 和"三按钮页" (FAVORITE|REMATCH|CONTINUE) 的
+     * 中间一颗落在**同一个 x** —— 这就是用户说的「第一个界面的 CONTINUE 和第二个界面的
+     * REMATCH 在同一个位置」。由 btn_rois 推出来还有个好处: 换分辨率时跟着 ROI 映射一起走。
+     *
+     * <p><b>但中槽中心本身不能直接点</b> (2026-10-11 用户报障「会点到 x3 那里」):
+     * 战斗界面的 1x/3x 速度泡实测占 work x608~672 / y450~518, 其下沿正是中槽中心的 y512
+     * ⇒ 盲点在战斗帧上会一路点亮速度泡。所以再走一步 {@link WorkPoint#pick} 把落点
+     * 推到挡块右侧 (仍在结算按钮面板 x546~734 内)。
      */
     private void resolveFastPoint(JSONArray fxy) {
         if (fxy != null && fxy.length() >= 2) {
             float[] p = Roi.resolvePoint(cfgRef, new float[]{
                     (float) fxy.optDouble(0), (float) fxy.optDouble(1)}, roiW, roiH);
-            if (p != null && p.length >= 2) { fxX = p[0]; fxY = p[1]; return; }
+            if (p != null && p.length >= 2) {
+                fxX = p[0]; fxY = p[1];
+                fxState = WorkPoint.inside(avoidR, fxX, fxY) ? 3 : 0;   // 手填坐标也体检一次
+                return;
+            }
         }
         if (btnR != null && btnR.size() > 1) {
-            int[] r = btnR.get(1);
-            fxX = r[0] + r[2] / 2f;
-            fxY = r[1] + r[3] / 2f;
+            float[] p = WorkPoint.pick(btnR.get(1), avoidR, avoidGap);
+            fxX = p[0]; fxY = p[1]; fxState = (int) p[2];
         }
     }
 
@@ -803,6 +862,7 @@ public final class SettleLoop {
                     .put("rematches", rematches).put("continues", continues)
                     .put("fast", fastOn).put("fast_taps", fxTaps)
                     .put("fast_xy", (int) fxX + "," + (int) fxY)
+                    .put("fast_xy_why", WorkPoint.describe(fxState))
                     .put("matcher", Vision.modeText())
                     .put("roi_mode", Roi.modeOf(cfgRef, roiW, roiH))
                     .put("work", roiW + "x" + roiH)

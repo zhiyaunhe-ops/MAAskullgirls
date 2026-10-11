@@ -1,8 +1,10 @@
 import com.zhiyaunhe.sgmbot.Vision;
+import com.zhiyaunhe.sgmbot.WorkPoint;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.util.List;
 
 /**
  * 结算页按钮槽位打分 — **真机现场实验**工具 (纯 JVM, 不碰 android.graphics)。
@@ -30,10 +32,13 @@ import java.io.File;
  *   2. 每个模板在**整帧**上的最佳位置 (判断"ROI 框错了"还是"模板本身不匹配");
  *   3. 按 SettleLoop.phase1 的真实顺序**模拟判定**, 直接说明"代码会点哪个"。
  *   另把三个槽裁成 PNG 落盘 —— "槽里到底是哪个按钮"一眼可见。
+ *   最后 (2026-10-11 加) 报**快速连点落点体检**: 落点坐标 + 是否落在 HUD 挡块里 +
+ *   每个模板正对该点的分数。量的是 {@link WorkPoint#pick} 的返回值, 与实机同一个类。
  *
  * 用法 (仓库根):
  *   javac -encoding UTF-8 -nowarn -cp <android.jar> -d <out> \
- *         phone/app/src/com/zhiyaunhe/sgmbot/Vision.java phone/app/tools/SlotProbe.java
+ *         phone/app/src/com/zhiyaunhe/sgmbot/Vision.java \
+ *         phone/app/src/com/zhiyaunhe/sgmbot/WorkPoint.java phone/app/tools/SlotProbe.java
  *   java -Dfile.encoding=UTF-8 -cp <out>;<android.jar> SlotProbe <帧.png|jpg> [模板目录] [th] [norot]
  *
  * 帧支持任意分辨率与朝向: 竖图先转正 (默认转, 传 norot 关掉), 再按高 576 缩放
@@ -145,15 +150,50 @@ public class SlotProbe {
         System.out.println("  顺带: victory 在 title_roi 峰值 " + fmt(vs)
                 + (vs >= th ? "  (大字判得到)" : "  (<th — 大字也判不到!)"));
 
-        /* ---- 4. 快速连点 (config.fast) 默认落点体检 ----
-         * 缺省落点 = btn_rois 中槽中心 (SettleLoop.resolveFastPoint)。这里把每个模板
-         * **正对该点**的 NCC 打出来 —— 盲点的就是这一格, 它是什么按钮一目了然。 */
-        int fxpX = SLOTS[1][0] + SLOTS[1][2] / 2, fxpY = SLOTS[1][1] + SLOTS[1][3] / 2;
-        System.out.println("\n== 快速连点缺省落点 = 中槽中心 (" + fxpX + "," + fxpY + ") ==");
-        for (int i = 0; i < TPLS.length; i++) {
+        /* ---- 4. 快速连点 (config.fast) 落点体检 ----
+         * 落点 = btn_rois 中槽中心, 再绕开 HUD 挡块 (SettleLoop.resolveFastPoint →
+         * WorkPoint.pick, **同一个类**, 所以这里报的就是实机要点的那个点)。
+         * 把每个模板**正对该点**的 NCC 打出来 —— 盲点的就是这一格, 它是什么按钮一目了然。
+         * 边界 1: 战斗帧上这一格应当是空的 (速度泡必须已被绕开)。
+         * 边界 2: 结算帧上这一格应当落在中槽按钮上。 */
+        List<int[]> avoid = WorkPoint.defaultAvoid();
+        float[] fp = WorkPoint.pick(SLOTS[1], avoid, WorkPoint.DEFAULT_GAP);
+        int fxpX = (int) fp[0], fxpY = (int) fp[1], fpState = (int) fp[2];
+        System.out.println("\n== 快速连点缺省落点 (中槽中心 + 绕开挡块) ==");
+        System.out.println("  中槽中心 = (" + (SLOTS[1][0] + SLOTS[1][2] / 2) + ","
+                + (SLOTS[1][1] + SLOTS[1][3] / 2) + ")   →  实际落点 = ("
+                + fxpX + "," + fxpY + ")  [" + WorkPoint.describe(fpState) + "]");
+        System.out.println("  落在槽里?   " + slotOf(fxpX, fxpY));
+
+        /* 4a. 速度泡体检 —— 这是本工具存在的理由 (用户报障「会点到 x3 那里」)。
+         * 战斗帧上必须**不命中**这个落点; 命中就成了"又在点速度泡"。 */
+        System.out.println("  -- 速度泡体检 (战斗界面的 1x/3x 气泡) --");
+        String[] spd = {"battle_spd_1x", "battle_spd_3x"};
+        for (String name : spd) {
+            File sf = new File(tplDir + name + ".png");
+            if (!sf.exists()) { System.out.println("     " + name + " 缺模板, 跳过"); continue; }
+            int[] swh = new int[2];
+            Vision.Frame st = new Vision.Frame(load(sf.getPath(), swh), swh[0], swh[1]);
+            double[] b = peakXY(f, st);
+            if (b[2] < th) { System.out.printf("     %-14s 不在画面 (最高 %.3f)%n", name, b[2]); continue; }
+            int[] box = {(int) b[0], (int) b[1], st.w, st.h};
+            System.out.printf("     %-14s %.3f @ 框 %s%n", name, b[2], join(box));
+            for (int[] r : avoid)
+                if (r[0] == box[0] && r[1] == box[1])
+                    System.out.println("        ↑ 就是挡块 " + join(r) + " (config.fast.avoid)");
+            System.out.println("        落点在里面? "
+                    + (WorkPoint.inside(box, fxpX, fxpY) ? "**是 — 会点到速度泡!**" : "否 ✓"));
+        }
+
+        /* 4b. 结算页: 落点应当落在某个按钮的框里 (战斗中一个都不会命中, 属正常) */
+        System.out.println("  -- 落点归属 (整帧最佳按钮框) --");
+        for (int i = 0; i < 3; i++) {
             if (tpl[i] == null) continue;
-            double s = Vision.scoreAt(f, tpl[i], fxpX - tpl[i].w / 2, fxpY - tpl[i].h / 2);
-            System.out.printf("  %-14s 正中 %.3f%s%n", TPLS[i], s, s >= th ? "   ← 落点这格就是它" : "");
+            double[] b = peakXY(f, tpl[i]);
+            if (b[2] < th) { System.out.printf("     %-14s 画面里没有 (最高 %.3f)%n", TPLS[i], b[2]); continue; }
+            int[] box = {(int) b[0], (int) b[1], tpl[i].w, tpl[i].h};
+            System.out.printf("     %-14s %.3f @ 框 %s   落点在里面? %s%n",
+                    TPLS[i], b[2], join(box), WorkPoint.inside(box, fxpX, fxpY) ? "**是**" : "否");
         }
     }
 

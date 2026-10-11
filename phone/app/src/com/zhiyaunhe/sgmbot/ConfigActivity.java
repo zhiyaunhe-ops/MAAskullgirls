@@ -99,8 +99,10 @@ public class ConfigActivity extends Activity {
         intEdit("fast.idle_stop_s", "无进展停车 (s, 0=关)", sec("fast", "idle_stop_s", 300), 0, 3600);
         intEdit("fast.popup_pause_ms", "剥弹窗后暂停连点 (ms)",
                 sec("fast", "popup_pause_ms", 2000), 0, 10000);
-        hint("落点 fast.xy 缺省 = 结算按钮行中间那颗的中心 (换分辨率会自动跟着 ROI 映射走)。"
-                + "要手改坐标请直接编辑 config.json —— 坐标是标定项, 这里不暴露。");
+        hint("落点 fast.xy 缺省 = 结算按钮行中间那颗的中心, **再绕开 fast.avoid 挡块**。"
+                + "那条挡块是实测量出来的: 战斗界面的 1x/3x 速度泡正好压在中槽中心, 不绕开"
+                + "就会一路点到速度泡 (2026-10-11 实报)。换设备撞上别的 HUD 就往 avoid 里加一条。"
+                + "要手改坐标/挡块请直接编辑 config.json —— 坐标是标定项, 这里不暴露。");
 
         /* ---- 流水 ---- */
         section("判定流水");

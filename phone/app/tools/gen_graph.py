@@ -89,7 +89,10 @@ nodes = [
     #   2026-10-11 用户提出: 结算页第一个界面的 CONTINUE 与第二个界面的 REMATCH
     #   **落在同一个点** (都是按钮行里居中的那颗, K70 真机帧实测中心 (640,512),
     #   见 tools/SlotProbe 输出) ⇒ 一直点它就能 页A 前进 / 页B 重开, 不必逐帧匹配。
-    N('fxtap',  '连点器 (主线程)', 'tap',  7, '按 tap_ms 盲点 fast.xy (缺省 = btn_rois 中槽中心)',
+    N('fxpt',   '落点解析',     'entry', 7, '中槽中心 + **绕开 HUD 挡块** (config.fast.avoid) → 可点坐标',
+      cfg='fast.avoid', note='2026-10-11 用户报障「会点到 x3 那里」: 战斗界面的 1x/3x 速度泡'
+                             ' (work x608~672/y450~518) 正好压在中槽中心 ⇒ 落点右移出挡块 (WorkPoint.pick)'),
+    N('fxtap',  '连点器 (主线程)', 'tap',  7, '按 tap_ms 盲点落点',
       cfg='fast.tap_ms', note='不截屏不匹配 —— 这是快的地方。战斗中点到那里无害'),
     N('fxobs',  '观察线程',     'loop',  7, '独立线程每 observe_ms 截一帧, 干弹窗/计场/停车三件事',
       cfg='fast.observe_ms', note='与连点器并行; 只有它在截屏'),
@@ -103,7 +106,8 @@ nodes = [
 
 edges = [
     E('tpl', 'roisc'), E('roisc', 'cap0'), E('cap0', 'fmode'),
-    E('fmode', 'run', '否 (常规)'), E('fmode', 'fxtap', '是 (fast)'),
+    E('fmode', 'run', '否 (常规)'), E('fmode', 'fxpt', '是 (fast)'),
+    E('fxpt', 'fxtap'),          # 落点先算出来 (要同步一帧 ROI), 连点器才开点
     # fast 子图: 连点器与观察线程**并行**跑, 观察线程串起弹窗/计场/停车
     E('fxtap', 'fxobs', '并行'), E('fxobs', 'fxtap', '循环'),
     E('fxobs', 'fxpop'), E('fxpop', 'fxbig'), E('fxbig', 'fxidle'),

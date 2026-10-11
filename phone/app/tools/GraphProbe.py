@@ -195,6 +195,35 @@ public class Probe {
         for (String s : anchors) if (!id_of.has(s)) { miss++; System.out.println("     missing anchor " + s); }
         ck("__N__ runtime anchors present", miss == 0, miss);
 
+        // ---- 快速连点落点 (2026-10-11 用户报障「会点到 x3 那里」) ----
+        // 修法 = 落点绕开 HUD 挡块。两件事都要钉住:
+        //   ① config.fast.avoid 与代码常量 WorkPoint.DEFAULT_AVOID 不许漂移
+        //      (漂了会"配置里有、代码兜底是另一套", 谁生效看运气);
+        //   ② WorkPoint.pick 的**行为**确实把落点从中槽中心挪出去了, 且仍在槽内。
+        System.out.println("== fast 落点 (绕开挡块) ==");
+        JSONObject fast = cfg.getJSONObject("fast");
+        JSONArray av = fast.getJSONArray("avoid");
+        ck("fast.avoid 条数 = WorkPoint.DEFAULT_AVOID",
+                av.length() == WorkPoint.DEFAULT_AVOID.length, av.length());
+        for (int i = 0; i < Math.min(av.length(), WorkPoint.DEFAULT_AVOID.length); i++) {
+            JSONArray e = av.getJSONArray(i);
+            int[] d = WorkPoint.DEFAULT_AVOID[i];
+            boolean same = e.length() >= 4 && (int) e.optDouble(0) == d[0] && (int) e.optDouble(1) == d[1]
+                    && (int) e.optDouble(2) == d[2] && (int) e.optDouble(3) == d[3];
+            ck("fast.avoid[" + i + "] = 代码常量 " + d[0] + "," + d[1] + "," + d[2] + "," + d[3], same, e);
+        }
+        JSONArray slots = cfg.getJSONArray("btn_rois");
+        int[] mid = new int[]{slots.getJSONArray(1).optInt(0), slots.getJSONArray(1).optInt(1),
+                slots.getJSONArray(1).optInt(2), slots.getJSONArray(1).optInt(3)};
+        float mx = mid[0] + mid[2] / 2f, my = mid[1] + mid[3] / 2f;
+        java.util.List<int[]> defAv = WorkPoint.defaultAvoid();
+        ck("中槽中心 (" + (int) mx + "," + (int) my + ") 本来落在挡块里 (= 被修的那个 bug)",
+                WorkPoint.inside(defAv, mx, my), "不在");
+        float[] p = WorkPoint.pick(mid, defAv, fast.optInt("avoid_gap", WorkPoint.DEFAULT_GAP));
+        ck("pick 后落点 (" + (int) p[0] + "," + (int) p[1] + ") 已离开挡块  [" + WorkPoint.describe((int) p[2]) + "]",
+                !WorkPoint.inside(defAv, p[0], p[1]), p[0] + "," + p[1]);
+        ck("pick 后落点仍在结算中槽内", WorkPoint.inside(mid, p[0], p[1]), p[0] + "," + p[1]);
+
         System.out.println("== " + pass + " passed, " + fail + " failed ==");
         System.exit(fail == 0 ? 0 : 1);
     }
@@ -213,6 +242,7 @@ def main():
     probe = write_probe()
     srcs = [probe,
             os.path.join(SRC, 'Graph.java'),
+            os.path.join(SRC, 'WorkPoint.java'),      # fast 落点几何 (纯 java.util, 无 android 依赖)
             os.path.join(OUT, 'src', 'SgmLog.java'),
             os.path.join(OUT, 'src', 'BotService.java'),
             os.path.join(OUT, 'src', 'Trace.java'),

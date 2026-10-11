@@ -94,7 +94,8 @@ curl http://127.0.0.1:8791/log         # app.log
 | `store` | `keep_days` | 400 | 战绩归档保留天数（≈13 个月），超期丢最旧 |
 | `popup` | `guard` / `after_sec` / `every_sec` | true / 5 / 5 | 弹窗守卫：无动作超 5s 后每 5s 剥一次（见「弹窗处理」） |
 | `fast` | `enable` | false | **快速连点模式**总开关（见「快速连点模式」）。默认关 |
-| `fast` | `xy` | null | 盲点落点（work 坐标）。null = 用 `btn_rois` 中槽中心 |
+| `fast` | `xy` | null | 盲点落点（work 坐标）。null = `btn_rois` 中槽中心**再绕开 `avoid` 挡块** |
+| `fast` | `avoid` / `avoid_gap` | 速度泡 / 24 | 落点要绕开的 HUD 挡块（work `[x,y,w,h]` 列表）+ 安全间距。改这两项见「落点为什么要绕开」 |
 | `fast` | `tap_ms` / `observe_ms` | 300 / 1000 | 连点间隔 / 观察线程周期 |
 | `fast` | `round_gap_s` | 5 | 计场最小间隔（大字去抖，防换页闪断重复计场） |
 | `fast` | `idle_stop_s` | 300 | 一场没计到就停车（0=关） |
@@ -246,16 +247,21 @@ JS 那边同一个模板毫秒级，差别只在引擎。
 **现场取证工具**：`tools/SlotProbe.java` 对**任意帧**（真机 `adb exec-out screencap -p` 抓的
 原图也行，会自动转正 + 缩到高 576）输出「模板 × 三槽」NCC 峰值矩阵 + 全帧最佳坐标
 （区分"ROI 框错"还是"模板配不上"）+ 三个槽的裁图 + 按 phase1 **真实顺序**的模拟判定
-+ **快速连点落点体检**（每个模板正对落点那格的 NCC），直接说明"代码会点哪个、为什么"：
++ **快速连点落点体检**（落点坐标 + 是否落在 HUD 挡块里 + **速度泡在不在落点上** +
+  落点归属哪个按钮框），直接说明"代码会点哪个、为什么"：
 
 ```bash
 cd phone/app
 javac -encoding UTF-8 -nowarn -cp ../../vendor/android-build/platforms/android-34/android.jar \
-      -d /tmp/slotprobe src/com/zhiyaunhe/sgmbot/Vision.java tools/SlotProbe.java
+      -d /tmp/slotprobe src/com/zhiyaunhe/sgmbot/Vision.java \
+      src/com/zhiyaunhe/sgmbot/WorkPoint.java tools/SlotProbe.java
 java -Dfile.encoding=UTF-8 \
      -cp "/tmp/slotprobe;../../vendor/android-build/platforms/android-34/android.jar" \
      SlotProbe <帧.png|jpg> assets/templates/ 0.72
 ```
+
+（落点由 `WorkPoint.java` 算，**探针与运行时引的是同一个类**，不会再出现
+"探针说没事、实机点到别处"。）
 
 `SettleLoop` 每次判定还会往 `logs/app.log` 打一条 `[判]` 行，带**两个模板 × 每个槽的峰值**
 —— 出问题时不必再猜"是 REMATCH 漏识别还是别的槽抢跑"。
@@ -272,6 +278,31 @@ java -Dfile.encoding=UTF-8 \
 结算按钮行是**整行居中**的，所以"单按钮页"（MATCH REWARDS，只有 CONTINUE）的中那颗
 和"三按钮页"（FAVORITE | REMATCH | CONTINUE）的中间那颗都是 `btn_rois` 中槽中心。
 ⇒ 一直点它就能做到 页A 前进 / 页B 重开，整条结算-再战链**不需要任何模板匹配**。
+
+### 落点为什么要绕开（2026-10-11 用户报障「会点到 x3 那里」）
+
+中槽中心本身**不能直接点**。战斗界面的 `1x / 2x / 3x` **速度泡**与结算按钮行是两套独立
+HUD，而它在 K70 真机上的位置**正好压住中槽中心**（都在 x=640）：
+
+| 对象 | work 坐标（K70，2400×1080 → work 1280×576） | 依据 |
+|---|---|---|
+| 中槽 / 结算按钮面板 | 槽 x530~750；面板 x546~734，y486~528 | `btn_rois` + `btn_continue` 匹配 0.993 |
+| **速度泡**（1x/3x） | **x608~672，y450~518**（内圈 610~670 × 452~512） | `battle_spd_1x` 匹配 **1.000 @(610,452)**（`wt3.png`），扫中轴列/横行取实体边界 |
+
+泡的下沿（~518）比按钮面板的上沿（~486）还低 ⇒ y 方向只挤出 10px，太紧；
+而面板比泡**宽**（左侧 546~608、右侧 672~734 各约 60px 干净区）⇒ **往右挪**。
+
+所以落点 = `WorkPoint.pick(中槽, config.fast.avoid, avoid_gap)`：默认把中槽中心推到
+挡块右沿 + 24px ⇒ **K70 上实测落点 (700,512)**。真机帧复核：
+
+```
+结算帧 win_now.png  落点(700,512) 在 btn_continue 框 546,494,188,36 内 ✓  速度泡不在画面
+战斗帧 wt3.png      速度泡 1.000 @框 610,452,60,60  落点在里面? 否 ✓
+```
+
+`avoid` 是**标定项**：换设备/换分辨率若又撞上别的 HUD，往列表里加一条即可
+（`WorkPoint.DEFAULT_AVOID` 是缺省值，配置里写了就以配置为准；两者**必须一致** ——
+`GraphProbe.py` 会断言，漂了就红）。`fast.xy` 手填的坐标也会体检，落进挡块会打 `[!!]` 日志。
 
 **分工（这是它快的全部原因）**：
 
@@ -294,7 +325,8 @@ java -Dfile.encoding=UTF-8 \
 
 ```jsonc
 "fast": { "enable": true, "tap_ms": 300, "observe_ms": 1000,
-          "round_gap_s": 5, "idle_stop_s": 300, "popup_pause_ms": 2000 }
+          "round_gap_s": 5, "idle_stop_s": 300, "popup_pause_ms": 2000,
+          "avoid": [[604, 446, 72, 76]], "avoid_gap": 24 }
 ```
 
 开/关两条路：主页 **「运行模式」一键切换**（写 override 单键 + 热重载），
@@ -305,15 +337,14 @@ java -Dfile.encoding=UTF-8 \
 和落点坐标 —— 用它核对"落点那格到底是不是 CONTINUE / REMATCH"：
 
 ```
-[观] 第 12 帧 → CONTINUE页 | rematch(0.34 0.34 0.15) continue(0.05 0.99 0.05) | 落点(640,512) 已连点 40 次 / 剥弹窗 0 次 / 本轮 3 场
+[观] 第 12 帧 → CONTINUE页 | rematch(0.34 0.34 0.15) continue(0.05 0.99 0.05) | 落点(700,512) 已连点 40 次 / 剥弹窗 0 次 / 本轮 3 场
 ```
 
-`tools/SlotProbe.java` 也能离线核对：它末尾会把**每个模板正对落点**的 NCC 打出来
-（"落点这格就是它"）。K70 真机帧 `debug/k70_nav/win_now.png`（MATCH REWARDS 页）实测：
-`btn_continue` 正中 0.989 / `btn_rematch` 正中 0.336 ⇒ 缺省落点在中槽是对的。
+`tools/SlotProbe.java` 也能离线核对同一件事：末尾报落点坐标 + **速度泡体检**
+（泡在不在落点上）+ 落点归属哪个按钮框。K70 真机帧实测见上表。
 
 ⚠️ **手上还没有"第二个界面（有 REMATCH 那页）"的真机帧**（`debug/k70_nav/` 里没抓到）。
-所以页B 的 REMATCH 位置目前是从 `btn_rois` 的标定推出来的（中槽中心），
+所以页B 的 REMATCH 位置目前是从 `btn_rois` 的标定推出来的（中槽，右移 60px 后仍是中槽内），
 **没有独立帧证据**。第一次在真机上开这个模式时，请把 `[观]` 行发出来核对；
 若页B 的 REMATCH 不在中槽，改 `fast.xy` 即可（坐标是标定项，配置编辑页不暴露，
 直接编辑 `config.json`）。

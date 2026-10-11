@@ -90,7 +90,17 @@
   "round_gap_s": 5,
   "idle_stop_s": 300,
   "popup_pause_ms": 2000,
-  "note": "快速连点模式: 主线程盲点 xy (缺省 = btn_rois 中槽中心), 独立观察线程负责弹窗/计场/停车"
+  "note": "快速连点模式: 主线程盲点 xy (缺省 = btn_rois 中槽中心, 再绕开 avoid 挡块), 独立观察线程负责弹窗/计场/停车",
+  "avoid": [
+   [
+    604,
+    446,
+    72,
+    76
+   ]
+  ],
+  "avoid_gap": 24,
+  "avoid_note": "要绕开的 HUD 挡块 (work 坐标, 每项 [x,y,w,h]) —— 实测: 战斗界面的 1x/3x 速度泡; 见 WorkPoint.DEFAULT_AVOID"
  },
  "run": {
   "max_minutes": 0,
@@ -349,11 +359,20 @@
        "cond": "计完这场打到上限 → run=false"
      },
      {
+       "id": "fxpt",
+       "label": "落点解析",
+       "kind": "entry",
+       "lane": 7,
+       "cond": "中槽中心 + **绕开 HUD 挡块** (config.fast.avoid) → 可点坐标",
+       "cfg": "fast.avoid",
+       "note": "2026-10-11 用户报障「会点到 x3 那里」: 战斗界面的 1x/3x 速度泡 (work x608~672/y450~518) 正好压在中槽中心 ⇒ 落点右移出挡块 (WorkPoint.pick)"
+     },
+     {
        "id": "fxtap",
        "label": "连点器 (主线程)",
        "kind": "tap",
        "lane": 7,
-       "cond": "按 tap_ms 盲点 fast.xy (缺省 = btn_rois 中槽中心)",
+       "cond": "按 tap_ms 盲点落点",
        "cfg": "fast.tap_ms",
        "note": "不截屏不匹配 —— 这是快的地方。战斗中点到那里无害"
      },
@@ -414,8 +433,12 @@
      },
      {
        "from": "fmode",
-       "to": "fxtap",
+       "to": "fxpt",
        "on": "是 (fast)"
+     },
+     {
+       "from": "fxpt",
+       "to": "fxtap"
      },
      {
        "from": "fxtap",
