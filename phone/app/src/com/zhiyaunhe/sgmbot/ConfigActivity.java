@@ -115,6 +115,11 @@ public class ConfigActivity extends Activity {
         intEdit("update.auto_check_h", "自动检查间隔 (小时, 0=关)",
                 sec("update", "auto_check_h", 12), 0, 168);
         boolEdit("update.allow_apk", "  允许自动装 APK", bool("update", "allow_apk", true));
+        hint("「允许自动装 APK」管的是**开了自动检查时**要不要顺手装整包 (默认只热更 bundle)。");
+        boolEdit("update.system_installer_fallback", "  装不上时弹系统安装界面",
+                bool("update", "system_installer_fallback", true));
+        hint("pm install (Shizuku 那条路) 走不通时, 是否改把 APK 交给**系统安装器**让你点一下"
+                + "「安装」。开着最省事 —— 不需要 Shizuku、不需要 adb; 关掉就只留一条路。");
 
         /* ---- 动作 ---- */
         Button save = new Button(this);

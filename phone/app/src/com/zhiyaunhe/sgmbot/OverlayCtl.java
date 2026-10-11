@@ -98,6 +98,7 @@ public final class OverlayCtl {
             bar = new OverlayBar(ctx);
             bar.show();
             bar.setText("待机\n今日" + Store.load().rounds + "场\n点开始跑");
+            bar.refreshStartLabel();             // 暂停中重新叫出来 ⇒ 那颗键该是「继续」
             svcOwned = false;                    // 用户自己开的 ⇒ 服务退出不收它
             startTick(ctx);
             SgmLog.i("overlay", "已独立启动 (不依赖服务)");
@@ -183,6 +184,9 @@ public final class OverlayCtl {
             @Override public void run() {
                 OverlayBar b = bar;
                 if (b == null || !b.isShown()) { stopTick(); return; }
+                /* 「开始 / 继续」的名字跟着状态走 —— 引擎可能不是被按键停的
+                 * (跑满每日上限/最长时长时 SettleLoop 自己停), 那时没有点击来立刻刷标签。 */
+                b.refreshStartLabel();
                 /* 服务在跑时不要抢 SettleLoop 的文案 (它会显示时长/胜负) */
                 if (!BotService.isRunning()) {
                     Store s = Store.load();

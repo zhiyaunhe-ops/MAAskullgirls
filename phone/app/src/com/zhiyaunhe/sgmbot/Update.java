@@ -42,6 +42,17 @@ import java.util.zip.ZipInputStream;
  *    判据是**让 shell 实测 `test -r`**, 不是看 App 侧"授没授权"的旗标 —— 旗标曾因
  *    Paths.init 的提前返回而恒为 false, 导致早有授权的机器被误报"shell 读不到"
  *    (2026-10-11 报障, 见 installApk 注释)。
+ *
+ * APK 有**两条路** (2026-10-11 用户要求加的兜底):
+ *   ① `pm install -r` 走 Shizuku —— 无需用户操作, 但要服务在跑 + shell 读得到 + 不撞降级;
+ *   ② 装不上就把 APK **交给系统安装器** ({@link ApkInstall}: content:// + ACTION_VIEW),
+ *      用户在系统界面上点一下「安装」。不需要 Shizuku, 也不需要「所有文件访问」。
+ *   ⚠️ 第②条路是**异步**的 (成不成由用户在系统界面里决定), 所以水位不能瞎猜:
+ *      弹出前记 meta.apk_pending(=远端 ver) + apk_pending_at, 下次 check 时比对
+ *      **本包自己的 lastUpdateTime** 来认账 (见 resolvePending)。不这么做就会陷入
+ *      "每次检查都说有更新 → 反复下 400KB → 再弹一次安装界面" 的死循环, 或者反过来
+ *      "明明没装上却记成已安装" (= 之前用户报的「版本号不变」)。
+ *
  * 入口: 主页按钮 / 广播 CMD?action=update / HTTP GET /update 与 POST /update?apk=1。
  */
 public final class Update {
@@ -129,15 +140,45 @@ public final class Update {
         boolean nb = r.optBoolean("need_bundle"), na = r.optBoolean("need_apk");
         if (applied) {
             int n = r.optInt("bundle_files", -1);
-            JSONObject apk = r.optJSONObject("apk");
             return pre + "bundle " + (r.has("bundle_err") ? "下载失败"
                             : (n < 0 ? (nb ? "失败" : "已最新") : n + " 文件已更新"))
-                    + "; apk " + (apk == null ? (na ? "失败" : "已最新")
-                            : (apk.optBoolean("ok") ? "已安装" : apk.optString("msg", "跳过")));
+                    + "; apk " + apkBrief(r, na);
         }
         return pre
                 + "bundle " + (nb ? "有更新 " : "已最新 ") + stamp(r, "bundle")
-                + "; apk " + (na ? "有更新 " : "已最新 ") + stamp(r, "apk");
+                + "; apk " + apkCheckText(r, na);
+    }
+
+    /**
+     * 拉取后 apk 那一格 —— 几种事实各有各的说法。
+     *
+     * ⚠️ 不能统一成默认的"跳过": 用户最需要区分的恰恰是
+     *    「已经弹出安装界面在等你点」(该去看屏幕) 和「根本没轮上装」(该去看原因)。
+     *    原来这条路径不写 msg ⇒ 一律显示"跳过", 用户当然觉得"没什么提示"。
+     */
+    private static String apkBrief(JSONObject r, boolean na) {
+        JSONObject apk = r.optJSONObject("apk");
+        if (apk == null) {
+            /* 这次连装都没轮上, 但上一次已经把安装界面弹出去过 —— 必须说出来,
+             * 否则用户看到"已最新"会以为已经装好了 */
+            if (r.optString("apk_waiting", "").length() > 0)
+                return "待安装 — 系统安装界面已弹出过, 去点「安装」";
+            return na ? "失败" : "已最新";
+        }
+        if (apk.optBoolean("ok")) return "已安装";
+        JSONObject fb = apk.optJSONObject("fallback");
+        if (fb != null && fb.optBoolean("launched")) return "待安装 — 系统安装界面已弹出, 去点「安装」";
+        if (fb != null && fb.optBoolean("need_perm")) return "待授权 — 先去「安装未知应用」里允许";
+        return apk.optString("msg", "跳过");
+    }
+
+    /** 只检查(没拉取)时的 apk 一句话 —— "待安装"也要说得出来, 否则用户以为没动静 */
+    private static String apkCheckText(JSONObject r, boolean na) {
+        String pend = r.optString("apk_pending", "");
+        String ver = r.optString("ver_apk", "");
+        if (pend.length() > 0 && pend.equals(ver))
+            return "待安装(系统安装界面已弹出) " + stamp(r, "apk");
+        return (na ? "有更新 " : "已最新 ") + stamp(r, "apk");
     }
 
     /** 远端资产的更新时间 (本地时区短串) —— 这才是"版本"的真实信号 */
@@ -196,6 +237,9 @@ public final class Update {
     private static JSONObject check0(Config cfg) {
         prog("查询 GitHub release…", -1);
         netErr = "";
+        /* 先认账: 上次走"系统安装器"那条路的到底装上没有 (比对本包 lastUpdateTime)。
+         * 必须在读 meta() 之前 —— 它可能会推进 apk_version / 清掉 apk_pending。 */
+        resolvePending(cfg);
         JSONObject u = sec(cfg);
         String repo = u.optString("repo", "");
         if (repo.length() == 0)
@@ -215,6 +259,9 @@ public final class Update {
         JSONObject m = meta(cfg);
         String curB = m.optString("bundle_version", "0");
         String curA = m.optString("apk_version", "");
+        /* 待安装水位: 系统安装界面已经弹出去、用户还没点。此时**不该**再判 need_apk ——
+         * 否则每次检查都"有更新"，反复下 400KB 再弹一次界面, 用户只会看到它在抽风。 */
+        String pend = m.optString("apk_pending", "");
         String vB = b == null ? "" : b.optString("updated_at", "");
         String vA = a == null ? "" : a.optString("updated_at", "");
 
@@ -228,8 +275,10 @@ public final class Update {
                     .put("apk", a == null ? JSONObject.NULL : a)
                     .put("cur_bundle", curB).put("cur_apk", curA)
                     .put("ver_bundle", vB).put("ver_apk", vA)
+                    .put("apk_pending", pend)
                     .put("need_bundle", b != null && vB.length() > 0 && !vB.equals(curB))
-                    .put("need_apk", a != null && vA.length() > 0 && !vA.equals(curA))
+                    .put("need_apk", a != null && vA.length() > 0
+                            && !vA.equals(curA) && !vA.equals(pend))
                     .put("apk_ok", Paths.legacy()), false);     // 仅"授权状态"供界面读数; 真正的装不装由 installApk 里 shell 实测决定
         } catch (Exception e) {
             return remember(err("组装结果失败: " + e), false);
@@ -282,7 +331,7 @@ public final class Update {
             SgmLog.i(T, "bundle 已是最新 (" + st.optString("cur_bundle") + ")");
         }
 
-        /* 2) APK: 走 Shizuku pm install -r */
+        /* 2) APK: 先走 Shizuku pm install -r; 走不通就交给系统安装器 (见 installApk) */
         JSONObject u = sec(cfg);
         boolean allow = u.optBoolean("allow_apk", true);
         if (withApk && !allow) {
@@ -291,16 +340,24 @@ public final class Update {
             JSONObject a = st.optJSONObject("apk");
             File dir = new File(Paths.updateDir());
             if (!dir.exists() && !dir.mkdirs()) SgmLog.i(T, "建目录失败 " + dir);
-            File apk = new File(dir, "sgmbot.apk");
+            File apk = new File(dir, ApkFile.NAME);
             if (a != null && down(a.optString("url"), apk)) {
                 prog("安装 APK…", -1);
-                try { out.put("apk", installApk(cfg, apk, st.optString("ver_apk"))); }
+                try { out.put("apk", installApk(ctx, cfg, apk, st.optString("ver_apk"))); }
                 catch (Exception ignored) { }
             } else {
                 SgmLog.i(T, "APK 下载失败");
             }
         } else if (withApk) {
-            SgmLog.i(T, "APK 已是最新 (" + st.optString("cur_apk") + ")");
+            String pend = st.optString("apk_pending", "");
+            if (pend.length() > 0) {
+                /* 上一次已经把安装界面弹给用户了, 他还没装 (见 check0 的 apk_pending)。
+                 * 不重复下载 —— 文件就在 update/sgmbot.apk, 用户随时可以再点一次。 */
+                SgmLog.i(T, "APK 待安装 (系统安装界面已弹出过) — 不重复下载");
+                try { out.put("apk_waiting", pend); } catch (Exception ignored) { }
+            } else {
+                SgmLog.i(T, "APK 已是最新 (" + st.optString("cur_apk") + ")");
+            }
         }
 
         /* 3) 让引擎重新读 config / 清模板缓存 */
@@ -310,16 +367,22 @@ public final class Update {
         return remember(out, true);
     }
 
-    /** pm install -r; 2>&1 是因为 pm 的结果在新版上走 stderr, 只抓 stdout 会看到空输出 */
-    private static JSONObject installApk(Config cfg, File apk, String ver) {
+    /**
+     * 装 APK —— **两条路**。
+     * 第一条 `pm install -r` (走 Shizuku; 2>&1 是因为 pm 的结果在新版上走 stderr,
+     * 只抓 stdout 会看到空输出); 任一步走不通就转 {@link #fallback} 走第二条路。
+     */
+    private static JSONObject installApk(Context ctx, Config cfg, File apk, String ver) {
         JSONObject r = new JSONObject();
         String path = apk.getAbsolutePath();
+        boolean useFallback = sec(cfg).optBoolean("system_installer_fallback", true);
         try { r.put("path", path); } catch (Exception ignored) { }
+
         if (BotService.sh() == null || !ShizukuCtl.ready()) {
-            String msg = "Shizuku 未就绪 — 装不了 APK (bundle 不受影响)";
+            String msg = "Shizuku 未就绪 — pm install 这条路走不了";
             SgmLog.i(T, msg);
-            try { r.put("ok", false).put("msg", msg); } catch (Exception ignored) { }
-            return r;
+            try { r.put("ok", false); } catch (Exception ignored) { }
+            return fallback(ctx, cfg, apk, ver, useFallback, r, msg);
         }
         /* ⚠️⚠️ 判据是**让 shell 自己去读一下这个文件**, 不是看 App 侧的 legacy 旗标。
          *
@@ -339,10 +402,10 @@ public final class Update {
             String msg = "shell 读不到 " + path + " (所有文件访问"
                     + (Paths.legacy() ? "显示已授, 但实测读不了 —— 多半是路径/授权已失效"
                                       : "未授")
-                    + ") — 跳过 APK, bundle 已可热更";
+                    + ") — pm install 这条路走不了";
             SgmLog.i(T, msg + " | probe=" + (probe == null ? "" : probe.trim()));
-            try { r.put("ok", false).put("msg", msg); } catch (Exception ignored) { }
-            return r;
+            try { r.put("ok", false); } catch (Exception ignored) { }
+            return fallback(ctx, cfg, apk, ver, useFallback, r, msg);
         }
         String out = ShizukuCtl.exec("pm install -r \"" + path + "\" 2>&1");
         boolean ok = out != null && out.indexOf("Success") >= 0;
@@ -363,12 +426,106 @@ public final class Update {
             r.put("ok", ok).put("out", out == null ? "" : out.trim());
             /* 以前这条路径**不写 msg** ⇒ brief() 取默认值"跳过", 明明 pm 报了一堆原因,
              * 界面上只有"apk 跳过"三个字 (用户报障"没有什么提示"的一部分)。 */
-            if (!ok) r.put("msg", downgrade
-                    ? "机上版本比远端的还新 (本地构建包 versionCode=9999 会一直压住 CI 包)"
-                      + " — 卸载重装一次即可"
-                    : "pm install 失败 — " + firstLine(out));
+            if (!ok) {
+                String why = downgrade
+                        ? "机上版本比远端的还新 (本地构建包 versionCode=9999 会一直压住 CI 包)"
+                          + " — 卸载重装一次即可"
+                        : "pm install 失败 — " + firstLine(out);
+                return fallback(ctx, cfg, apk, ver, useFallback, r, why);
+            }
         } catch (Exception ignored) { }
         return r;
+    }
+
+    /**
+     * 第二条路 —— `pm install` 走不通时, 改把 APK 交给**系统安装器** (见 {@link ApkInstall})。
+     *
+     * 保留第一条路的失败原因 (放进 {@code pm_msg}), 别把它盖掉: 排障时要能看到
+     * "为什么 adb 那条路不行", 用户看的则是 {@code msg} 那一句。两者是两件事。
+     *
+     * ⚠️ 成功的判定在**弹出之前**就决定了 (launched 只说明界面弹出去了) ⇒ 立刻记一条
+     *    `apk_pending` 水位, 等下次 check 用本包 lastUpdateTime 认账 (见 resolvePending)。
+     */
+    private static JSONObject fallback(Context ctx, Config cfg, File apk, String ver,
+                                      boolean allow, JSONObject r, String why) {
+        try {
+            r.put("pm_msg", why);
+            if (!allow) {
+                r.put("msg", why + " (update.system_installer_fallback=false — 没走系统安装器)");
+                return r;
+            }
+            ApkInstall.R fr = ApkInstall.open(ctx, apk);
+            JSONObject fb = new JSONObject()
+                    .put("launched", fr.launched)
+                    .put("need_perm", fr.needPerm)
+                    .put("msg", fr.msg);
+            r.put("fallback", fb);
+            r.put("msg", fr.msg);            // UI 只显示这一句
+            if (fr.launched) markPending(cfg, ver);
+        } catch (Exception e) {
+            try { r.put("msg", why + " (走系统安装器时出错: " + e + ")"); } catch (Exception ignored) { }
+        }
+        return r;
+    }
+
+    /* ---------------- 「已交给系统安装器」的水位 ----------------
+     * 第二条路是**异步**的: 界面弹出去之后, 装不装成由用户在系统界面里点。
+     * 不记水位就有两种坏结果, 而且都会真的发生:
+     *   ① 不记 ⇒ 每次检查都判 need_apk ⇒ 反复下 400KB 再弹一次界面 (像抽风);
+     *   ② 记成"已安装" ⇒ 用户没点也报告成功 —— 正是之前用户报的「版本号不变」那类谎话。
+     * 所以记"待安装", 并且**用执行方自己的话认账**: 本包的 lastUpdateTime。
+     */
+
+    /** 待安装状态超过这个时长就作废 (用户多半是取消了) —— 下次检查重新提示 */
+    private static final long PENDING_TTL_MS = 30 * 60 * 1000L;
+
+    private static void markPending(Config cfg, String ver) {
+        if (ver == null || ver.length() == 0) return;
+        putMetas(cfg, "apk_pending", ver,
+                "apk_pending_at", String.valueOf(System.currentTimeMillis()));
+    }
+
+    /**
+     * 上次走"系统安装器"那条路, 到底装上没有?
+     *
+     * ⚠️ 不猜、也不看自己的旗标: 比对**本包自己的 lastUpdateTime** —— 只要本包被替换过,
+     *    它的时间戳一定晚于我们记下 apk_pending_at 的那一刻 ⇒ 那次安装真的成了。
+     *    (同一条规矩: 授权/能力这类"状态"一律让执行方自己说, 用 App 侧推断当判据
+     *     早晚会错, 而错了就是把功能静默关掉。)
+     * 装上了 → 推进 apk_version、清掉 pending; 超时还没装上 → 当作用户放弃, 清掉重提。
+     */
+    private static void resolvePending(Config cfg) {
+        JSONObject m = meta(cfg);
+        String pend = m.optString("apk_pending", "");
+        if (pend.length() == 0) return;
+        long at = 0;
+        try { at = Long.parseLong(m.optString("apk_pending_at", "0")); } catch (Exception ignored) { }
+        long lt = lastUpdateTimeMs();
+        if (lt > 0 && at > 0 && lt >= at) {
+            SgmLog.i(T, "系统安装器那条路成功了 (lastUpdateTime=" + lt + " ≥ " + at
+                    + ") — 推进水位 apk_version=" + pend);
+            putMetas(cfg, "apk_version", pend, "apk_pending", "", "apk_pending_at", "");
+            return;
+        }
+        if (at > 0 && System.currentTimeMillis() - at > PENDING_TTL_MS) {
+            SgmLog.i(T, "待安装已超时 (" + ((System.currentTimeMillis() - at) / 60000)
+                    + " 分钟没装上) — 清掉, 下次检查重新提示");
+            putMetas(cfg, "apk_pending", "", "apk_pending_at", "");
+        }
+    }
+
+    /** 本包自己的 lastUpdateTime (ms) —— 问不出来回 0 (既不当"装上了"也不当"放弃了") */
+    private static long lastUpdateTimeMs() {
+        Context c = App.inst;
+        if (c == null) return 0;
+        try {
+            android.content.pm.PackageInfo pi =
+                    c.getPackageManager().getPackageInfo(c.getPackageName(), 0);
+            return pi.lastUpdateTime;
+        } catch (Throwable t) {
+            SgmLog.i(T, "读本包 lastUpdateTime 失败: " + t);
+            return 0;
+        }
     }
 
     /** pm 输出取第一行非空 —— 塞进一句话文案里用的 (完整输出在 out / 日志里) */
@@ -585,11 +742,22 @@ public final class Update {
     }
 
     private static void putMeta(Config cfg, String key, String val) {
+        putMetas(cfg, key, val);
+    }
+
+    /**
+     * 一次写多个 meta 键。
+     * ⚠️ 为什么不是连着调 putMeta 两次: 每次都要"读整个 config → 改 → 重写整个文件",
+     *    而 resolvePending 要在同一瞬间推进 apk_version **并** 清掉 apk_pending ——
+     *    分两次写就存在"推进了水位、pending 还挂着"的中间态, 下次 check 会拿它当待安装。
+     *    参数成对出现: (k1,v1,k2,v2,…)。
+     */
+    private static void putMetas(Config cfg, String... kv) {
         try {
             JSONObject ov = readOverride();
             JSONObject m = ov.optJSONObject("meta");
             if (m == null) { m = new JSONObject(); ov.put("meta", m); }
-            m.put(key, val);
+            for (int i = 0; i + 1 < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
             write(new File(Paths.config()), ov.toString(2));
         } catch (Exception e) {
             SgmLog.i(T, "写 meta 失败: " + e);

@@ -27,10 +27,19 @@ Android 原生 App：Shizuku 拿 shell uid 截屏/点击，NCC 模板匹配认�
 
 ⚠️ **主页不放任何"跑/停"的键**（2026-10-11 用户要求瘦身：*"这都是在悬浮窗里面可以
 单独点的呀, 你就不用在那里再弄一次了"*）。**运行控制只有一处 = 悬浮窗**（开始／导航／
-停止／结束／◀折叠），主页只负责「启动悬浮窗」把它叫出来。理由是"同一个动作两条路"必然
+暂停／结束／◀折叠），主页只负责「启动悬浮窗」把它叫出来。理由是"同一个动作两条路"必然
 出事：主页那条走 `Ui.gate`、悬浮条那条走 `Ui.blockReason`，两条路的前置检查一旦不同，
 就会出现「主页点不了、悬浮条能点」这种最难查的状态。
 `tools/GraphProbe.py` 里有源码级断言钉住它（连注释一起剥掉再查关键词），防止有人加回来。
+
+⚠️ **「暂停」以前叫「停止」**（2026-10-11 用户：*"按钮的名字有歧义, 停止应该指的是暂停"*）。
+那颗键的行为一直就是暂停（只停循环，服务与窗口都留着，再点可续），名字却叫"停止"，
+而旁边还有一颗真正收窗口的「结束」—— 两颗都像"停"，按错就以为程序坏了。现在：
+**暂停** = 停循环、窗口留着可续；**结束** = 退出挂机、连服务与窗口一起收。
+另外**「开始」那颗键在暂停后会显示成「继续」**（`BotService.paused()`），名字跟着状态走。
+⚠️ **动作名 `start`／`start_nav`／`stop`／`end` 一个字都没改** —— 那是 adb 广播
+（`am broadcast … -e action stop`）与 HTTP `/trigger?action=stop` 的接口契约，改文案
+不能改协议。`tools/OverlayProbe.py` 的 C2 组 + 源码级断言钉住这两条。
 
 **每个按钮点了都会弹提示**（`Ui.act`）：说清"要做什么"；前置条件不满足时给**人话
 原因**并尽量把你送到对应设置页（`Ui.gate`），不再静默丢弃。最容易"看着像坏了"的情况：
@@ -46,15 +55,16 @@ Android 原生 App：Shizuku 拿 shell uid 截屏/点击，NCC 模板匹配认�
 
 1. 装 APK（release `latest` 的 `sgmbot.apk`）；
 2. 打开 App 依次授权：Shizuku → 悬浮窗 → **所有文件访问**（第三个不授也能跑，但
-   `adb push` 改配置要写私有长路径，且 APK 自更新用不了，见「更新」）；
-3. 点主页「启动悬浮窗」→ 在悬浮条上按需点：开始／导航／停止／结束／◀折叠。
+   `adb push` 改配置要写私有长路径，且 APK 自更新的第一条路用不了 —— 会走第二条路，
+   见「更新」）；
+3. 点主页「启动悬浮窗」→ 在悬浮条上按需点：开始／导航／暂停／结束／◀折叠。
    悬浮窗**不需要先起服务**：先摆好位置（位置会被记住），想跑时点「开始」即可。
 
-**「停止」与「结束」的区别**（同 AutoJs 版 `settle_bot.js`）：
+**「暂停」与「结束」的区别**（同 AutoJs 版 `settle_bot.js`）：
 
 | 键 | 引擎 | 服务/通知 | 悬浮条 | 对 AutoJs 的对应 |
 |---|---|---|---|---|
-| 停止 | 停（可再点开始） | 留着 | **留着** | 只停循环，窗口留着可再开 |
+| 暂停（旧名"停止"） | 停（键名变「继续」，可接着跑） | 留着 | **留着** | 只停循环，窗口留着可再开 |
 | 结束 | 停 | 收掉 | **一并收掉** | `endBot()` → `exit()`，悬浮窗随之消失 |
 
 ⚠️ 悬浮条**是"谁启的"不再决定「结束」收不收它**：`OverlayCtl` 的 `svcOwned` 只用于
@@ -94,6 +104,7 @@ curl http://127.0.0.1:8791/log         # app.log
 | `log` | `trace_size` | 200 | 判定流水环形缓冲容量 |
 | `graph` | `layout/nodes/edges` | 见文件 | 判定路径图结构（见下） |
 | `update` | `repo/bundle_asset/apk_asset/auto_check_h/allow_apk` | 见文件 | GitHub 更新（见下） |
+| `update` | `system_installer_fallback` | true | `pm install` 走不通时改把 APK 交给**系统安装器**（第二条路，见下）。关掉就只报原因 |
 | `shizuku` | `download_url/release_api/homepage/play_url` | 见文件 | 使用指引页的 Shizuku 链接（换版本不必发 APK） |
 | `stats` | `weeks` / `levels` | 26 / `[1,3,6,11]` | 热力图默认周数 / 颜色分档上界 |
 | `store` | `keep_days` | 400 | 战绩归档保留天数（≈13 个月），超期丢最旧 |
@@ -358,7 +369,7 @@ HUD，而它在 K70 真机上的位置**正好压住中槽中心**（都在 x=64
 
 开/关两条路：主页 **「运行模式」一键切换**（写 override 单键 + 热重载），
 或配置编辑页的「快速连点模式」段。**配置在循环开跑时读一次 ⇒ 切完要在悬浮窗上
-「停止」再「开始」才生效**（界面会明说这一句）。
+「暂停」再「继续」才生效**（界面会明说这一句）。
 
 现场看什么：观察线程每 10s（或页面变化时）打一条 `[观]` 行，带**两个模板 × 三槽峰值**
 和落点坐标 —— 用它核对"落点那格到底是不是 CONTINUE / REMATCH"：
@@ -427,7 +438,7 @@ Java 版**没有导航链**（`BotService` 里 `MODE_NAV` 退化为直接跑结�
 | 资产 | 内容 | 落点 |
 |---|---|---|
 | `bundle.zip` | `templates/*.png` + `config.json` | 解到 `Paths.root()`，热更（下轮生效，不必停引擎） |
-| `sgmbot.apk` | 整包 | `pm install -r`（需 Shizuku 就绪 + shell **实测**读得到下载路径） |
+| `sgmbot.apk` | 整包 | **两条路**：① `pm install -r`（需 Shizuku 就绪 + shell **实测**读得到下载路径）；② 走不通就把 APK **交给系统安装器**让用户点一下「安装」（见下） |
 
 版本判据用资产的 `updated_at`（CI 是固定 tag `latest` 反复 `--clobber` 覆盖同名
 资产，tag 恒不变，只有 `updated_at` 会动），本地水位记在 config 的
@@ -439,7 +450,9 @@ update_bundle`／HTTP `GET /update`、`POST /update?apk=0|1`。开跑时还会�
 
 - bundle 里的 `config.json` **只补新键**，不覆盖本地手改；想强制覆盖就放
   `config_patch.json`。
-- 未授所有文件访问时 shell 读不到 App 私有目录 ⇒ APK 跳过（bundle 照常热更）。
+- 未授所有文件访问时 shell 读不到 App 私有目录 ⇒ 第一条路走不通 ⇒ **自动转第二条路**
+  （弹系统安装界面），bundle 照常热更。
+- `update.allow_apk=false` 管的是「**自动检查时**要不要顺手装整包」，不是"永远不许装"。
 
 ### APK 自更新：判据是「shell 实测」，不是 App 侧旗标（2026-10-11）
 
@@ -462,8 +475,57 @@ APK 永远装不上**，文案还主动把人往"去授权"的错方向带。用
 ⚠️ 另一个**独立**的装不上原因是版本降级：本地构建包（`build-local.sh` 故意把
 `versionCode` 抬到 9999，好让本地包能盖住 CI 包）会永远压住 CI 包，`pm` 回
 `INSTALL_FAILED_VERSION_DOWNGRADE`。此时会自动带 `-d` 再试一次（平台只对 debuggable
-包放行降级，不保证成），并把 `pm` 的**首行原因**写进 `apk.msg` 显示到界面上 ——
+包放行降级，不保证成），并把 `pm` 的**首行原因**写进 `apk.pm_msg` ——
 以前这条路径不写 `msg`，`brief()` 取默认值"跳过"，界面上只剩两个字。
+
+### APK 第二条路：交给系统安装器（2026-10-11）
+
+用户原话：*"系统的 ADB 安装…如果你安装失败的话，就走第二条路，就直接用系统的文件管理
+把那个安装给打开，直接就安了"*。
+
+第一条路（`pm install`）的前提有三条：**Shizuku 在跑 + shell 读得到 APK 所在目录 +
+不撞版本降级**。三条全是**机器状态**，任一条不成立，"装个新版本"这件事就整条消失 ——
+而 `sgmbot.apk` 明明已经躺在手机里了，用户唯一需要做的其实只是**点一下系统弹出的
+安装界面**。所以第一条路任一步失败就自动转第二条路：
+
+```
+ApkFile.java      纯 java: authority / MIME / 最小字节数 / 裸文件名解析 (无 android 依赖)
+ApkInstall.java   检查「安装未知应用」→ content:// + ACTION_VIEW(apk mime) 弹系统安装器
+ApkProvider.java  只读 provider: 只把 update/ 下的**裸文件名**借给安装器
+```
+
+| 关口 | 为什么 |
+|---|---|
+| `ACTION_VIEW` + `application/vnd.android.package-archive` | 系统安装器按 mime 认领这个 intent —— 这就是"直接把安装打开" |
+| `content://`（`ApkProvider`） | **不能用 `file://`**：API 24 起跨进程给 `file://` 直接抛 `FileUriExposedException`。APK 又在 App 私有目录里，安装器是另一个 uid |
+| `FLAG_GRANT_READ_URI_PERMISSION` | 这条路的**命门**：不带它安装器读不到 `content://`，而它报的错是"解析包时出现问题"，完全指不到权限上 |
+| `REQUEST_INSTALL_PACKAGES` | API 26+ 缺它 `canRequestPackageInstalls()` 恒 false，安装界面被系统直接拒 |
+| 缺「安装未知应用」时先跳设置页 | 不硬弹安装界面（那样会被系统再绕一层），直接把人送到 `ACTION_MANAGE_UNKNOWN_APP_SOURCES` 并说明回来再点一次 |
+| 主 intent 没人认领 ⇒ 再试 `ACTION_INSTALL_PACKAGE` | 有的 ROM 只认老动作；两条都试过才敢说"系统里没有能装 APK 的界面" |
+| 文件 < 100KB 一个界面都不弹 | 半截文件交给安装器，报的错是"解析包时出现问题"，指不到"下载断了" |
+| 开关 `update.system_installer_fallback`（默认开） | 关掉就退回"只报原因"的老行为 |
+
+`ApkProvider` 是个**一直挂在系统里**的接口，所以边界写死三条：只认**裸文件名**
+（带 `/`、`\`、`..` 一律拒）、只在 `Paths.updateDir()` 里找、只允许 `"r"` 模式
+（`insert`/`delete`/`update` 全空实现）。任何一条放松它就变成"任意文件读取器"。
+
+⚠️ **水位不能瞎猜**。第二条路是**异步**的：界面弹出去之后，装不装成由用户在系统界面里
+决定。所以弹出前记 `meta.apk_pending`（= 远端 `ver_apk`）+ `apk_pending_at`，
+下次检查时：
+
+| 情况 | 判据 | 结果 |
+|---|---|---|
+| 用户真装了 | **本包自己的 `lastUpdateTime` ≥ `apk_pending_at`** | 推进 `apk_version`、清 pending ⇒ 说"已最新" |
+| 用户没装（取消）且过了 30 分钟 | `now - apk_pending_at > 30min` | pending 作废 ⇒ 重新提示有更新、可重下 |
+| 还在等他点 | 其余 | `need_apk=false`（**不重复下载 400KB**）、文案说「待安装 — 系统安装界面已弹出，去点安装」 |
+
+判据用 `lastUpdateTime` 是因为它**是执行方自己说的**（同"shell 实测"那条规矩）：
+不这样做就只有两种坏结果 —— 要么每次检查都说有更新、反复下载再弹一次界面（像抽风），
+要么每次都说"已安装"（用户明明没点，就是之前报障的「版本号不变」那类谎话）。
+
+⚠️ 后台启动限制（Android 10+）：App 在后台时 `startActivity` 会被系统静默拦掉。所以
+这条路只在**用户主动点「拉取更新」**时才有意义；自动检查永远 `withApk=false`
+（`autoCheck(ctx, cfg, false)`），不会撞上这条限制。
 
 ### 界面反馈（2026-10-11 修「点更新版本号不变 / 没进度 / 没提示」）
 
@@ -484,9 +546,15 @@ APK 永远装不上**，文案还主动把人往"去授权"的错方向带。用
 键不存在时返回 null，而调用方一律 `sec(cfg).optString(...)` ⇒ 一个 NPE 就让整条链在
 background 线程里无声失败（UI 只看到"没反应"）。`meta()` 一直这么防御，`sec()` 曾漏掉。
 
-回归：`python3 phone/app/tools/UpdateProbe.py`（38 项，桩掉 Android 与文件系统，跑**真的**
-`Update.java` + `BotService.java`；含真下载 + 水位推进 + 端到端落临时沙盒 +
-**H 组「旗标错也不许挡住安装」**）。无网络时 B/C/H 组自动标 SKIP。
+回归：`python3 phone/app/tools/UpdateProbe.py`（桩掉 Android 与文件系统，跑**真的**
+`Update.java` + `BotService.java` + `ApkFile.java` + `ApkInstall.java`）。含真下载 +
+水位推进 + 端到端落临时沙盒 + **H 组「旗标错也不许挡住安装」** + **I 组「第二条路」**
+（缺授权跳设置页 / `ACTION_VIEW` + `content://` + 一次性读权限 / 退老动作 / 两条都不行
+也不谎报 / 半截文件不弹 / 待安装水位与 `lastUpdateTime` 自愈 / 超时作废 / 开关关掉）。
+最后一节是**源码级断言**：`ApkInstall` 用的必须是 `Intent.FLAG_GRANT_READ_URI_PERMISSION`
+这类**符号**（不是手写数字）、`ApkFile` 不许 import android、`ApkProvider` 必须只读、
+清单里的 `authorities` 与 `ApkFile.AUTHORITY` 必须**逐字相同**。
+无网络（或 GitHub 未认证限流 403）时 B/C/H/I 组自动标 SKIP，不算失败。
 `Paths` 那条根因另见 `python3 phone/app/tools/PathsProbe.py`（6/6 场景）。
 
 ## 战绩热力图
@@ -563,12 +631,12 @@ python3 phone/app/tools/GraphLayoutProbe.py # 37 项断言
 `tools/OverlayProbe.py`（纯 JVM + 一套最小 Android 桩）管**悬浮条生命周期**：
 
 ```bash
-python3 phone/app/tools/OverlayProbe.py     # 29 项断言
+python3 phone/app/tools/OverlayProbe.py     # 36 项断言 + 5 条源码检查
 ```
 
 它真的编译并运行 `OverlayBar` / `OverlayCtl` / `BotService`，用手驱 `onCreate`/
 `onDestroy` 加 `WindowManager` 桩的 add/remove 计数当判据 —— 真机上"悬浮窗还在不在"
-看不见摸不着，这里把它变成可数的。断言的正是「停止≠结束」与所有权那几条：
+看不见摸不着，这里把它变成可数的。断言的正是「暂停≠结束」与所有权那几条：
 独立启动 ⇒ `ownedByService()=false`；服务起来复用窗口时**不篡改**所有权；
 `end()` ⇒ 窗口必须消失；`stop()` ⇒ 窗口必须留着；服务**意外**退出 ⇒ 用户那条留着；
 `hide()` 同步摘引用 + `removeView` 延后一拍且幂等；无权限给人话错误；后台线程挂载不炸
@@ -577,18 +645,43 @@ python3 phone/app/tools/OverlayProbe.py     # 29 项断言
 > 桩是**有代价**的：它只证明我们自己这层的时序与所有权判定对，不证明真 ROM 上
 > 窗口真的消失 —— 那一步只能在真机点一次「结束」确认（见「跑起来」那节的语义表）。
 
+它还有一节**源码级断言**（同样先剥注释）：键名必须是「暂停 / 继续」而不是「停止」
+（改名之后 javadoc 里天然会留下"「停止」改名「暂停」"这句解释 —— 不剥注释就会把
+说明判成回退，断言永远红），且**动作名 `start`/`start_nav`/`stop`/`end` 必须原样**：
+那是 adb 广播与 HTTP `/trigger` 的接口契约，改文案不能改协议。
+
+C2 组则是"名字跟着状态走"：没跑过 ⇒ 键名「开始」；在跑 ⇒ 仍「开始」；**暂停后 ⇒
+变「继续」**；结束/服务退出 ⇒ 回到「开始」。判据是 `BotService.paused()`
+（`!running && everRan`）—— 只看 `running` 分不出"从没开始"和"暂停中"，而这两态该说
+不同的话，这正是用户报的"名字有歧义"。
+
 `tools/UpdateProbe.py`（同一套 Android 桩 + 临时沙盒）管**更新链路**，跑的是**真的**
-`Update.java` 与 `BotService.java`：
+`Update.java`、`BotService.java`、`ApkFile.java`、`ApkInstall.java`：
 
 ```bash
-python3 phone/app/tools/UpdateProbe.py      # 38 项断言 (无网络时 B/C/H 组标 SKIP)
+python3 phone/app/tools/UpdateProbe.py      # 44 项断言 + 5 条源码检查
+#                                             (无网络 / GitHub 403 限流时 B/C/H/I 组标 SKIP)
 ```
 
-断言分八组：配置层兜底（`cfg=null` 也要读得出 repo）／真链路检查（文案不含恒定 `tag=`）／
-真链路拉取（真下载 → 解包 → **水位推进** → 再查已最新 → APK 被跳过 ⇒ `LV_WARN` 黄不是绿）／
+断言分九组：配置层兜底（`cfg=null` 也要读得出 repo）／真链路检查（文案不含恒定 `tag=`）／
+真链路拉取（真下载 → 解包 → **水位推进** → 再查已最新 → APK 走第二条路 ⇒ `LV_WARN` 黄不是绿）／
 错误路径级别（`repo` 未配 ⇒ `LV_ERR`，且断言该文案里**没有**"失败"两字 ⇒ 证明旧的
 字符串判据必然把错误显示成绿 ✓）／时间戳格式化／`busy` 不泄漏／配置缺 `update` 段不 NPE／
-**能不能装 = shell 实测说了算**（H 组，见下）。
+**能不能装 = shell 实测说了算**（H 组）／**第二条路 = 交给系统安装器**（I 组，见下）。
+
+I 组（2026-10-11 加的兜底）分段断言：缺「安装未知应用」⇒ 不弹安装界面而先跳设置页；
+正常时发的必须是 `ACTION_VIEW` + `content://<authority>/sgmbot.apk` +
+`application/vnd.android.package-archive` + **一次性读权限** + `NEW_TASK`，且**绝不是
+`file://`**；主 intent 没人认领 ⇒ 退 `ACTION_INSTALL_PACKAGE`；两条都失败 ⇒
+`launched=false`（**绝不谎报**）且给出可手动装的路径；半截文件一个界面都不弹；
+另有 `ApkFile` 的路径规则（拒 `../`、拒子目录、拒反斜杠）；以及水位三态
+（待安装期间 `need_apk=false` 不重复下载 / 用户真装了 ⇒ 用本包 `lastUpdateTime` 自己认账
+并推进水位 / 超 30 分钟没装 ⇒ 作废重提）与开关 `system_installer_fallback=false`
+时退回老行为。最后一节是**源码级断言**：`ApkInstall` 必须用
+`Intent.FLAG_GRANT_READ_URI_PERMISSION` 这类**符号**（有人换成手写数字的话，桩测试照样
+绿而真机装不上）、`ApkFile` 不许 import android、`ApkProvider` 必须只读且只认
+`ApkFile.resolve`、`Update` 不许自己拼 `Intent`（同一个动作两条路 = 病）、
+清单必须有 `REQUEST_INSTALL_PACKAGES` 且 `authorities` 与 `ApkFile.AUTHORITY` **逐字相同**。
 
 `tools/PathsProbe.py` 单独管**外部根与授权状态**（跑真的 `Paths.java`，6 个场景各起一个 JVM
 —— 它的状态全是 static，一个进程里没法重来）：

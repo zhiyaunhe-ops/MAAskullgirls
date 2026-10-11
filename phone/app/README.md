@@ -21,8 +21,12 @@ apksigner + android-34 platform，**无 Gradle / 无 Android Studio**，`build.s
    可加 OCR/新锚点类型。
 3. **可更新** — APK 只装引擎; `bundle/` (templates + config + characters.json)
    走版本化更新: App 内检查 GitHub raw / TailShare 拉新包 → 校验 → 热加载。
-   模板重裁不用发版。整包也能自更新 (下载 → `pm install -r`) —— 前提与判定口径见
-   [../docs/phone-app.md](../docs/phone-app.md)「APK 自更新」。
+   模板重裁不用发版。整包也能自更新, **两条路**:
+   ① `pm install -r`(Shizuku, 全自动, 但要服务在跑 + shell 读得到私有目录 + 不撞降级);
+   ② ① 走不通就把 APK **交给系统安装器**(content:// + `ACTION_VIEW`), 用户点一下「安装」——
+   不需要 Shizuku / adb。⚠️ 第二条路是异步的, 水位用**本包自己的 `lastUpdateTime`**
+   认账 (同 "让执行方自己说" 那条规矩), 不猜。前提与判定口径见
+   [../docs/phone-app.md](../docs/phone-app.md)「APK 自更新」与「APK 第二条路」。
 4. **adb 可调试** — 三通道控制面:
    - 文件: 外部根 `logs/app.log` + `state.json` (当前状态机/计数) — 路径见上;
    - 广播: `adb shell am broadcast -a com.zhiyaunhe.sgmbot.CMD -e action start_nav|stop|reload`;
@@ -37,16 +41,21 @@ phone/app/
 ├── AndroidManifest.xml       # 前台服务 + 悬浮窗 + 开机自启, 不申请无障碍/录屏
 └── src/com/zhiyaunhe/sgmbot/
     ├── MainActivity.java     # 权限引导(Shizuku/悬浮窗) + 状态页 + 悬浮窗启停
-    │                         #   ⚠️ 运行控制(开始/停止/结束)只在悬浮窗上, 主页不放第二套
+    │                         #   ⚠️ 运行控制(开始/导航/暂停/结束)只在悬浮窗上, 主页不放第二套
     ├── BotService.java       # 前台服务: 主循环线程 (settle/导航状态机), 常驻通知
     ├── ShizukuCtl.java       # Shizuku binder: screencap → Bitmap / input tap|swipe
     ├── Vision.java           # 纯 Java NCC 模板匹配 + 色锚点 (移植 phone/settle match.py 口径)
     ├── NavChain.java         # 移植 pf_nav: waitHall→EVENTS→目标卡→王关锚点→FIGHT→AUTO/3x
     ├── SettleLoop.java       # 移植 settle_bot: 两阶段状态机 + stall 逃生 + 自愈导航
     ├── OverlayBar.java       # 悬浮控制条 (WindowManager TYPE_APPLICATION_OVERLAY)
+    │                         #   五键: 开始(=暂停后变「继续」)/导航/暂停/结束/◀
     ├── Config.java           # config.json 装载/热重载 (assets 默认 + /sdcard 覆盖)
     ├── DebugHttp.java        # 本地调试服务 (状态/截屏/重载/触发; adb forward 用)
     ├── CtlReceiver.java      # 广播控制入口 (start_nav/stop/reload)
+    ├── Update.java           # GitHub latest release: bundle 热更 + APK 两条安装路
+    ├── ApkFile.java          # 纯 java: APK 落点/authority/MIME/最小字节/裸文件名解析
+    ├── ApkInstall.java       # 第二条路: content:// + ACTION_VIEW 把系统安装器叫出来
+    ├── ApkProvider.java      # 只读 provider: 只把 update/ 下的裸文件名借给安装器
     ├── BundleUpdater.java    # bundle 版本检查/拉取/校验/热加载 (GitHub raw / TailShare)
     ├── Store.java            # 今日场次 (对齐 pf_store: 日历天滚动/DAILY_CAP)
     ├── CharacterData.java    # 角色资料库: assets/characters.json, GitHub raw 拉取更新
@@ -62,6 +71,7 @@ phone/app/
 | 点击/滑动 | shizuku("input tap/swipe") | Shizuku shell input tap/swipe |
 | 找图 | images.findImage (OpenCV) | Vision.java 纯 Java NCC (同模板 PNG, 同 1280×576 基准) |
 | 悬浮条 | floaty XML | WindowManager overlay (同布局: 五键 + 三行统计; 可脱离服务单独显示) |
+| 装新包 | (无) | ① Shizuku `pm install -r`; ② 走不通就弹**系统安装界面**让用户点一下 |
 | 多指/捏合 | input CLI 单指（捏合无解） | v2 injectInputEvent 多指注入（ShizukuBinderWrapper 走 shell 权限 binder，scrcpy 同路径）——地图开场捏合缩小 → 全图固定视野 |
 | 常驻 | AutoJs6 前台服务 | 自有前台服务 (通知栏状态, 可开机自启) |
 | 模板 | templates/*.png | assets/templates/*.png (直接复用, 不重裁) |
@@ -102,3 +112,18 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
   策略后够用）；不够再引入 OpenCV Android AAR（vendor 目录加 ~12MB）。
 - Shizuku 仍是权限源头（无线调试激活），App 内做「Shizuku 未连接」引导页。
 - HyperOS 杀后台：前台服务 + 省电白名单 + 自启动（用户侧一次性设置，App 内引导）。
+- APK 第二条路（系统安装器）需要一次「安装未知应用」授权；另外 Android 10+ 禁止
+  后台起 Activity ⇒ 这条路只在**用户主动点「拉取更新」**时才有效（自动检查从不装 APK）。
+  真机上还没点过 —— 待确认项见 `docs/phone-app.md` 末的「待真机确认」。
+
+## 回归
+
+```bash
+python3 tools/GraphProbe.py         # 判定图结构 + 源码级(WebView 不许回来)
+python3 tools/GraphPageProbe.py     # 网页版判定图 (PC 调试口用)
+python3 tools/GraphLayoutProbe.py   # 判定图几何 (纯 java, 无需 Android 桩)
+python3 tools/OverlayProbe.py       # 悬浮条生命周期 + 暂停/继续键名
+python3 tools/UpdateProbe.py        # 更新链路 + APK 两条安装路 (含源码级接线断言)
+python3 tools/PathsProbe.py         # 外部根与授权状态 (6 场景各起一个 JVM)
+# tools/StoreProbe.java 手动跑 (纯 JVM + 真 org.json, 见 docs/phone-app.md)
+```

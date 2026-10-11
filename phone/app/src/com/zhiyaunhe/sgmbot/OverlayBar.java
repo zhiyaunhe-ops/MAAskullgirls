@@ -15,9 +15,20 @@ import android.widget.TextView;
 
 /**
  * 悬浮控制条 — 移植自 autojs settle_bot.js 最新悬浮面板 (2026-10-07 口径):
- *   五键一行 (开始/导航/停止/结束/◀) + 三行统计; ◀ 折成贴边小箭头, 点箭头展开;
+ *   五键一行 (开始/导航/暂停/结束/◀) + 三行统计; ◀ 折成贴边小箭头, 点箭头展开;
  *   拖动按住空白处, 松手 clamp 拉回屏内 (无贴边缩进);
- *   停止 = 暂停引擎可再开; 结束 = 连服务/悬浮窗/通知一并收掉 (退出脚本同义)。
+ *   暂停 = 停引擎可再开; 结束 = 连服务/悬浮窗/通知一并收掉 (退出脚本同义)。
+ *
+ * ⚠️ 2026-10-11 **「停止」改名「暂停」** (用户: 「按钮的名字有歧义, 停止应该指的是暂停」)。
+ *    这颗键的行为一直就是暂停 (BotService.stop() 只停循环, 服务/窗口留着, 再点开始可续),
+ *    名字却叫"停止" —— 旁边还有一颗真正收窗口的「结束」, 两颗都像"停", 用户按错就
+ *    以为程序坏了。现在名字与语义对齐:
+ *      暂停 = 停循环、窗口留着、可续;  结束 = 退出挂机、连窗口一起收。
+ *    「开始」那颗键在暂停后显示**「继续」** ({@link #refreshStartLabel}) —— 名字也得跟着状态走。
+ *
+ * ⚠️ **动作名 (`start`/`start_nav`/`stop`/`end`) 一个都没动** —— 那是 adb 广播
+ *    (`am broadcast … -e action stop`) 与 HTTP `/trigger?action=stop` 的接口契约,
+ *    改文案不能改协议。只有人看的字变了。
  *
  * ⚠️ 2026-10-08 改造: **不再依赖 BotService 实例** —— 用户要求"悬浮窗可以单独启动"。
  *    之前构造要传 BotService, 而窗口的 Context/WindowManager/屏幕尺寸全从它拿,
@@ -34,10 +45,13 @@ public final class OverlayBar {
     private FrameLayout root;
     private LinearLayout panel;
     private Button btnMini;
+    private Button btnStart;
     private TextView tvStat;
     private boolean folded;
     /** 统计文案 (单独启动时由 OverlayCtl 周期刷新; 服务跑时由 SettleLoop 推) */
     private volatile String statText = "待机";
+    /** 「开始 / 继续」当前文案 —— 记住它而不是回读 Button (回读要依赖 View.getText, 探针桩也得跟着长) */
+    private String startText = "开始";
     /** 折叠/位置变化回调 (托盘侧要持久化记忆位置时用) */
     private Runnable onLayoutChange;
 
@@ -86,10 +100,10 @@ public final class OverlayBar {
         /* ---- 面板: 按键行 + 统计 ---- */
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        addBtn(row, "开始", "start");
+        btnStart = addBtn(row, startText, "start");     // 暂停后变「继续」, 见 refreshStartLabel
         addBtn(row, "导航", "start_nav");
-        addBtn(row, "停止", "stop");
-        addBtn(row, "结束", "end");
+        addBtn(row, "暂停", "stop");                    // 只停循环, 窗口留着可续 (动作名仍是 stop)
+        addBtn(row, "结束", "end");                     // 连服务/窗口一起收 = 退出挂机
         Button fold = new Button(ctx);
         fold.setText("◀");
         fold.setTextSize(12f);
@@ -155,7 +169,7 @@ public final class OverlayBar {
         }
     }
 
-    private void addBtn(LinearLayout row, String name, String act) {
+    private Button addBtn(LinearLayout row, String name, String act) {
         Button b = new Button(ctx);
         b.setText(name);
         b.setTextSize(12f);
@@ -173,10 +187,33 @@ public final class OverlayBar {
             }
             setText("已发送: " + name);
             BotService.trigger(act);
+            /* 状态是**同步**变的 (start→spawn 里置 running; stop→立刻置 false), 所以这里
+             * 立刻刷一次标签就能对上, 不用等 OverlayCtl 那个 5s 心跳。 */
+            refreshStartLabel();
             SgmLog.i("overlay", "按钮 " + name + " → trigger(" + act + ")");
         });
         row.addView(b, new LinearLayout.LayoutParams(96, 66));
+        return b;
     }
+
+    /**
+     * 「开始」那颗键的文案 = 当前该做什么: 暂停过就显示**「继续」**。
+     *
+     * ⚠️ 名字必须跟着状态走, 否则又回到"名字有歧义"那个坑: 暂停之后按钮还写"开始",
+     *    用户会以为要从头跑一遍 (甚至以为刚才白跑了)。
+     * 由两处调用: 点任意键之后 (立刻) + OverlayCtl 的 5s 心跳 (兜底, 比如引擎跑完
+     * 每日上限自己停了)。
+     */
+    public void refreshStartLabel() {
+        String lb = BotService.paused() ? "继续" : "开始";
+        if (lb.equals(startText)) return;
+        startText = lb;
+        final Button b = btnStart;
+        if (b != null) post(() -> b.setText(lb));
+    }
+
+    /** 当前「开始/继续」键上的文案 (探针断言用) */
+    public String startLabel() { return startText; }
 
     /** 按住空白处拖动; 松手 clamp 拉回屏内 (JS clampPos 同款, 无贴边缩进) */
     @SuppressLint("ClickableViewAccessibility")

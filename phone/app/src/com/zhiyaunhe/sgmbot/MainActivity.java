@@ -33,10 +33,15 @@ import rikka.shizuku.Shizuku;
  * 2026-10-11 瘦身 (用户原话: 「APK 里面还有什么启动服务…这都是在悬浮窗里面可以单独
  * 点的呀, 你就不用在那里再弄一次了」):
  *   **主页不再放任何运行控制** —— 启动服务/停止引擎/结束服务三键全删, 「单独显示 /
- *   隐藏悬浮窗」并成一个切换键。理由: 悬浮窗五键 (开始/导航/停止/结束/◀) 已经覆盖
+ *   隐藏悬浮窗」并成一个切换键。理由: 悬浮窗五键 (开始/导航/暂停/结束/◀) 已经覆盖
  *   全部动作, 主页再摆一套 = 同一个动作两条路, 而两条路的**前置检查是不同的**
  *   (主页 Ui.gate vs 悬浮条 Ui.blockReason) ⇒ 早晚出现「主页点不了、悬浮条能点」。
  *   主页只剩三类东西: **一次性授权**、**把悬浮窗叫出来**、**看/配/更新**。
+ *
+ * 2026-10-11 同日改名 (用户原话: 「按钮的名字有歧义, 停止应该指的是暂停」):
+ *   悬浮条那两颗键改为 **暂停 / 结束** —— 暂停 = 停循环、窗口留着可续; 结束 = 退出挂机、
+ *   连窗口一起收。暂停之后「开始」那颗键自己会显示成**「继续」**(BotService.paused())。
+ *   ⚠️ 动作名 `stop`/`end`/`start` 没动: 那是 adb 广播与 HTTP /trigger 的接口契约。
  *
  * 状态区不再每秒整体重刷 (会打断滚动): 状态是独立 TextView, 每秒只更新它的文字;
  * 反馈行 (§) 是另一行, 点按钮/出错时写它, 不被状态刷新覆盖。
@@ -143,15 +148,16 @@ public class MainActivity extends Activity {
 
         /* ---------------- 挂机控制 ----------------
          * ⚠️ 2026-10-11 用户要求瘦身: 「启动服务 / 停止引擎 / 结束服务」**全部删掉** ——
-         *    这三件事悬浮窗五键上都有 (开始 / 导航 / 停止 / 结束), 主页再摆一套就是
+         *    这三件事悬浮窗五键上都有 (开始 / 导航 / 暂停 / 结束), 主页再摆一套就是
          *    **同一个动作两条路**, 而且两条路的前置检查还不一样 (主页走 Ui.gate,
          *    悬浮条走 Ui.blockReason), 一旦不一致就会出现「主页点不了、悬浮条能点」
          *    这种最难查的怪事。
          *    现在定死: **控制只有一处 = 悬浮窗**; 主页只负责把它叫出来。 */
         Ui.add(this, Ui.section(this, "挂机控制"));
         Ui.add(this, Ui.hint(this,
-                "所有开关都在悬浮窗上: 开始 / 导航 / 停止 / 结束 / ◀ 折叠。\n"
-                + "「开始」= 跑结算循环; 「停止」= 暂停, 窗口留着可再开; 「结束」= 连窗口一起收。\n"
+                "所有开关都在悬浮窗上: 开始 / 导航 / 暂停 / 结束 / ◀ 折叠。\n"
+                + "「开始」= 跑结算循环 (暂停后会变成「继续」); 「暂停」= 停循环, 窗口留着可再开;\n"
+                + "「结束」= 退出挂机 —— 连服务与悬浮窗一起收掉。\n"
                 + "主页只做一件事 —— 把悬浮窗叫出来 (不需要先起服务)。"));
         overlayBtn = Ui.button(this, overlayLabel(), "", feed, this::toggleOverlay);
 
@@ -195,7 +201,9 @@ public class MainActivity extends Activity {
         /* ---------------- 更新 ---------------- */
         Ui.add(this, Ui.section(this, "GitHub 更新"));
         Ui.add(this, Ui.hint(this,
-                "bundle (模板 + 配置) 可热更, 不起停引擎; APK 装新包需要 Shizuku + 所有文件访问。"));
+                "bundle (模板 + 配置) 可热更, 不起停引擎。\n"
+                + "APK 装新包有两条路: ① 走 Shizuku 的 pm install (全自动, 但要 Shizuku + 所有文件访问);\n"
+                + "② ① 走不通时**弹出系统安装界面**, 你点一下「安装」就行 (不需要 Shizuku / adb)。"));
 
         Ui.button(this, "检查更新 (查 GitHub latest release)",
                 "检查中… (查 release 资产的 updated_at 与本地水位比对)", feed, () -> {
@@ -204,7 +212,7 @@ public class MainActivity extends Activity {
                 });
 
         Ui.button(this, "拉取更新 (bundle 热更 + 尝试装 APK)",
-                "拉取中… bundle 热更; APK 走 pm install (需要 Shizuku + 所有文件访问)", feed, () -> {
+                "拉取中… bundle 热更; APK 先走 pm install, 走不通就弹系统安装界面", feed, () -> {
                     BotService.trigger("update");
                     watchUpdate();
                 });
@@ -268,6 +276,16 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * 引擎状态的人话 —— 三态, 不是两态。
+     * ⚠️ 只有"运行中/停止"两种说法是不够的: 暂停之后那颗键写「继续」, 状态行却写"停止",
+     *    两句话对不上, 用户会以为程序真停了 (这正是"名字有歧义"的另一面)。
+     */
+    private String engineText() {
+        if (BotService.isRunning()) return "运行中 (" + BotService.currentMode() + ")";
+        return BotService.paused() ? "已暂停 (可继续)" : "空闲";
+    }
+
+    /**
      * 悬浮窗 一键启/隐 —— 主页**唯一**与运行有关的东西。
      *
      * <p>它不是一个纯 gate: 已显示时是"隐藏"(不需要任何前置条件), 未显示时才是
@@ -279,7 +297,8 @@ public class MainActivity extends Activity {
             OverlayCtl.hide();
             feed.setTextColor(Ui.OK);
             feed.setText("✓ 悬浮条已隐藏 (引擎状态不变: "
-                    + (BotService.isRunning() ? "运行中" : "停止") + ")");
+                    + (BotService.isRunning() ? "运行中"
+                                              : (BotService.paused() ? "已暂停" : "空闲")) + ")");
             overlayBtn.setText(overlayLabel());
             return;
         }
@@ -330,13 +349,15 @@ public class MainActivity extends Activity {
             return;
         }
         /* 配置在循环开跑时读一次 ⇒ 改了要重跑才生效 —— 说清楚, 别让用户以为点了没反应。
-         * ⚠️ 2026-10-11 主页的运行键删光之后, 这里的指引必须指向**悬浮窗**上那颗
-         *    「停止」/「开始」—— 文案再写"点主页的停止引擎"就是在指一个不存在的按钮,
-         *    用户按着找一圈只会觉得"点了没反应"。 */
+         * ⚠️ 2026-10-11 主页的运行键删光之后, 这里的指引必须指向**悬浮窗**上那两颗
+         *    「暂停」/「开始(继续)」—— 文案再写"点主页的停止引擎"就是在指一个不存在的按钮,
+         *    用户按着找一圈只会觉得"点了没反应"。
+         * ⚠️ 同日「停止」改名「暂停」, 于是这句里的键名也必须跟着改 —— 否则用户按着
+         *    "停止"去找, 看到的却是"暂停", 又是一次"点了没反应"。 */
         feed.setTextColor(Ui.OK);
         feed.setText((on ? "✓ 已切回常规模式" : "✓ 已切到快速连点模式")
                 + (BotService.isRunning()
-                        ? " — 引擎在跑: 到悬浮窗上点「停止」再点「开始」才生效"
+                        ? " — 引擎在跑: 到悬浮窗上点「暂停」再点「继续」才生效"
                         : " — 下次在悬浮窗上点「开始」就用新模式"));
         if (fastBtn != null) fastBtn.setText(fastLabel());
     }
@@ -368,8 +389,7 @@ public class MainActivity extends Activity {
                 ? (OverlayCtl.ownedByService() ? "显示中 (服务)" : "显示中 (单独)")
                 : "未显示").append('\n');
         sb.append("所有文件访问 ").append(Paths.legacy() ? "已授" : "未授 (退私有目录)").append('\n');
-        sb.append("引擎         ").append(BotService.isRunning()
-                ? "运行中 (" + BotService.currentMode() + ")" : "停止").append('\n');
+        sb.append("引擎         ").append(engineText()).append('\n');
         sb.append("运行模式     ").append(fastOn() ? "快速连点 (fast)" : "常规").append('\n');
         Store st = Store.load();
         sb.append("战绩         ").append(st.text(0))

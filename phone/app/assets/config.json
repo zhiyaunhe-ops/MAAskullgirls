@@ -613,7 +613,9 @@
   "bundle_asset": "bundle.zip",
   "apk_asset": "sgmbot.apk",
   "auto_check_h": 12,
-  "allow_apk": true
+  "allow_apk": true,
+  "system_installer_fallback": true,
+  "_system_installer_fallback": "pm install(Shizuku) 装不上时, 是否改把 APK 交给系统安装器让用户点一下「安装」"
  },
  "title_roi": [
   400,

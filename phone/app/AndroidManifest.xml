@@ -22,6 +22,9 @@
          未授时 Paths 自动退到 App 私有外部目录, 功能不残但 adb push 得写长路径。
          授权入口: 主页按「授权所有文件访问」跳系统设置页。 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <!-- APK 自更新第二条路: Shizuku(pm install) 装不上时改把系统安装界面弹出来让用户点。
+         API 26+ 必须声明此权限, 否则 canRequestPackageInstalls() 恒 false、安装界面被系统直接拒。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
     <application
         android:name=".App"
@@ -40,7 +43,8 @@
         <!-- 配置编辑页 (只暴露调不坏的安全子集; 写 override 文件 + 热重载) -->
         <activity android:name=".ConfigActivity" android:exported="false"/>
 
-        <!-- 判定路径图: 内嵌 WebView 开 127.0.0.1:8791, 手机上不用 adb forward -->
+        <!-- 判定路径图: App 内 Canvas 自绘 (2026-10-11 起不再内嵌 WebView 开 8791)。
+             几何在 GraphLayout.java, 绘制在 GraphView.java; PC 网页版仍在 /graph -->
         <activity android:name=".GraphActivity" android:exported="false"/>
 
         <!-- 使用指引: Shizuku 官方下载链接 + 开发者模式/无线调试 6 步开启流程 + 没反应速查表 -->
@@ -56,6 +60,15 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>
+
+        <!-- 只读地把自己下载的 APK 递给系统安装器 (content:// 那条路, 见 ApkProvider)。
+             exported=false + grantUriPermissions=true: 不对外开口子, 靠 intent 上的一次性
+             读权限把单个文件借给安装器。authority 必须与 ApkFile.AUTHORITY 一致。 -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="com.zhiyaunhe.sgmbot.apkfile"
+            android:exported="false"
+            android:grantUriPermissions="true"/>
 
         <service android:name=".BotService"
             android:exported="false"

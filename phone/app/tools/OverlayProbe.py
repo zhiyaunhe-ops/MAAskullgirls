@@ -15,16 +15,20 @@
 断言清单:
   A. 挂载/复用/所有权: show() 后 svcOwned=false; 再 attachForService 复用且**不改**所有权
   B. 结束收窗口 (核心): 上述状态下 BotService.end() ⇒ 悬浮条必须消失
-  C. 停止不收窗口: BotService.stop() ⇒ 悬浮条留着 (「停止」≠「结束」)
+  C. 暂停不收窗口: BotService.stop() ⇒ 悬浮条留着 (「暂停」≠「结束」)
+  C2. 键名跟着状态走: 暂停后「开始」那颗键要变「继续」, 结束后变回「开始」
+     (2026-10-11 用户: 「按钮的名字有歧义, 停止应该指的是暂停」)
   D. 服务自挂的窗口: attachForService 新建时 svcOwned=true ⇒ end() 也收
   E. hide() 语义: **同步**摘引用 (isShown 立刻 false) + removeView 延后一拍
      (避免在悬浮条自己的 onClick 里拆自己的窗口), 且幂等
   F. 无权限时 show() 给一句人话错误且不挂窗口
   G. 后台线程挂载不炸 (HTTP /trigger?action=overlay_show 走的就是这条)
+  H. 源码级: 键名必须是「暂停/继续」, 动作名必须仍是 start/start_nav/stop/end
+     (动作名是 adb 广播与 HTTP 的接口契约 —— 改文案不能改协议)
 
 用法: python3 tools/OverlayProbe.py
 """
-import io, os, shutil, subprocess, sys
+import io, os, re, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'src', 'com', 'zhiyaunhe', 'sgmbot')
@@ -125,11 +129,87 @@ public class ComponentName { }
 
 'android/content/Intent.java': '''\
 package android.content;
+import android.net.Uri;
 public class Intent {
+    /* ⚠️ 探针把发出去的 intent **记下来**: APK 兜底那条路的核心断言就是"到底给系统发了
+     *   什么" (action / data / type / flags) —— 这些在真机上完全不可见, 只有在这里才能
+     *   变成可数的东西。真值取自 android 官方常量。 */
+    public static Intent last;
+    public String action;
+    public Uri data;
+    public String type;
+    public int flags;
+    public java.util.Map<String, Object> extras = new java.util.HashMap<String, Object>();
+
+    public static final String ACTION_VIEW = "android.intent.action.VIEW";
+    public static final String ACTION_INSTALL_PACKAGE = "android.intent.action.INSTALL_PACKAGE";
+    public static final String ACTION_MAIN = "android.intent.action.MAIN";
+    public static final String ACTION_BOOT_COMPLETED = "android.intent.action.BOOT_COMPLETED";
+    public static final int FLAG_ACTIVITY_NEW_TASK = 0x10000000;
+    public static final int FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
+    public static final String EXTRA_NOT_UNKNOWN_SOURCE = "android.intent.extra.NOT_UNKNOWN_SOURCE";
+
     public Intent() { }
     public Intent(Context c, Class<?> k) { }
-    public Intent putExtra(String k, String v) { return this; }
-    public String getStringExtra(String k) { return null; }
+    public Intent(String a) { action = a; }
+    public Intent(String a, Uri d) { action = a; data = d; }
+    public Intent setData(Uri d) { data = d; return this; }
+    public Intent setDataAndType(Uri d, String t) { data = d; type = t; return this; }
+    public Intent addFlags(int f) { flags |= f; return this; }
+    public Intent putExtra(String k, String v) { extras.put(k, v); return this; }
+    public Intent putExtra(String k, boolean v) { extras.put(k, Boolean.valueOf(v)); return this; }
+    public String getAction() { return action; }
+    public Uri getData() { return data; }
+    public String getType() { return type; }
+    public boolean hasExtra(String k) { return extras.containsKey(k); }
+    public String getStringExtra(String k) {
+        Object v = extras.get(k);
+        return v == null ? null : String.valueOf(v);
+    }
+}
+''',
+
+'android/net/Uri.java': '''\
+package android.net;
+public class Uri {
+    private final String s;
+    private Uri(String s) { this.s = s; }
+    public static Uri parse(String x) { return new Uri(x); }
+    public String getLastPathSegment() {
+        int i = s.lastIndexOf('/');
+        return i < 0 ? s : s.substring(i + 1);
+    }
+    public String toString() { return s; }
+}
+''',
+
+'android/content/pm/PackageInfo.java': '''\
+package android.content.pm;
+public class PackageInfo {
+    public String packageName = "com.zhiyaunhe.sgmbot";
+    public int versionCode = 1;
+    public String versionName = "0.1";
+    public long firstInstallTime = 0;
+    /** 本包最后一次被替换的时刻 (ms) —— "系统安装器那条路装上了没有"就靠它认账 */
+    public long lastUpdateTime = 0;
+}
+''',
+
+'android/content/pm/PackageManager.java': '''\
+package android.content.pm;
+/** 探针版包管理器: 两个可编程开关, 对应真机上问不到答案的两个状态。 */
+public class PackageManager {
+    /** >0 ⇒ getPackageInfo().lastUpdateTime 回这个值 (模拟"某时刻被替换过") */
+    public static long lastUpdateTime = 0;
+    /** 「安装未知应用」是否已授权 (API 26+) */
+    public static boolean canRequestPackageInstalls = true;
+    public PackageInfo getPackageInfo(String pkg, int flags) {
+        PackageInfo pi = new PackageInfo();
+        pi.packageName = pkg;
+        pi.lastUpdateTime = lastUpdateTime;
+        return pi;
+    }
+    public boolean canRequestPackageInstalls() { return canRequestPackageInstalls; }
 }
 ''',
 
@@ -150,6 +230,7 @@ public class Resources {
 'android/content/Context.java': '''\
 package android.content;
 import android.app.NotificationManager;
+import android.content.pm.PackageManager;
 import android.view.WindowManager;
 import java.util.HashMap; import java.util.Map;
 public class Context {
@@ -159,7 +240,14 @@ public class Context {
 
     public WindowManager wm = new WindowManager();
     public NotificationManager nm = new NotificationManager();
-    public int startServiceCount = 0, stopServiceCount = 0;
+    public PackageManager pm = new PackageManager();
+    public String packageName = "com.zhiyaunhe.sgmbot";
+    public int startServiceCount = 0, stopServiceCount = 0, startActivityCount = 0;
+    /** 最后一次 startActivity 的 intent (APK 兜底那条路的断言就落在这上面) */
+    public static Intent lastStarted;
+    /** >0 ⇒ 接下来这么多次 startActivity 抛异常 (模拟"这台机器上没人认领这个 intent");
+     *  置 1 = 只让主 intent 失败 (好验证退回老动作那条路), 置大值 = 两条都失败 */
+    public static int failStart;
 
     public Object getSystemService(String name) {
         if (WINDOW_SERVICE.equals(name)) return wm;
@@ -168,6 +256,15 @@ public class Context {
     }
     public ComponentName startService(Intent i) { startServiceCount++; return null; }
     public boolean stopService(Intent i) { stopServiceCount++; return true; }
+
+    public String getPackageName() { return packageName; }
+    public PackageManager getPackageManager() { return pm; }
+    public void startActivity(Intent i) {
+        if (failStart > 0) { failStart--; throw new RuntimeException("probe: 没有界面认领 " + i.getAction()); }
+        startActivityCount++;
+        lastStarted = i;
+        Intent.last = i;
+    }
 
     private final Map<String, SharedPreferences> prefs = new HashMap<String, SharedPreferences>();
     public SharedPreferences getSharedPreferences(String name, int mode) {
@@ -252,6 +349,9 @@ import android.content.Context;
 public class Settings {
     public static boolean allowOverlay = true;
     public static boolean canDrawOverlays(Context c) { return allowOverlay; }
+    /** APK 兜底那条路缺权限时跳的就是这个页 (API 26+) */
+    public static final String ACTION_MANAGE_UNKNOWN_APP_SOURCES =
+            "android.settings.MANAGE_UNKNOWN_APP_SOURCES";
 }
 ''',
 
@@ -521,6 +621,20 @@ public class Probe {
         return s;
     }
 
+    /**
+     * 直接摆布 BotService 的运行态私有字段 —— 只为把"暂停过没有"这个状态摆出来。
+     * ⚠️ 不走 start()/onStartCommand 是因为那两条路都会**真的起引擎线程** (runBot),
+     *    而探针里没有 SettleLoop, 结果不可控。反射改字段是这里唯一确定的做法。
+     */
+    static void setRunState(boolean running, boolean everRan) throws Exception {
+        java.lang.reflect.Field fr = BotService.class.getDeclaredField("running");
+        fr.setAccessible(true);
+        fr.setBoolean(null, running);
+        java.lang.reflect.Field fe = BotService.class.getDeclaredField("everRan");
+        fe.setAccessible(true);
+        fe.setBoolean(null, everRan);
+    }
+
     public static void main(String[] a) throws Exception {
         Context c;
 
@@ -551,17 +665,44 @@ public class Probe {
         ck("onDestroy 不重复 removeView", WindowManager.removeCount == rmAfterEnd,
                 WindowManager.removeCount);
 
-        // ============ C. 停止 ≠ 结束 ============
-        System.out.println("== C 停止不收窗口 ==");
+        // ============ C. 暂停 ≠ 结束 ============
+        System.out.println("== C 暂停不收窗口 ==");
         c = fresh();
         OverlayCtl.show(c);
         BotService s2 = bootService(c);
         BotService.stop(c);
-        ck("stop() 后悬浮条仍在 (停止≠结束)", OverlayCtl.isShown(), null);
+        ck("stop() 后悬浮条仍在 (暂停≠结束)", OverlayCtl.isShown(), null);
         ck("stop() 不动窗口 removeCount=0", WindowManager.removeCount == 0, WindowManager.removeCount);
         ck("stop() 不收服务", c.stopServiceCount == 0, c.stopServiceCount);
         BotService.end(c);                    // 收尾
         ck("收尾 end() 后 isShown()=false", !OverlayCtl.isShown(), null);
+
+        // ============ C2. 「暂停」与「继续」的键名 (2026-10-11 用户: 名字有歧义) ============
+        // 那颗键的行为一直是"暂停" (只停循环, 窗口留着可续), 名字却叫"停止", 旁边还有一颗
+        // 真正收窗口的「结束」—— 两颗都像"停"。现在名字与语义对齐, 且「开始」在暂停后变「继续」。
+        System.out.println("== C2 「暂停」/「继续」键名 ==");
+        c = fresh();
+        OverlayCtl.show(c);
+        OverlayBar bar = OverlayCtl.bar();
+        ck("悬浮条已挂 (才能看键名)", bar != null && bar.isShown(), null);
+        setRunState(false, false);             // 从没跑过
+        bar.refreshStartLabel();
+        ck("没跑过 ⇒ 键名「开始」", "开始".equals(bar.startLabel()), bar.startLabel());
+        ck("没跑过 ⇒ paused()=false", !BotService.paused(), null);
+        setRunState(true, true);               // 正在跑
+        bar.refreshStartLabel();
+        ck("在跑 ⇒ 仍是「开始」(点它是提醒'已在跑', 不是'继续')",
+                "开始".equals(bar.startLabel()), bar.startLabel());
+        setRunState(false, true);              // ★ 用户点了「暂停」
+        bar.refreshStartLabel();
+        ck("暂停后 ⇒ 键名变「继续」(名字跟着状态走)", "继续".equals(bar.startLabel()), bar.startLabel());
+        ck("paused() 认得出暂停 (不是'没跑过')", BotService.paused(), null);
+        setRunState(false, false);             // 用户点了「结束」/ 服务退出
+        bar.refreshStartLabel();
+        ck("结束后 ⇒ 回到「开始」(要重来, 不该写'继续')",
+                "开始".equals(bar.startLabel()), bar.startLabel());
+        BotService.end(c);
+        Handler.drain();
 
         // ============ D. 服务自挂的窗口也归 end 收 ============
         System.out.println("== D 服务名下窗口 ==");
@@ -627,6 +768,39 @@ public class Probe {
 '''
 
 
+def strip_comments(src):
+    """剥掉注释再做关键词断言。
+
+    ⚠️ 这一条是踩出来的: 源码级断言**必须**先剥注释 —— 改完名字之后, javadoc 里
+       天然会留下「「停止」改名「暂停」」这类说明文字, 不剥就会把**解释**判成回退,
+       断言永远红 = 等于没有断言 (GraphProbe 那边也栽过同一个坑)。
+    """
+    out = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'//[^\n]*', '', out)
+
+
+def src_check():
+    """源码级回归 —— 钉住"用户明确要求过、又最容易被改回去"的东西。
+
+    这些约定没有运行时特征: 键名改了功能照跑, 只是用户又要猜哪个键是哪个。
+    """
+    fails = []
+    raw = strip_comments(io.open(os.path.join(SRC, 'OverlayBar.java'), encoding='utf-8').read())
+    if '"暂停"' not in raw:
+        fails.append('OverlayBar 没有「暂停」键 (名字与语义没对齐?)')
+    if '"停止"' in raw:
+        fails.append('OverlayBar 又出现了「停止」键 (那是"暂停"的旧名, 会与「结束」撞车)')
+    if '"继续"' not in raw:
+        fails.append('OverlayBar 没有「继续」文案 (暂停后键名不跟着状态走)')
+    if 'paused()' not in raw:
+        fails.append('「继续」的判据不是 BotService.paused() (拿 running 分辨不出"没跑过")')
+    # 动作名是 adb 广播 / HTTP 的接口契约, 改文案绝不能顺手改它
+    for act in ('"start"', '"start_nav"', '"stop"', '"end"'):
+        if act not in raw:
+            fails.append('动作名 %s 被动过 (那是 am broadcast / HTTP 的接口契约)' % act)
+    return fails
+
+
 def main():
     # Windows 下 python 默认 cp936 编 stdout, java 侧吐的是 UTF-8 ⇒ 断言文案乱码
     if hasattr(sys.stdout, 'reconfigure'):
@@ -660,7 +834,15 @@ def main():
                         os.pathsep.join([classes, JSON_REAL]),
                         'com.zhiyaunhe.sgmbot.Probe'], capture_output=True)
     sys.stdout.write((r.stdout + r.stderr).decode('utf-8', 'replace'))
-    sys.exit(r.returncode)
+
+    print("== 源码级 (键名/动作名不许改回去) ==")
+    fails = src_check()
+    for f in fails:
+        print("  FAIL " + f)
+    if not fails:
+        print("  ok   OverlayBar: 键名是「暂停/继续」, 动作名仍是 start/start_nav/stop/end")
+
+    sys.exit(0 if (r.returncode == 0 and not fails) else 1)
 
 
 if __name__ == '__main__':

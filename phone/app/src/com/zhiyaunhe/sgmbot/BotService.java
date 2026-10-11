@@ -27,6 +27,12 @@ public class BotService extends Service {
     public static final String MODE_NAV = "nav";
 
     private static volatile boolean running = false;
+    /**
+     * 这一轮有没有真的跑起来过 (暂停后要据此把键名显示成「继续」)。
+     * ⚠️ 不能只看 running: 它区分不出"从没开始"和"暂停中", 而这两种状态在界面上
+     *    该说不同的话 (开始 vs 继续) —— 名字对不上状态就是用户报的"名字有歧义"。
+     */
+    private static volatile boolean everRan = false;
     private static volatile String mode = "";
     private static Config cfg;
     /** 服务没起时的兜底配置层 (cfgOr 用)。与 cfg 读同一份文件, 谁先建都行。 */
@@ -63,25 +69,38 @@ public class BotService extends Service {
         return loose;
     }
     public static boolean isRunning() { return running; }
+
+    /**
+     * 跑过又停下 = **暂停** (悬浮条上那颗键的文案要从「开始」变成「继续」)。
+     * 从没跑过 / 已「结束」/ 服务已退 ⇒ false。
+     */
+    public static boolean paused() { return !running && everRan; }
+
     public static String currentMode() { return mode; }
 
     public void runOnUi(Runnable r) { UI.post(r); }
     public int screenW() { return getResources().getDisplayMetrics().widthPixels; }
     public int screenH() { return getResources().getDisplayMetrics().heightPixels; }
 
-    /** 开始: 服务活着只起工作线程 (停止=暂停, 服务/悬浮条保留); 服务没起则先起服务 */
+    /** 开始: 服务活着只起工作线程 (暂停 ≠ 结束, 服务/悬浮条保留); 服务没起则先起服务 */
     public static void start(Context ctx, String m) {
         if (running) { SgmLog.i("svc", "already running mode=" + mode); return; }
         if (App.service != null) { App.service.spawn(m); return; }
         ctx.startService(new Intent(ctx, BotService.class).putExtra("mode", m));
     }
 
-    /** 停止 = 暂停引擎 (服务/悬浮条保留, 可再点开始) */
+    /**
+     * 暂停 = 停循环、**服务与悬浮条都留着**, 再点「开始」(会显示成「继续」) 接着跑。
+     *
+     * ⚠️ 键名 2026-10-11 由「停止」改为「暂停」: 行为一直就是暂停, 名字却叫停止,
+     *    而旁边还有一颗真正收窗口的「结束」—— 两颗都像"停", 用户按错就以为程序坏了。
+     *    **动作名 `stop` 一个字都没动** (adb 广播 / HTTP 的接口契约)。
+     */
     public static void stop(Context ctx) {
         /* ⚠️ 必须**连 RUN 一起置**。早先只置 running=false, 而循环判的是 `run.get()`
-         *    (=RUN) ⇒ 「停止引擎」按钮其实停不下来, 循环照跑; 更糟的是再点「开始」时
+         *    (=RUN) ⇒ 那颗键其实停不下来, 循环照跑; 更糟的是再点「开始」时
          *    spawn() 只看 running, 于是又起一个线程 —— 两个循环同时在点。
-         *    (2026-10-11 加「运行模式」切换按钮时发现: 用户切换后要「停止再开始」,
+         *    (2026-10-11 加「运行模式」切换按钮时发现: 用户切换后要「暂停再开始」,
          *     这条路的头一步就是坏的。) */
         running = false;
         RUN.set(false);
@@ -90,6 +109,7 @@ public class BotService extends Service {
     /** 结束 = 退出脚本同义: 引擎停 + 服务停 + 悬浮窗/通知一并收掉 (JS endBot → exit()) */
     public static void end(Context ctx) {
         running = false;
+        everRan = false;                 // 退出了 ⇒ 下次该是「开始」而不是「继续」
         /* ⚠️ 悬浮条必须在这里显式收, **不能指望 onDestroy** —— onDestroy 只收「服务名下」
          *    (OverlayCtl.ownedByService()) 的窗口, 为的是"服务意外退出别弄丢用户自己摆的条"。
          *    而最常见的使用顺序恰恰是「先单独显示悬浮窗 → 再点开始」:
@@ -97,7 +117,7 @@ public class BotService extends Service {
          *      看到已有窗口就复用、**不会**改 svcOwned ⇒ 服务退出时那条悬浮窗被"保留"。
          *    结果就是用户点「结束」后: 服务没了、悬浮窗还赖在屏幕上 (2026-10-11 用户报障:
          *    「我点结束应该是退出悬浮窗, 咋只是退出服务呢」)。
-         *    语义定死: 「停止」= 只停引擎、窗口留着可再开;「结束」= 连窗口一起收 (同 JS exit())。
+         *    语义定死: 「暂停」= 只停循环、窗口留着可再开;「结束」= 连窗口一起收 (同 JS exit())。
          *    2026-10-11 起这条语义只由**悬浮窗**上那两颗键触发 (主页的运行键已按用户要求删光)。 */
         OverlayCtl.hide();
         if (ctx != null) ctx.stopService(new Intent(ctx, BotService.class));
@@ -190,6 +210,7 @@ public class BotService extends Service {
         ShizukuCtl.tryBind(this);
         running = true;
         RUN.set(true);
+        everRan = true;
         mode = m;
         final String mm = m;
         new Thread(() -> runBot(mm), "bot-" + mm).start();
@@ -200,6 +221,7 @@ public class BotService extends Service {
     public void onDestroy() {
         running = false;
         RUN.set(false);
+        everRan = false;              // 服务没了 ⇒ 下次该显示「开始」
         /* ⚠️ 只收「服务名下」的悬浮条 —— 用户单独启动的那条要留在屏幕上。
          *   判据是"是服务起来时挂的": 用户先开的话 OverlayCtl 会复用, 这里就不该收。
          *   实现上交给 OverlayCtl: 它知道当前这条是谁的 (attachForService vs show)。
@@ -223,6 +245,7 @@ public class BotService extends Service {
         if (running) return;
         running = true;
         RUN.set(true);              // 与 onStartCommand 对齐: stop 会清 RUN, 这里必须重新置
+        everRan = true;
         mode = m;
         new Thread(() -> runBot(m), "bot-" + m).start();
     }
@@ -242,8 +265,8 @@ public class BotService extends Service {
         }
         running = false;
         RUN.set(false);
-        notify_("SGM挂机已停止");
-        SgmLog.i("svc", "stopped mode=" + m);
+        notify_("SGM挂机已暂停 (可在悬浮条上点「继续」)");
+        SgmLog.i("svc", "已暂停 mode=" + m + " (服务/悬浮条保留)");
     }
 
     private static String fmtSec(long ms) {
