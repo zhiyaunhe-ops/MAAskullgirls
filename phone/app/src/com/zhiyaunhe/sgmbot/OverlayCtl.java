@@ -5,6 +5,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
 /**
  * 悬浮条的生命周期管理 — **独立于 BotService**。
  *
@@ -38,11 +41,47 @@ public final class OverlayCtl {
 
     public static OverlayBar bar() { return bar; }
 
+    /* ---------------- 主线程调度 ----------------
+     * 为什么非有不可 (2026-10-11): WindowManager.addView/removeView 都会经
+     * ViewRootImpl —— 它构造时就要 Looper (Choreographer.getInstance()) 且要求
+     * "只在创建视图层级的那条线程上触碰视图"。而控制面三个入口线程各不相同:
+     *   悬浮条/主页按钮 = 主线程  ✓;  广播 (CtlReceiver) = 主线程 ✓;
+     *   HTTP /trigger  (DebugHttp 的 debug-http worker 线程) = **后台线程** ✗。
+     * 实测后果: `/trigger?action=overlay_show` 直接抛 "Can't create handler inside
+     * thread that has not called Looper.prepare()" (被 show() 的 catch 吞成一句
+     * "挂载失败" —— 用户看到的是"没反应"); 现在 end() 也会从这条线调 hide(),
+     * 不收口就会在"结束"时崩。所以挂载一律转到主线程并等结果 (show 要返回错误原因)。
+     * ⚠️ 等的时候**不能持有 OverlayCtl 的类锁** (内层 showInner 才是 synchronized):
+     *    否则主线程上的按钮回调要拿同一把锁, 会卡满 3s 超时 = 界面假死。
+     *    (hide 不需要这层: 它自己同步摘引用 + post 删除, 见下。) */
+
+    private static void runOnMainSync(Runnable r) {
+        if (Looper.myLooper() == Looper.getMainLooper()) { r.run(); return; }
+        final CountDownLatch latch = new CountDownLatch(1);
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override public void run() {
+                try { r.run(); } finally { latch.countDown(); }
+            }
+        });
+        try {
+            if (!latch.await(3, TimeUnit.SECONDS))
+                SgmLog.i("overlay", "主线程调度超时 (3s) — 结果可能未生效");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     /**
      * 显示悬浮条 (幂等)。
      * @return null = 成功, 否则返回**人话失败原因** (UI 直接弹这个)
      */
-    public static synchronized String show(Context ctx) {
+    public static String show(final Context c0) {
+        final String[] out = new String[1];
+        runOnMainSync(() -> out[0] = showInner(c0));
+        return out[0];
+    }
+
+    private static synchronized String showInner(Context ctx) {
         err = "";
         if (ctx == null) ctx = App.inst;
         if (ctx == null) return err = "App 还没起来 (没有 Context)";
@@ -71,23 +110,45 @@ public final class OverlayCtl {
         }
     }
 
-    /** 隐藏 (只收窗口, 不动服务/引擎) */
-    public static synchronized void hide() {
-        stopTick();
-        if (bar != null) {
-            bar.destroy();
+    /**
+     * 隐藏 (只收窗口, 不动服务/引擎)。
+     * 分两步: **同步**摘掉静态引用 (幂等 + 让 isShown()/ownedByService() 立刻变 false),
+     * 再把真正的 removeView **post 到主线程**。
+     * 为什么要 defer 而不是就地删 (2026-10-11): 悬浮条上的「结束」按钮点下去时,
+     * onClick 就是在**这个窗口自己的视图层级**里跑的, 就地 removeView 等于在自己的
+     * 回调里把它拆掉 (部分 ROM 会抛 "View not attached to window manager")。
+     * 延后一拍让本次点击分发先走完最稳。
+     */
+    public static void hide() {
+        final OverlayBar b;
+        synchronized (OverlayCtl.class) {
+            stopTick();
+            b = bar;
             bar = null;
-            SgmLog.i("overlay", "已隐藏 (独立于服务)");
-        } else {
-            SgmLog.i("overlay", "本来就没显示");
         }
+        if (b == null) {
+            SgmLog.i("overlay", "本来就没显示");
+            return;
+        }
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override public void run() {
+                b.destroy();
+                SgmLog.i("overlay", "已隐藏 (独立于服务)");
+            }
+        });
     }
 
     /**
      * 服务侧调用: 服务起来时**只补挂**不覆盖。
      * 与 show() 的区别: 这里不查权限、不弹错 (服务静默跑), 失败只记日志。
      */
-    public static synchronized OverlayBar attachForService(Context ctx) {
+    public static OverlayBar attachForService(final Context c0) {
+        final OverlayBar[] out = new OverlayBar[1];
+        runOnMainSync(() -> out[0] = attachInner(c0));
+        return out[0];
+    }
+
+    private static synchronized OverlayBar attachInner(Context ctx) {
         if (bar != null && bar.isShown()) return bar;      // 用户已摆好的, 别动
         if (!Settings.canDrawOverlays(ctx)) {
             SgmLog.i("overlay", "服务起时无悬浮窗权限 — 只跑引擎");

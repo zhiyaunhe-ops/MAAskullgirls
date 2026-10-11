@@ -59,7 +59,7 @@ phone/app/
 | 截屏 | shizuku("screencap") + images.read | Shizuku shell screencap → Bitmap |
 | 点击/滑动 | shizuku("input tap/swipe") | Shizuku shell input tap/swipe |
 | 找图 | images.findImage (OpenCV) | Vision.java 纯 Java NCC (同模板 PNG, 同 1280×576 基准) |
-| 悬浮条 | floaty XML | WindowManager overlay (同布局: 三键 + 三行统计) |
+| 悬浮条 | floaty XML | WindowManager overlay (同布局: 五键 + 三行统计; 可脱离服务单独显示) |
 | 多指/捏合 | input CLI 单指（捏合无解） | v2 injectInputEvent 多指注入（ShizukuBinderWrapper 走 shell 权限 binder，scrcpy 同路径）——地图开场捏合缩小 → 全图固定视野 |
 | 常驻 | AutoJs6 前台服务 | 自有前台服务 (通知栏状态, 可开机自启) |
 | 模板 | templates/*.png | assets/templates/*.png (直接复用, 不重裁) |

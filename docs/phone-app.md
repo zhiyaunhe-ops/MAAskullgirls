@@ -43,8 +43,21 @@ Android 原生 App：Shizuku 拿 shell uid 截屏/点击，NCC 模板匹配认�
    `adb push` 改配置要写私有长路径，且 APK 自更新用不了，见「更新」）；
 3. 点「启动服务」；悬浮条：开始／导航／停止／结束／◀折叠。
    悬浮条也可以**单独显示**（主页「单独显示悬浮窗」），不需要先起服务 —— 先摆好
-   位置，想跑时点悬浮条上的「开始」。悬浮条是谁启的决定了服务退出时收不收它：
-   用户单独开的会留着，服务开的会跟着服务一起收。
+   位置，想跑时点悬浮条上的「开始」。
+
+**「停止」与「结束」的区别**（同 AutoJs 版 `settle_bot.js`）：
+
+| 键 | 引擎 | 服务/通知 | 悬浮条 | 对 AutoJs 的对应 |
+|---|---|---|---|---|
+| 停止 | 停（可再点开始） | 留着 | **留着** | 只停循环，窗口留着可再开 |
+| 结束 | 停 | 收掉 | **一并收掉** | `endBot()` → `exit()`，悬浮窗随之消失 |
+
+⚠️ 悬浮条**是"谁启的"不再决定「结束」收不收它**：`OverlayCtl` 的 `svcOwned` 只用于
+「服务**意外**退出」（系统回收、`stopService` 之外的原因）时保住用户自己摆的那条；
+而用户主动点「结束」= 退出脚本同义，**无条件**收窗口（`BotService.end()` 里显式
+`OverlayCtl.hide()`）。曾经的写法只靠 `onDestroy` 收「服务名下」的窗口，于是最常见
+的顺序「先单独显示悬浮窗 → 再点开始」下点「结束」只看到服务停、窗口赖着不走
+（2026-10-11 用户报障）。回归见 `tools/OverlayProbe.py`。
 
 调试（PC 侧）：
 
@@ -309,6 +322,23 @@ python3 phone/app/tools/GraphPageProbe.py
 `tools/GraphProbe.py`（纯 JVM）管的是图**结构**：25 个静态节点 + escape 展开 6 项、
 阈值从 config 回填、布局无重叠、边不悬空、运行时 `Graph.cursor` 锚点全在图上，
 以及**静态装载 / 幂等 / 作废后重建**这三条 `ensureLoaded` 行为。
+
+`tools/OverlayProbe.py`（纯 JVM + 一套最小 Android 桩）管**悬浮条生命周期**：
+
+```bash
+python3 phone/app/tools/OverlayProbe.py     # 29 项断言
+```
+
+它真的编译并运行 `OverlayBar` / `OverlayCtl` / `BotService`，用手驱 `onCreate`/
+`onDestroy` 加 `WindowManager` 桩的 add/remove 计数当判据 —— 真机上"悬浮窗还在不在"
+看不见摸不着，这里把它变成可数的。断言的正是「停止≠结束」与所有权那几条：
+独立启动 ⇒ `ownedByService()=false`；服务起来复用窗口时**不篡改**所有权；
+`end()` ⇒ 窗口必须消失；`stop()` ⇒ 窗口必须留着；服务**意外**退出 ⇒ 用户那条留着；
+`hide()` 同步摘引用 + `removeView` 延后一拍且幂等；无权限给人话错误；后台线程挂载不炸
+（HTTP `/trigger?action=overlay_show` 走的就是那条线，此前会因缺 Looper 直接失败）。
+
+> 桩是**有代价**的：它只证明我们自己这层的时序与所有权判定对，不证明真 ROM 上
+> 窗口真的消失 —— 那一步只能在真机点一次「结束」确认（见「跑起来」那节的语义表）。
 
 想在 **PC 上直接看整张图**（不装 APK、不起 8791）：
 

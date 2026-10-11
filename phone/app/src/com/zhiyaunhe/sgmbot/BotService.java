@@ -57,10 +57,21 @@ public class BotService extends Service {
     /** 停止 = 暂停引擎 (服务/悬浮条保留, 可再点开始) */
     public static void stop(Context ctx) { running = false; }
 
-    /** 结束 = 退出脚本同义: 引擎停 + 服务停 (悬浮窗/通知一并收掉) */
+    /** 结束 = 退出脚本同义: 引擎停 + 服务停 + 悬浮窗/通知一并收掉 (JS endBot → exit()) */
     public static void end(Context ctx) {
         running = false;
-        ctx.stopService(new Intent(ctx, BotService.class));
+        /* ⚠️ 悬浮条必须在这里显式收, **不能指望 onDestroy** —— onDestroy 只收「服务名下」
+         *    (OverlayCtl.ownedByService()) 的窗口, 为的是"服务意外退出别弄丢用户自己摆的条"。
+         *    而最常见的使用顺序恰恰是「先单独显示悬浮窗 → 再点开始」:
+         *      OverlayCtl.show() 把 svcOwned 置 false, 之后 startService 时 attachForService
+         *      看到已有窗口就复用、**不会**改 svcOwned ⇒ 服务退出时那条悬浮窗被"保留"。
+         *    结果就是用户点「结束」后: 服务没了、悬浮窗还赖在屏幕上 (2026-10-11 用户报障:
+         *    「我点结束应该是退出悬浮窗, 咋只是退出服务呢」)。
+         *    语义定死: 「停止」= 只停引擎、窗口留着可再开;「结束」= 连窗口一起收 (同 JS exit())。
+         *    也正因为这句, MainActivity 那个按钮的文案「结束服务 (停引擎 + 收服务/通知/悬浮条)」
+         *    才不是空头支票。 */
+        OverlayCtl.hide();
+        if (ctx != null) ctx.stopService(new Intent(ctx, BotService.class));
     }
 
     public static void trigger(String action) {
@@ -160,11 +171,15 @@ public class BotService extends Service {
         RUN.set(false);
         /* ⚠️ 只收「服务名下」的悬浮条 —— 用户单独启动的那条要留在屏幕上。
          *   判据是"是服务起来时挂的": 用户先开的话 OverlayCtl 会复用, 这里就不该收。
-         *   实现上交给 OverlayCtl: 它知道当前这条是谁的 (attachForService vs show)。 */
+         *   实现上交给 OverlayCtl: 它知道当前这条是谁的 (attachForService vs show)。
+         * ⚠️ 用 OverlayCtl.isShown() 而不是 bar.isShown(): 「结束」路径里 end() 已经先
+         *   调过 OverlayCtl.hide()(它**同步**摘掉静态引用、把 removeView post 到主线程),
+         *   而 stopService→onDestroy 的时序不确定 ⇒ 读静态引用才能确定性地跳过"保留"分支,
+         *   不会去 setText 一个正在被拆的窗口。 */
         if (bar != null && OverlayCtl.ownedByService()) {
             OverlayCtl.hide();
             bar = null;
-        } else if (bar != null) {
+        } else if (bar != null && OverlayCtl.isShown()) {
             SgmLog.i("svc", "悬浮条是用户单独启动的 — 服务退出时保留");
             bar.setText("待机 (服务已退)\n点开始重跑");
         }

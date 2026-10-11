@@ -56,7 +56,11 @@ jobs:
           TAG=latest
           git tag -f "$TAG" "$GITHUB_SHA"
           git push -f origin "$TAG"
-          NOTES="auto build ${GITHUB_SHA::7} — $(git log -1 --pretty=%s)"
+          VC=${{ github.run_number }}
+          NOTES="auto build ${GITHUB_SHA::7} (versionCode ${VC}, versionName 0.1.${VC}) — $(git log -1 --pretty=%s)"
           gh release create "$TAG" --title "SGM挂机 debug 构建" --notes "$NOTES" 2>/dev/null || true
+          # 每次都刷新说明 —— 只 create 的话 release 文案会永远停在首次构建那个提交,
+          # 而资产是 --clobber 覆盖的 ⇒ 说明与 APK 对不上 (用户看到的"更新说明"是陈的)
+          gh release edit "$TAG" --title "SGM挂机 debug 构建 (持续更新)" --notes "$NOTES"
           gh release upload "$TAG" phone/app/build/sgmbot.apk --clobber
           gh release upload "$TAG" bundle.zip --clobber
