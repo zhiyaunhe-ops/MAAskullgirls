@@ -78,6 +78,13 @@ SEED_CONDITIONS = {
                           "rule": None, "label": "招式场"},
     "assist":            {"score_target": 40_000_000, "energy_cost": 4,
                           "rule": None, "label": "星场"},
+    # 「其他」: 不属于以上任何一类、但也不是无上限月场的杂项场。
+    # 用户 2026-10-12 口径: 「SHOWOMETOUR 算其他, 也是 5kw/4」—— 数值与 element
+    # 相同 (5kw/4), 但**不带元素规则** (它不是元素场, 挂 element 会去做无用的
+    # 队伍筛选, 正是条件表铁律禁止的)。
+    # ⚠️ 月场不归这里: 月场是 None(无上限), 本类是 5kw, 两者不是一回事。
+    "misc":              {"score_target": 50_000_000, "energy_cost": 4,
+                          "rule": None, "label": "其他"},
 }
 
 # 未知/未开放类别的 tag —— 归类失败落到这里, 取最保守条件(不猜元素)
@@ -518,7 +525,7 @@ def match_score(a: str, b: str) -> float:
 #取值上两者本就相同(都是 5kw/4能量/element 规则), 所以这是可读性问题而非跑批问题。
 _TAG_PRIORITY = ("character", "element", "gold",
                  "monthly_character", "monthly_element",
-                 "assist", "move", "unknown")
+                 "assist", "move", "misc", "unknown")
 
 
 def _pick(cands: list) -> tuple:

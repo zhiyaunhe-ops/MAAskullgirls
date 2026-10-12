@@ -538,8 +538,8 @@ def test_无快照时靠人工表仍能归类_表外才落unknown(snap, hub):
                                    day="2026-10-06") is not None
         if in_table:
             assert r["matched"] is True, f"{r['title']!r} 在人工表里却没命中"
-            assert r["rule"] is not None or r["tag"] == "gold" or \
-                r["tag"] in ("move", "assist"), \
+            assert r["rule"] is not None or r["tag"] in (
+                "gold", "move", "assist", "misc"), \
                 f"{r['title']!r} 表内非规则类场次不该带 rule"
         else:
             assert r["tag"] == T.UNKNOWN_TAG, f"{r['title']!r} 表外应落 unknown"
@@ -603,11 +603,37 @@ def test_卡名表覆盖真实hub卡名():
 
 
 def test_卡名表不误伤未知名():
-    """表外名字仍然落 unknown —— 人工表不是"什么都收"的兜底。"""
-    for junk in ("ZZQQ NOTAREALNAME", "SHOWOMETOUR", "CLONTOFPA"):
+    """表外名字仍然落 unknown —— 人工表不是"什么都收"的兜底。
+
+    ⚠️ SHOWOMETOUR 已**不在**这个列表: 用户 2026-10-12 确认它算「其他」(misc),
+    5kw/4, 已正式录入 arena_manual.json (含 OCR 变体 SHOWOMETOURN)。
+    """
+    for junk in ("ZZQQ NOTAREALNAME", "CLONTOFPA"):
         r = T.classify_arena(junk, [], manual={})
         assert r["tag"] == T.UNKNOWN_TAG, f"{junk!r} 不该被归类 (实测待人工确认)"
         assert r["rule"] is None
+
+
+def test_其他类misc_条件为用户口径的5kw且不带规则():
+    """「其他」misc: 5kw/4 + rule=None (用户 2026-10-12 口径)。
+
+    ⚠️ 数值虽与 element 相同, 但**绝不挂 element 规则** —— 它不是元素场,
+    挂上就会去做无用的队伍筛选 (条件表铁律: 非元素场带规则比 null 更糟)。
+    ⚠️ 也≠月场: 月场是无上限(None), 本类有 5kw 上界, 两者不是一回事。
+    """
+    tgt, energy, rule_kind = T.conditions_of("misc")
+    assert (tgt, energy, rule_kind) == (50_000_000, 4, None)
+    # 种子表与生效表都必须有这一项 (否则 WebUI 条件页不显示, 新建场次取不到)
+    assert "misc" in T.SEED_CONDITIONS
+    assert T.SEED_CONDITIONS["misc"]["score_target"] == 50_000_000
+    assert T.SEED_CONDITIONS["misc"]["rule"] is None
+    # 端到端: SHOWOMETOUR -> misc/5kw/4/无规则
+    for name in ("SHOWOMETOUR", "SHOWOMETOURN"):
+        r = T.classify_arena(name, [], manual={}, pos=2)
+        assert r["tag"] == "misc", name
+        assert r["score_target"] == 50_000_000 and r["energy_cost"] == 4, name
+        assert r["rule"] is None, name
+        assert r["matched"] is True, name
 
 
 def test_月场位不按名称套周场条件():

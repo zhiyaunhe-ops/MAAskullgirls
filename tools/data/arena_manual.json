@@ -207,6 +207,11 @@
    "tag": "move",
    "依据": "A 官方: SGM 5.2 更新公告『SHOW ME YOUR MOVES』重做段 + 社区清单 (Move Relics); 对应 sgmnow 的 SMYM PF(招式)。仅周六日、隔周开。⚠️ 实测 OCR 会把卡面读成 SHOWOMETOUR / SHOWOMETOURN (2026-10-10/10-12), 但**不确认**是否即本场, 故未挂 match 别名 —— 让它落 unknown 留痕, 人工核对后再补。"
   },
+  "SHOWOMETOUR": {
+   "tag": "misc",
+   "match": ["SHOWOMETOUR", "SHOWOMETOURN"],
+   "依据": "A 用户 2026-10-12 口径「SHOWOMETOUR 算其他, 也是 5kw/4」。≠ SHOW ME YOUR MOVES (那是 move = 4kw/4, 条件不同); ≠ 月场 (月场无上限 None, 且它实测在 #3, 而月场恒占 #1/#2 —— 见文件头「月场固定占 #1/#2」)。OCR 变体 SHOWOMETOURN 同录 (10-10 实测)。"
+  },
   "SEEING STARS": {
    "tag": "assist",
    "依据": "A 官方/社区: Seeing Stars PF(星); sgmnow 有该行但 name 恒为占位符 'Active'(已被 _is_placeholder 剔出索引), 只能按卡名认。SGM 7.0 更新公告「NEW PRIZE FIGHT - Seeing Stars」可印证"
