@@ -1,5 +1,9 @@
 """把 PF hub 居中卡的难度切到 Diamond (2026-10-09 P0 的无人值守兜底).
 
+⚠️ 2026-10-12 起已接进主链: `pf_schedule.act_run_new_pf` 对 tag 属于
+`pf_artag.DIAMOND_TAGS` 的场次, 在建场后、起 bot 前自动调 `ensure_diamond()`。
+本文件仍可单独跑 (见下), 但**不再需要人工执行**。
+
 前提: 游戏已开且停在 PF hub 目标卡 —— 即
   pf_schedule.py --action run_new_pf --params {"no_start": true}
 的产物 (建场后停在目标卡, 不点 PLAY!)。
@@ -41,24 +45,36 @@ def _norm(s: str) -> str:
     return "".join(ch for ch in s.upper() if ch.isalnum())
 
 
-def main() -> int:
-    ensure_mumu(resolve_adb()[0])
-    scene = PfScene()
+def ensure_diamond(scene, max_taps: int = MAX_TAPS) -> bool:
+    """把当前**居中卡**的难度切到 Diamond。返回 True = OCR 已确认 Diamond。
+
+    调用方负责保证: 游戏开着、PF hub 已打开、目标卡已居中 (pick_new_arena 的
+    产物)。本函数不碰导航 —— 居中卡不对时点右箭头升的是**别的卡**的档。
+
+    失败 (读不到 DIAMOND) 时返回 False 并留档 difficulty_fail 截图; 调用方
+    **此时不要起 bot** —— 见模块 docstring: 锁错档不可逆。
+    """
     last = ""
-    for i in range(MAX_TAPS + 1):
+    for i in range(max_taps + 1):
         last = _norm(scene.ocr(DIFF_ROI))
         log(f"难度行 OCR[{i}]: {last!r}")
         if "DIAM" in last:
             scene.snap("difficulty_diamond")
-            print(f"OK: 难度已确认 Diamond (OCR={last!r}, 点击 {i} 次)")
-            return 0
-        if i == MAX_TAPS:
+            log(f"OK: 难度已确认 Diamond (OCR={last!r}, 点击 {i} 次)")
+            return True
+        if i == max_taps:
             break
         scene.tap(*ARROW)
         time.sleep(1.2)
     scene.snap("difficulty_fail")
-    print(f"FAIL: {MAX_TAPS + 1} 次读取均未出现 DIAMOND, 最后 OCR={last!r}")
-    return 1
+    log(f"FAIL: {max_taps + 1} 次读取均未出现 DIAMOND, 最后 OCR={last!r}", "err")
+    return False
+
+
+def main() -> int:
+    ensure_mumu(resolve_adb()[0])
+    scene = PfScene()
+    return 0 if ensure_diamond(scene) else 1
 
 
 if __name__ == "__main__":

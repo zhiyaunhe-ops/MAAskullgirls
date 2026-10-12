@@ -269,3 +269,110 @@ def test_run_pf父场次不存在会报错(monkeypatch, stub_store):
     monkeypatch.setattr(S, "bot_alive", lambda: False)
     with pytest.raises(RuntimeError, match="不存在"):
         S.act_run_pf({"parent_session": "s_nope"})
+
+# ------------------------------------- 角色场特例: 切 Diamond + 按 tag 挑场 (2026-10-12)
+
+class _FakeCarousel:
+    """轮播桩: explore 返回 [(title, score)], goto_index 记回位, read_center_card 复读。"""
+
+    def __init__(self, cards):
+        self.cards = list(cards)
+        self.goto = None
+
+    def explore(self):
+        return list(self.cards)
+
+    def goto_index(self, idx):
+        self.goto = idx
+
+    def read_center_card(self):
+        return self.cards[self.goto if self.goto is not None else 0]
+
+
+def test_挑场可按tag过滤(monkeypatch, stub_store):
+    """want_tag=character: 从新场里挑角色场, 不取第一个 score=0。"""
+    _stub_jjc(monkeypatch, {"day": "2026-10-12", "stale": False, "entries": {}}, [])
+    car = _FakeCarousel([
+        ("A SHOT IN THE DARK", 12_000),               # pos0 月场位, 且非零分
+        ("COSTUMEPARTY", 20_000),                     # pos1 月场位, 且非零分
+        ("EYE OF THE STORM", 0),                      # pos2 元素场 —— 第一个零分卡
+        ("CLOUDY WITH A CHANCE OF PAIN", 0),          # pos3 角色场 —— 想跑这张
+    ])
+    title = S.pick_new_arena(car, {"want_tag": "character"})
+    assert title == "CLOUDY WITH A CHANCE OF PAIN", title
+    assert car.goto == 3, "应按轮播位回位, 不靠标题匹配"
+
+
+def test_挑场按tag挑不中退回原逻辑(monkeypatch, stub_store, capsys):
+    """认不出/没有该类: 告警 + 退回"取第一个", 不硬猜也不中止全链。"""
+    _stub_jjc(monkeypatch, {"day": "2026-10-12", "stale": False, "entries": {}}, [])
+    car = _FakeCarousel([("EYE OF THE STORM", 0), ("SOMEBRANDNEWPF", 0)])
+    title = S.pick_new_arena(car, {"want_tag": "character"})
+    assert title == "EYE OF THE STORM", "挑不中应退回第一个零分卡"
+    assert "没认出" in capsys.readouterr().out, "挑不中必须留痕"
+
+
+def test_月场位不参与tag挑场(monkeypatch, stub_store):
+    """位置优先于名称: #1/#2 是月场位, 同一张角色卡名落在那里也不算角色场。"""
+    _stub_jjc(monkeypatch, {"day": "2026-10-12", "stale": False, "entries": {}}, [])
+    car = _FakeCarousel([
+        ("CLOUDY WITH A CHANCE OF PAIN", 0),   # pos0 月场位 —— 位置挡掉
+        ("BLOOD SPORT", 0),                    # pos1 月场位 —— 同样挡掉
+        ("DAME OF THRONES", 0),                # pos2 角色场(Parasoul)
+    ])
+    title = S.pick_new_arena(car, {"want_tag": "character"})
+    assert title == "DAME OF THRONES", f"月场位的同名卡不该被挑中, 实际 {title}"
+    assert car.goto == 2
+
+
+def _run_new_pf_stubs(monkeypatch, tag, diamond_ok=True):
+    """桩掉 act_run_new_pf 的全部外部依赖, 返回 (started, diamond_calls)。"""
+    _stub_scene(monkeypatch)
+    monkeypatch.setattr(S, "bot_alive", lambda: False)
+    monkeypatch.setattr(S, "pick_new_arena",
+                        lambda scene, params: "CLOUDY WITH A CHANCE OF PAIN")
+    monkeypatch.setattr(S, "classify_and_create",
+                        lambda title, params: ("s_new", {"tag": tag, "rule": None}))
+    started, dcalls = [], []
+    monkeypatch.setattr(S, "start_bot", lambda sid: started.append(sid))
+
+    def _ensure(scene, **kw):
+        dcalls.append(1)
+        return diamond_ok
+
+    diff = types.ModuleType("pf_difficulty")
+    diff.ensure_diamond = _ensure
+    monkeypatch.setitem(sys.modules, "pf_difficulty", diff)
+    return started, dcalls
+
+
+def test_角色场起bot前先切Diamond(monkeypatch, stub_store):
+    """角色场: 先切 Diamond 确认了才起 bot (顺序即约束)。"""
+    started, dcalls = _run_new_pf_stubs(monkeypatch, "character", diamond_ok=True)
+    S.act_run_new_pf({})
+    assert dcalls, "角色场起跑前必须调 ensure_diamond"
+    assert started == ["s_new"], f"切成功才起 bot, 实际 {started}"
+
+
+def test_切Diamond失败则不起bot(monkeypatch, stub_store, capsys):
+    """锁错档不可逆 —— 切不到 Diamond 就绝不起 bot。这是安全闸, 不是优化项。"""
+    started, dcalls = _run_new_pf_stubs(monkeypatch, "character", diamond_ok=False)
+    S.act_run_new_pf({})
+    assert dcalls, "应尝试过切 Diamond"
+    assert not started, f"切失败仍起了 bot (会永久锁错档): {started}"
+    assert "不起 bot" in capsys.readouterr().out
+
+
+def test_非角色场不切Diamond(monkeypatch, stub_store):
+    """DIAMOND_TAGS 之外不切 —— 元素场是否要切尚未确认, 别顺手扩大。"""
+    started, dcalls = _run_new_pf_stubs(monkeypatch, "element", diamond_ok=True)
+    S.act_run_new_pf({})
+    assert not dcalls, "非角色场不该调 ensure_diamond"
+    assert started == ["s_new"]
+
+
+def test_切Diamond的tag集合是用户确认过的():
+    """只含 character。加 element 前先拿到用户确认 (锁错档不可逆)。"""
+    assert "character" in T.DIAMOND_TAGS
+    assert "element" not in T.DIAMOND_TAGS, \
+        "元素场是否要切 Diamond 尚未经用户确认, 别顺手扩大"

@@ -235,7 +235,7 @@ def act_run_new_pf(params: dict) -> None:
 
     MuMu → 唯一 device → Skullgirls → 清弹窗 → 大厅 → PF hub → 左右滑动找今天
     新出的 PF(score=0) → **先更新 sgmnow 场次** → **按 tag 归类取条件** → 建当日子场次
-    → 起 bot。
+    → (角色场特例: 切难度到 Diamond) → 起 bot。
 
     ⚠️ 2026-10-06 起走 tag 归类 (classify_and_create), 不再走
     resolve_arena + create_child 父子继承 (用户口径「不搞父子了, 只搞归类tag」)。
@@ -243,6 +243,8 @@ def act_run_new_pf(params: dict) -> None:
 
     params:
       fallback_title  没扫到 score=0 时的兜底场地关键词 (可选)
+      want_tag        只挑 tag 命中的新场 (如 "character" 专跑角色场; 挑不中
+                      告警并退回"取第一个", 见 pick_new_arena)
       dry_run         只归类不建场次不起bot (核对 tag 是否判对)
       no_start        只建场次, 不起 bot (调试用, 默认 False)
       legacy_parent   给父场次 id 则走**旧父子路径**(仅调试对照)
@@ -250,6 +252,7 @@ def act_run_new_pf(params: dict) -> None:
     """
     from pf_scene import PfScene, ensure_mumu
     from pf_env import resolve_adb
+    import pf_artag as T
 
     if bot_alive():
         if not params.get("restart", True):
@@ -278,10 +281,40 @@ def act_run_new_pf(params: dict) -> None:
         from pf_store import STORE
         child = STORE.create_child(params["legacy_parent"])
         log(f"旧式子场次「{child['name']}」({child['id']})", "warn")
+    # ⑦b 角色场特例 (2026-10-12 用户口径): 起 bot 前先把难度切到 Diamond。
+    # 不做的后果: bot 点 PLAY!→FIGHT! 弹「locked into the Bronze」→ CONTINUE 后
+    # 该 PF **永久锁 Bronze**(不可逆), 5kw 目标永远达不到。切失败**不起 bot**
+    # (pf_difficulty.ensure_diamond 返回 False 时已留档 difficulty_fail 截图)。
+    if info.get("tag") in T.DIAMOND_TAGS:
+        from pf_difficulty import ensure_diamond
+        log(f"tag={info['tag']}: 起 bot 前先把难度切到 Diamond (角色场特例)")
+        if not ensure_diamond(scene):
+            log("难度未确认 Diamond, 不起 bot —— 避免永久锁错档。"
+                "可人工在 hub 上切到 Diamond 后用 WebUI 开跑", "err")
+            return
     if params.get("no_start"):
-        log(f"no_start: 停在已居中的「{title}」, 场次 {sid} 待人工开跑")
+        log(f"no_start: 停在已居中的「{title}」(难度已就绪), 场次 {sid} 待人工开跑")
         return
     start_bot(sid)
+
+
+def _tag_of(title: str, pos: int = None):
+    """单个卡名 -> tag (挑场过滤用)。快照取不到/异常返回 None, 调用方按未命中处理。
+
+    与 classify_and_create 共用同一份 sgmnow 快照 (JJC.today 当天只抓一次并落盘),
+    所以这里先抓不会让全链多一次网络请求。pos 传轮播位, 让月场位 (#1/#2) 的
+    位置优先规则同样生效 (pf_artag.MONTHLY_SLOTS)。
+    """
+    try:
+        from jjc_store import JJC
+        import pf_artag as T
+        snap = JJC.today(log=lambda m, level="info": log(m, level))
+        index = T.build_tag_index(snap) if snap else []
+        return T.classify_arena(title, index, day=(snap or {}).get("day"),
+                                pos=pos).get("tag")
+    except Exception as e:  # noqa: BLE001 挑场失败不该炸全链, 退回原行为
+        log(f"按 tag 挑场失败 ({e}), 按原逻辑取第一个新场", "warn")
+        return None
 
 
 def pick_new_arena(scene, params: dict) -> str:
@@ -291,9 +324,24 @@ def pick_new_arena(scene, params: dict) -> str:
     错卡, 旧实现直接拿错卡建了子场次):
     1. 回卡用轮播位 (goto_index), 不靠标题匹配;
     2. 居中后复读分数, 不是 0 就中止, 不建场次不起 bot。
+
+    params.want_tag (2026-10-12 新增): 只挑 tag 命中的新场 (如 "character" 专跑
+    角色场)。**挑不中时告警并退回原行为** (取第一个 score=0), 不硬猜 —— 认不出
+    卡名 (OCR 残串/新场未收录) 时宁可跑原逻辑, 也别为挑而挑。
     """
     seen = scene.explore()                 # 内部已左滑一圈并恢复初始卡
     zeros = [(i, t) for i, (t, s) in enumerate(seen) if s == 0 and t]
+    want = str(params.get("want_tag") or "").strip()
+    if zeros and want:
+        hit = next(((i, t) for i, t in zeros if _tag_of(t, i) == want), None)
+        if hit:
+            skipped = [t for i, t in zeros if (i, t) != hit]
+            log(f"want_tag={want}: 新场中挑中 {hit[1]!r} (轮播位 {hit[0]})"
+                + (f"; 跳过 {skipped}" if skipped else ""))
+            zeros = [hit]
+        else:
+            log(f"want_tag={want}: 新场里没认出一张 (扫到 {[t for _, t in zeros]}), "
+                f"按原逻辑取第一个", "warn")
     if zeros:
         idx, target = zeros[0]
         more = [t for _, t in zeros[1:]]

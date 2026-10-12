@@ -65,6 +65,9 @@
    否则月场位的卡会被按周场条件套（见下「月场固定占 #1/#2」）。
 3. 条件**一律从条件表按 tag 取**，不继承任何场次。
 4. `ScoreStore.create_tagged()` 建独立场次（名字带日期，供连刷编排识别）。
+5. **tag ∈ `pf_artag.DIAMOND_TAGS`（当前仅 character）时，起 bot 前先把难度切到
+   Diamond**（`pf_difficulty.ensure_diamond`）—— 不切会永久锁 Bronze，5kw 打不到。
+   详见 **PF_BOT.md §6.14**。
 
 ### 降级行为（都不猜、不崩）
 

@@ -166,6 +166,7 @@
 | 6.10 | 扫描／去重 | 20s、默认宽限90分钟／按日先记触发再执行；失败不保证重试 |
 | 6.10 | 串行 | _ACTION_LOCK仅单进程；取锁后重查状态；不保证FIFO |
 | 6.10 | --fire／--action | 等完成／硬超时；_timeout默认480s |
+| 6.10 | run_new_pf.params | fallback_title（无新场兜底）／want_tag（只挑某 tag 的新场，如 character）／dry_run／no_start／legacy_parent／restart；DIAMOND_TAGS 的场次起跑前自动切 Diamond，见 §6.14 |
 | 6.10 | bot启动 | breakaway被拒→WMI；HTTP核验svc；占端口报错、不自动换端口 |
 | 6.10 | MuMu启动 | 优先WMI；普通Popen回退仍有宿主连带终止风险 |
 
@@ -232,6 +233,19 @@ tailscale serve --https=8444 --bg http://127.0.0.1:8790
 tailscale serve status
 tailscale serve --https=8444 off
 ~~~
+
+## 6.14 角色场特例：起跑前切 Diamond + 防守队（2026-10-12 用户口径）
+
+| 项 | 内容 |
+|---|---|
+| 为什么必须切 | hub 卡默认 BRONZE；bot 点 PLAY!→FIGHT! 会弹「locked into the Bronze difficulty」→ 点 CONTINUE 后该 PF **永久锁 Bronze（不可逆）**，5kw 目标永远达不到 |
+| 切法 | 难度行是可点切换器，点右箭头一次 +1 档（Bronze→Silver→Gold→Diamond，到顶右箭头消失）；Diamond 判定 = 难度行 OCR 归一后含 `DIAM` |
+| 实现 | `pf_difficulty.ensure_diamond(scene)`（右箭头 (720,385)、ROI (540,358,720,402)、最多 3 击 + 首读）；`act_run_new_pf` 在 classify_and_create 之后、start_bot 之前调用 |
+| 生效范围 | `pf_artag.DIAMOND_TAGS`（当前**仅 character**）。元素场是否也要切**未经用户确认** —— 锁错档不可逆，别顺手扩大；确认后往集合里加 `"element"` 即自动生效 |
+| 安全闸 | 读不到 DIAMOND 时**不起 bot**，留档 `difficulty_fail` 截图；人工在 hub 切好后可用 WebUI 开跑 |
+| 防守队 | 角色场 `class` 规则只约束**防守队**（出战队不受限）：`setup_defense_team` 双入口（「先设防守队」弹窗点 OK / 直接落在编辑器认 CONFIRM），左1 放该期角色（CHARACTER_CHIPS 筛选 + `put_char_in_defense` + 槽位角色名 OCR 复验） |
+| ⚠️ 已知缺口 | `CHARACTER_CHIPS` 只覆盖 12 个角色（缺 Parasoul/Peacock/Valentine/Squigly/Robo-Fortune/Umbrella）⇒ 这几类角色场的防守约束**静默跳过**（日志有 warn），需人工在 WebUI 补规则 |
+| 专跑角色场 | `--action run_new_pf --params {"want_tag":"character"}`：只从 score=0 的新场里挑角色场（挑不中告警并退回「取第一个」）；月场位 #1/#2 不参与挑场（位置优先于名称） |
 
 ## 7. 实测记录（历史；本次未重跑）
 

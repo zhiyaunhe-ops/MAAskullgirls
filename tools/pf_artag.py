@@ -97,6 +97,17 @@ CHAR_SCORE_TARGET = 50_000_000
 CHAR_ENERGY_COST = 5
 ELEM_SCORE_TARGET = 50_000_000
 ELEM_ENERGY_COST = 4
+
+# 开跑前必须先把 hub 卡难度切到 Diamond 的 tag (2026-10-12 用户口径: 角色场特例)。
+# 为什么只有 character:
+#   ① 角色场是 Diamond 层级赛事 (hub 卡名带 DIAMOND 前缀, 见 pf_nav.TIER_PREFIXES
+#      注释里的 "DIAMOND BLOOD SPORT"), 5kw 目标分只有 Diamond 档能打到;
+#   ② **切错档不可逆** —— bot 点 PLAY!→FIGHT! 会弹「locked into the <档> difficulty」,
+#      点 CONTINUE 后该 PF 永久锁该难度 (pf_bot.LOCK_* 注释)。所以只列用户明确
+#      确认过的 tag, 不猜。
+# 元素场 (element) 是否同样需要待确认 —— 确认后往这里加一个 "element" 即可,
+# pf_schedule.act_run_new_pf 会自动生效, 不用改别处。
+DIAMOND_TAGS = frozenset({"character"})
 MONTHLY_SCORE_TARGET = None
 MONTHLY_ENERGY_COST = 4
 
