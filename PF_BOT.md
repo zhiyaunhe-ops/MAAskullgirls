@@ -303,6 +303,8 @@ tailscale serve --https=8444 off
 | 导航 | python tools/pf_scene.py goto |
 | 扫描／居中 | python tools/pf_scene.py explore；python tools/pf_scene.py center EYE |
 | 调度 | python tools/pf_schedule.py；--list；--fire 任务名 |
+| 轮询分数 | python tools/poll_score.py [目标分=1000000] [分钟数=8]；到线退 0、超时退 2（验证任务用，见 §6.14） |
+| 专跑角色场 | python tools/pf_schedule.py --action run_new_pf --params '{"want_tag":"character"}'（只挑 score=0 新场里的角色场；起跑前自动切 Diamond，见 §6.14） |
 | 截图 | python tools/screencap.py |
 | 日程 | python tools/jjc_store.py fetch；show；days；versions（子命令分别执行） |
 | 排障 | debug/debug/maafw.log；debug/pf/bot_stdout.log 与重生世代 debug/pf/bot_stdout_*.log；debug/pf/run/；端口占用 netstat -ano findstr 8790；adb 侧 Get-CimInstance Win32_Process -Filter "Name='adb.exe'" 看 SessionId/创建时间（session 0=别的服务拉起的，5555=guest adbd 连接）；**谁在动 adb**：K70 巡检日志 D:\Downloads\shared_file\tailshare\data\k70pro\watch.log（与 bot 共享 5037）；清僵尸 adb 要**管理员** Stop-Process -Id <pid> -Force（普通权限报"拒绝访问"），但 5037 上 LISTENING 的那个是活 server，别杀 |
