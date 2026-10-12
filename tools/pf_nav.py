@@ -134,6 +134,14 @@ class SceneNav:
         # 层级标签+装饰图, SCORE ROI (y138-185) 框到装饰区, 读数是随机噪声
         # ('ROgO0' / '900'), 见 read_center_card 2026-09-25 注。
         "BIG BEN'S BEATDOWN",
+        # 2026-10-13: Filia 的角色场名 (10-13 周二新开, 剩 02D:23H:55M, 0 分新场)。
+        # 同款高标题版式: 主标题 ROI (500,290,780,378) 只框到倒计时 '02D:23H:52M'
+        # (剥完非字母只剩 'M'), fallback ROI (520,255,780,310) 实读 'TWOTOTANGLE';
+        # 分数 ROI 框到装饰区读出 'T' (纯字母 -> parse 得 -1)。
+        # WARN: 不先收录则 fallback 读数被 read_center_card 丢弃 (主串 'M' 非空 ->
+        # 不采用 fallback 串), 全链扫不到 score=0 新场 —— 2026-10-13 01:02 实测,
+        # want_tag=character 因此挑不中, 角色场特例逻辑未验证。
+        "TWO TO TANGLE",
     ]
 
     # 卡片上的"难度层级"文字与场次名**同框**: ROI_CARD_TITLE=(500,290,780,378) 实测同时
@@ -288,11 +296,16 @@ class SceneNav:
             elif not cands[0] and cands2[0]:
                 # primary 剥完是空串而 fallback 读出了字母 -> 采用 fallback 串留痕
                 full, cands, stripped = full2, cands2, stripped2
-        score_body = re.sub(r"(?i)\bscore\b\s*:?", " ", raw_score).strip()
         has_score_label = bool(re.search(r"(?i)score", raw_score))
-        if best is not None and (
-            (score == -1 and not score_body)
-            or (not has_score_label and 0 <= score < 10000)
+        # 无 SCORE 行 + 分数读不出 (<10000 或 -1) -> 新场 0 分。
+        # -1 也放行 (2026-10-13): 高标题版式卡 (DEATH METTLE/INFINITY AND
+        # BEYOND/BIG BEN'S BEATDOWN/TWO TO TANGLE) 分数 ROI 框到装饰区, 读出
+        # 纯字母噪声 ('T'/'ROgO0'), 原条件 (score==-1 且 score_body 空) 进不去
+        # -> 新场认不出, want_tag=character 专跑直接空转。反向安全: 老卡必带
+        # "SCORE:" 标签且分数 >=7 位数, has_score_label 挡着; best 字库命中
+        # 又是第二道门卫 (OCR 通道死时标题也读不出, 走不到这里)。
+        if best is not None and not has_score_label and (
+            score == -1 or 0 <= score < 10000
         ):
             STATE.log(f"卡面无 SCORE 行 (标题 {best!r}), 按新场 0 处理", "warn")
             score = 0

@@ -124,6 +124,11 @@ DEF_SLOT_DROP = [(440, 190), (640, 190), (840, 190)]
 DEF_DROP_SRC = (640, 555)
 # 槽位卡的**角色名** band (卡面下方彩色条, 如 'CEREBELLA'): 放人后的复验 ROI。
 DEF_SLOT_NAME_ROI = [(cx - 95, 292, cx + 95, 350) for cx, _ in DEF_SLOT_DROP]
+# 防守队槽位卡的**角色本名**(副名小字, 主名条下半行)。2026-10-13 实测: 变体卡
+# 主名与角色本名可以完全不同 (Shear Force 的副名才是 Filia), 主名条 y292-350
+# OCR 只读到变体主名; 副名行 y325-358 稳定读出本名 (截图
+# debug/pf/run/1013_012627/0019_防守队放人后.jpg)。复验主名/副名任一命中即过。
+DEF_SLOT_SUBNAME_ROI = [(cx - 95, 325, cx + 95, 358) for cx, _ in DEF_SLOT_DROP]
 
 ROI_FILTER_X = (1150, 30, 1280, 140)  # 筛选面板关闭 X 搜索区
 # 候选卡左缘框条的元素色相区间 (light/neutral 不可颜色分辨 -> 不做筛选复验)
@@ -798,13 +803,19 @@ class PfBot(SceneNav):
         self.set_filter(fav)                     # 还原筛选, 别把面板留给后面的常规编队
         img = self.snap("防守队放人后")
         got = self._slot_fighter_name(img, slot_i)
+        # 副名 = 角色本名: 变体卡主名 (如 SHEAR FORCE) 与本名 (Filia) 无关,
+        # 只比主名会把放对的卡误判成失败 (2026-10-13 TWO TO TANGLE 实测)。
+        base = re.sub(r"[^A-Z]", "",
+                      self.ocr_text(img, DEF_SLOT_SUBNAME_ROI[slot_i]).upper())
         want_norm = re.sub(r"[^A-Z]", "", want.upper())
         if want_norm and (want_norm in got
-                          or difflib.SequenceMatcher(None, want_norm, got).ratio() >= 0.7):
-            STATE.log(f"防守队: 槽位{slot_i + 1} 已放入 {want} (OCR {got!r})")
+                          or difflib.SequenceMatcher(None, want_norm, got).ratio() >= 0.7
+                          or want_norm in base):
+            STATE.log(f"防守队: 槽位{slot_i + 1} 已放入 {want} "
+                      f"(OCR 主名 {got!r} / 本名 {base!r})")
             return True
-        STATE.log(f"防守队: 槽位{slot_i + 1} 角色名复验不过 (OCR {got!r}, 期望 "
-                  f"{want!r}) —— 筛选或拖拽没生效", "err")
+        STATE.log(f"防守队: 槽位{slot_i + 1} 角色名复验不过 (主名 {got!r} / 本名 "
+                  f"{base!r}, 期望 {want!r}) —— 筛选或拖拽没生效", "err")
         return False
 
     def judge_rule(self, img) -> bool:
@@ -879,10 +890,15 @@ class PfBot(SceneNav):
         rule_slot = None
         fav_chips = [FILTER_HEART] if STATE.filter_favorite else []
         rule_chips = list(fav_chips)
-        if STATE.pf_rule:
+        if STATE.pf_rule and STATE.pf_rule["type"] == "element":
+            # ⚠️ 2026-10-13: class 规则**不进这里** —— 角色场只约束防守队
+            # (setup_defense_team/put_char_in_defense), 出战队不受限 (用户
+            # 2026-09-29 口径, judge_rule 对 class 恒 True)。旧实现把
+            # CLASS_CHIPS 插进出战队筛选链 + rule_slot=0: 槽位1 能量不足时按
+            # 角色芯片筛候选区, 池内只剩该角色 0 能量变体 -> 空烧 80s
+            # 「规则补人失败」停机 (TWO TO TANGLE 10-13 01:27 实测)。
             rule = STATE.pf_rule
-            chip_tbl = ELEMENT_CHIPS if rule["type"] == "element" else CLASS_CHIPS
-            chip = chip_tbl.get(rule["value"])
+            chip = ELEMENT_CHIPS.get(rule["value"])
             if chip:
                 rule_chips.insert(0, chip)
             if self._rule_done_fight == STATE.fight_no:
