@@ -13,9 +13,31 @@
 
 改为**按 tag 归类**：条件从一张纯表取，tag 来自 **sgmnow 官方分类**。
 
+### ⚠️ 2026-10-12 重大修订：sgmnow 给不出卡名
+
+原设计假设「sgmnow 的场次名 == hub 卡面名」。**实测不成立，且是两套命名空间**：
+
+| 来源 | 值 |
+|---|---|
+| sgmnow `entries[].name`（`raw_rows` 实证） | **元素/角色/事件名** —— `Wind` / `Umbrella` / `Shakedown - Hemofilia` / `Costume Party` |
+| hub 卡面（实机截图实证） | **主题场名** —— `EYE OF THE STORM` / `BIG BEN'S BEATDOWN` / `FALL OF THE DARK` |
+
+⇒ `classify_arena` 的**名称相似度路径对非月场结构性失效**：实测
+`match_score('EYE OF THE STORM','Wind') == 0.00`、`'MEDICI SHAKEDOWN' vs
+'Shakedown - Hemofilia' == 0.55`，全部低于阈值 0.75。**真实运行 10-08/09/10
+连续三次全落 `unknown`**（只有月场因走人工表而正常）。
+
+⚠️ `tests/test_artag.py` 当时全绿是**假象**：喂的标题是合成值（`"Fire"` /
+`"Ms. Fortune"` / `"Wind"`），即人为让卡名 == sgmnow 名，现实从不出现。
+
+**修法**：新增**卡名人工表** `tools/data/arena_manual.json`（卡名 → 类别），
+排在相似度之前。卡名与类别的对应是游戏自身设定、官方表格不给 —— 只能从
+社区/官网汇总取（见该文件 `_说明` 的数据来源与依据等级）。
+
 ## 条件表
 
-定义在 `tools/pf_artag.py` 的 `TAG_CONDITIONS`（唯一权威）。
+定义落在 **`debug/pf/tag_conditions.json`**（`tools/pf_artag.py` 的
+`SEED_CONDITIONS` 只是首次运行的种子值，可在 WebUI「场次条件」页改）。
 
 | tag | score_target | energy_cost | rule |
 |---|---|---|---|
@@ -36,8 +58,10 @@
 
 1. **`JJC.today()` 先更新场次** —— 当天有快照就用，没有现抓 sgmnow。
    缺这一步＝拿昨天数据比今天场地。
-2. `pf_artag.classify_arena()` 按名称相似度定 tag（阈值 **0.75**）。
-3. 条件**一律从 `TAG_CONDITIONS` 按 tag 取**，不继承任何场次。
+2. `pf_artag.classify_arena()` 定 tag，**顺序即优先级**：
+   ① 月场人工表 → ② **卡名人工表**（`arena_manual.json`）→ ③ 场次名类别词
+   → ④ sgmnow 名称相似度（阈值 **0.75**）。②必须早于④，否则真实卡名全落 unknown。
+3. 条件**一律从条件表按 tag 取**，不继承任何场次。
 4. `ScoreStore.create_tagged()` 建独立场次（名字带日期，供连刷编排识别）。
 
 ### 降级行为（都不猜、不崩）
@@ -78,6 +102,48 @@ sgmnow 的 Monthly PF **只有一个 `holi` 条目、只给场次名** —— �
 
 **每月 1 日加新条目 + 给上一条填 `valid_until`。**
 ⚠️ **别把旧条目的 `valid_until` 改成 `null`**（＝永不过期，一年后没人说得清）。
+
+## 非月场也必须人工补卡名（2026-10-12）
+
+同源问题：**hub 卡面名 ≠ sgmnow 名**，所以非月场同样只能靠人工表
+（`tools/data/arena_manual.json`，结构同上，但不要求 `monthly` 字段）。
+
+| 字段 | 作用 |
+|---|---|
+| `tag` | `element` / `character` / `gold` / `move` / `assist`（也接受 `monthly_element`） |
+| `element` | 元素场的元素（`fire`/`water`/`wind`/`light`/`dark`） |
+| `char` | 角色场角色，**必须带空格的官方原名**（`Ms. Fortune`／`Big Band`） |
+| `match` | 可选：别名／OCR 残串（一对多） |
+| `依据` | 判定依据；`⚠️ 待确认` 前缀 = 无权威来源或档期不明，**需人工拍板** |
+| `valid_from` / `valid_until` | 可选，同上（季节性场用） |
+
+**这张表不可能完备，也不应被当作完备**：游戏持续新增季节场／月场／变体活动场
+（官方 8.7 公告『Hot Mess』火月场、8.8 公告『Sink or Swim』水季节场，另有
+『Sun of a Beach』『¡Viva la Fiesta!』等）。社区清单天然滞后 —— 实测就有查不到的
+卡名（`SHOWOMETOUR` / `CLONTOFPA` / `FALL OF THE DARK`）。
+
+⇒ **查不到的名字一律落 `unknown` + 留痕，人工核对后补录；绝不为覆盖率硬凑**。
+`unknown` 与 `gold`/`move`/`assist` 的条件相同（4kw/4/无规则），所以漏判代价低；
+真正有代价的是 **element**（5kw + 元素限制）与 **character**（5kw + 防守角色），
+这两类必须判准。
+
+### ⚠️ 卡名会被 `KNOWN_TITLES` 误归一
+
+`pf_nav._match_known()` 用 `difflib.get_close_matches(cutoff=0.55)`。实测卡面写
+**`FALL OF THE DARK`**，被归一成 **`A SHOT IN THE DARK`**（同分 243,751,965）
+⇒ `arenas.json` 记的是错名，任何按卡名索引的表都会被污染。
+**新增/改名时先确认卡面真实写法**，别直接信 `arenas.json`。
+
+## 卡名的权威来源（据等级 A）
+
+| 来源 | 内容 |
+|---|---|
+| SGM Wiki「Prize Fight」页 | 元素场表（Name/Element 两列）、金币场表、Show Me Your Moves |
+| SGM Wiki / Fandom「Skullgirls Mobile」页 | 角色场清单（名 + 角色）、杂项场 |
+| 官方更新公告 `hub.skullgirlsmobile.com/updates/*` | 新增场次（月场/季节场/变体活动场）—— **唯一能追上新场的来源** |
+| 官方论坛「Prize Fight / Rift Battle Score Reports」 | 官方按 `Dark Element Prize Fight ("A Shot in the Dark")` 逐场记录，可交叉印证 |
+
+⚠️ 两个 wiki 页有反爬（Cloudflare / Miraheze 连接检查），抓取可能拿到验证页。
 
 ## 两个必须知道的坑
 
@@ -146,6 +212,7 @@ python tools/migrate_sessions_to_tag.py --apply
 |---|---|
 | 条件表 + 归类 | `tools/pf_artag.py` |
 | 月场人工表 | `tools/data/monthly_manual.json` |
+| **非月场卡名人工表** | `tools/data/arena_manual.json` |
 | 新建场次入口 | `pf_schedule.classify_and_create()` |
 | 带 tag 建场次 | `ScoreStore.create_tagged()` |
 | 存量迁移 | `tools/migrate_sessions_to_tag.py` |

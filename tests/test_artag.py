@@ -432,12 +432,16 @@ def test_月场补丁走名字互为子串_承OCR残串实证():
 
 
 def test_补丁表坏了不崩且退最保守(tmp_path):
-    """配置文件坏了不该让整条归类链崩 —— 最坏退unknown + 留痕。"""
+    """配置文件坏了不该让整条归类链崩 —— 最坏退unknown + 留痕。
+
+    ⚠️ 显式传 arena_manual={} 隔离月场表的行为: 否则 'A SHOT IN THE DARK'
+    会被卡名表(arena_manual.json)接走判成 element, 测不到本条想锁的东西。
+    """
     bad = tmp_path / "m.json"
     bad.write_text("{not json", encoding="utf-8")
     assert T._load_manual(bad) == {}
     r = T.classify_arena("A SHOT IN THE DARK", [], manual=T._load_manual(bad),
-                         day="2026-10-06")
+                         day="2026-10-06", arena_manual={})
     assert r["tag"] == T.UNKNOWN_TAG
     assert r["score_target"] == 40_000_000
 
@@ -511,36 +515,109 @@ def test_非月场不受补丁影响():
     assert r["rule"] == {"type": "class", "value": "MSFORTUNE"}
 
 
-def test_无快照时非月场全落unknown(snap, hub):
-    """**非月场**在无 sgmnow 快照时全部落 unknown, 且不带任何规则。
+def test_无快照时靠人工表仍能归类_表外才落unknown(snap, hub):
+    """**非月场**在无 sgmnow 快照时: 人工表(arena_manual)覆盖的照常归类,
+    表外的一律落 unknown + 最保守条件(不静默套条件)。
 
-    月场是例外且**这是设计使然**: 月场类别来自人工补丁表(monthly_manual.json),
-    本就不依赖 sgmnow —— sgmnow 的 holi 条目只给名字、给不出类别与元素。
-    所以断掉 sgmnow 之后, 月场仍能正确归类, 其余场次必须落 unknown。
-    这条测试锁的正是这个分工: 人工配置独立生效, 官方源缺失只影响非月场。
+    ⚠️ 本条 2026-10-12 由「非月场全落 unknown」改写 —— 原断言编码的是旧设计,
+    而旧设计在真实数据上根本不成立: sgmnow 的 `name` 是元素/角色名
+    ('Wind'/'Umbrella'), hub 卡面是主题场名('EYE OF THE STORM'), 两套命名空间
+    不相交, 相似度路径实测最高只到 0.55(< 阈值 0.75)。所以卡名->类别只能靠
+    人工表。断掉 sgmnow 之后人工表**仍必须生效**, 受影响范围收缩到「表外的场次」。
+    这条锁的正是修订后的分工, 防止有人再把 unknown 当默认行为。
     """
     arenas = (hub or {}).get("arenas") or []
     if not arenas:
         pytest.skip("arenas.json 里没有场地卡")
-    out = T.classify_all(arenas, None)
-    day = (hub or {}).get("day")
+    table = T._load_manual(T.ARENA_MANUAL_PATH)
+    out = T.classify_all(arenas, None, day="2026-10-06")
     for r in out:
         if r["tag"].startswith("monthly_"):
-            continue                      # 月场靠人工表, 与 sgmnow 无关
-        assert r["tag"] == T.UNKNOWN_TAG, f"{r['title']!r} 应落 unknown"
-        assert r["matched"] is False
-        assert r["rule"] is None
-        assert r["score_target"] == 40_000_000
+            continue                      # 月场靠 monthly_manual, 与 sgmnow 无关
+        in_table = T._manual_match(r["title"], table, want_monthly=False,
+                                   day="2026-10-06") is not None
+        if in_table:
+            assert r["matched"] is True, f"{r['title']!r} 在人工表里却没命中"
+            assert r["rule"] is not None or r["tag"] == "gold" or \
+                r["tag"] in ("move", "assist"), \
+                f"{r['title']!r} 表内非规则类场次不该带 rule"
+        else:
+            assert r["tag"] == T.UNKNOWN_TAG, f"{r['title']!r} 表外应落 unknown"
+            assert r["matched"] is False
+            assert r["rule"] is None
+            assert r["score_target"] == 40_000_000
 
 
 def test_快照与人工表都缺时全落unknown(snap, hub):
-    """两头都没了(无 sgmnow + 无补丁表) -> 必须全落unknown, 不得静默套条件。"""
+    """两头都没了(无 sgmnow + 两张人工表都空) -> 必须全落unknown, 不得静默套条件。"""
     arenas = (hub or {}).get("arenas") or []
     if not arenas:
         pytest.skip("arenas.json 里没有场地卡")
     out = T.classify_all(arenas, None, day="2026-10-06")
-    # 显式传空补丁表 = 人工配置也没有
-    out2 = [T.classify_arena(a.get("title"), [], manual={})
+    # 显式传空补丁表 = 人工配置也没有 (月场表与卡名表都清空)
+    out2 = [T.classify_arena(a.get("title"), [], manual={}, arena_manual={})
             for a in arenas]
     assert all(r["tag"] == T.UNKNOWN_TAG and r["rule"] is None
                for r in out2)
+
+
+# ---------------------------------------------------------------- 卡名人工表
+
+def test_卡名表覆盖真实hub卡名():
+    """真实 hub 卡面名 -> 类别, 这是 sgmnow 相似度做不到的那部分。
+
+    卡面名取自实机截图 (debug/pf/run/*/**_识别场地.jpg) 与
+    pf_nav.KNOWN_TITLES, 不是自造样本。
+    """
+    cases = [
+        ("EYE OF THE STORM", "element", "wind"),
+        ("A SHOT IN THE DARK", "element", "dark"),
+        ("HIGH TIDE", "element", "water"),
+        ("BIG BEN'S BEATDOWN", "character", "Big Band"),
+        ("HIGH WIRE HIJINKS", "character", "Cerebella"),
+        ("INFINITY AND BEYOND", "character", "Annie"),
+        ("DEATH METTLE", "character", "Marie"),
+        ("AHEADOFTHEGAME", "character", "Ms. Fortune"),      # OCR 无空格
+        ("CHANCEOFPAIN", "character", "Umbrella"),           # OCR 截断
+        ("MEDICI SHAKEDOWN", "gold", None),
+        ("SHOW ME YOUR MOVES", "move", None),
+        ("SEEING STARS", "assist", None),
+        # 官方公告新场 (本轮据 SGM 8.7/8.8 更新公告补录)
+        ("HOT MESS", "monthly_element", "fire"),
+        ("SINK OR SWIM", "element", "water"),
+    ]
+    for title, tag, val in cases:
+        r = T.classify_arena(title, [], manual={})
+        assert r["tag"] == tag, f"{title!r} -> {r['tag']} (期望 {tag})"
+        assert r["matched"] is True
+        if tag in ("element", "monthly_element"):
+            # 元素类(含元素月场)必须挂上对应元素
+            assert r["rule"] == {"type": "element", "value": val}, title
+        elif tag == "character":
+            # ⚠️ class 值必须带空格的官方原名 (pf_bot.CHARACTER_CHIPS 的键格式)
+            assert r["rule"] == {"type": "class", "value": val}, title
+        else:
+            assert r["rule"] is None, title
+
+
+def test_卡名表不误伤未知名():
+    """表外名字仍然落 unknown —— 人工表不是"什么都收"的兜底。"""
+    for junk in ("ZZQQ NOTAREALNAME", "SHOWOMETOUR", "CLONTOFPA"):
+        r = T.classify_arena(junk, [], manual={})
+        assert r["tag"] == T.UNKNOWN_TAG, f"{junk!r} 不该被归类 (实测待人工确认)"
+        assert r["rule"] is None
+
+
+def test_卡名表条目结构合规():
+    """每条必须能取值: tag 在条件表里, 元素/角色按 tag 给全。"""
+    table = T._load_manual(T.ARENA_MANUAL_PATH)
+    assert table, "arena_manual.json 读不出来或为空"
+    for k, spec in table.items():
+        assert not spec.get("monthly"), f"{k} 是月场, 该放 monthly_manual.json"
+        tag = spec.get("tag")
+        assert tag in T.load_conditions(), f"{k} 的 tag={tag!r} 不在条件表里"
+        if tag == "element":
+            assert T.norm_element(spec.get("element")), f"{k} 缺元素名"
+        if tag == "character":
+            # 原样保留带空格名 (归一后 CHARACTER_CHIPS 查不到 -> 约束静默失效)
+            assert spec.get("char"), f"{k} 缺角色名"

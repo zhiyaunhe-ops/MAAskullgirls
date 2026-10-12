@@ -278,6 +278,16 @@ def _is_placeholder(name: str) -> bool:
 # ⚠️ 读不存在的键/坏JSON 一律当"没有补丁", 不抛 —— 本模块是纯决策逻辑,
 # 配置文件坏了不该让整个归类链崩(最坏退化成 unknown + 最保守条件, 有痕可查)。
 MANUAL_PATH = Path(__file__).resolve().parent / "data" / "monthly_manual.json"
+# 非月场的「卡名 -> 类别」人工表 (2026-10-12)。
+# ★ 为什么必须有这张表: sgmnow 的 `name` 给的是**元素/角色/事件名**
+#   ('Wind' / 'Umbrella' / 'Shakedown - Hemofilia'), 而 hub 卡面写的是**主题场名**
+#   ('EYE OF THE STORM' / 'BIG BEN'S BEATDOWN') —— 两套命名空间不相交,
+#   名称相似度结构性到不了阈值 (实测 10-08/09/10 三次真实运行全落 unknown,
+#   最高相似度仅 0.55)。卡名 -> 类别的对应关系是游戏自身的设定, 官方表格不给,
+#   只有社区/维基有汇总 (Skullgirls Mobile Wiki「Prize Fight」页 + 官方论坛
+#   Score Reports 的 'Dark Element Prize Fight ("A Shot in the Dark")' 写法)。
+#   本表把那份汇总落成数据。月场不在此表 (仍归 monthly_manual.json)。
+ARENA_MANUAL_PATH = Path(__file__).resolve().parent / "data" / "arena_manual.json"
 
 
 def _load_manual(path=None) -> dict:
@@ -324,7 +334,8 @@ def _manual_valid(spec: dict, day: str = None) -> bool:
     return True
 
 
-def _manual_match(name: str, manual: dict, day: str = None) -> dict | None:
+def _manual_match(name: str, manual: dict, day: str = None, *,
+                  want_monthly: bool = True) -> dict | None:
     """场地名 -> 命中的月场补丁 spec; 没命中返回 None。
 
     匹配: monthly=True 的条目, 名字双向子串命中(承 pf_nav OCR 残串实证:
@@ -343,9 +354,14 @@ def _manual_match(name: str, manual: dict, day: str = None) -> dict | None:
     """
     raw = str(name or "").strip()
     kr = re.sub(r"\s+", " ", raw)
+    # 选表判据: 默认只要 monthly=True 的条目(月场表); want_monthly=False 时
+    # 反过来只要非月场条目(arena_manual.json 的卡名表)。两张表共用本函数,
+    # 双段匹配 / 长度门槛 / 有效期防呆 全部同源, 不各养一份。
+    pick = (lambda s: bool(s.get("monthly"))) if want_monthly \
+        else (lambda s: not s.get("monthly"))
     # ① 原文层: 精确优先, 其次是原文子串(短名要够长, 同一条门槛)
     for spec in (manual or {}).values():
-        if not spec.get("monthly") or not _manual_valid(spec, day):
+        if not pick(spec) or not _manual_valid(spec, day):
             continue
         for mn in (spec.get("match") or [spec.get("_name")]):
             if not mn:
@@ -367,7 +383,7 @@ def _manual_match(name: str, manual: dict, day: str = None) -> dict | None:
         return None
     best = None
     for spec in (manual or {}).values():
-        if not spec.get("monthly") or not _manual_valid(spec, day):
+        if not pick(spec) or not _manual_valid(spec, day):
             continue
         mk = _key(spec.get("_match_name") or spec.get("_name"))
         if not mk:
@@ -523,9 +539,39 @@ def _from_manual(title: str, spec: dict) -> dict:
             "energy_cost": energy, "note": note}
 
 
+def _from_arena_manual(title: str, spec: dict) -> dict:
+    """卡名人工表 (arena_manual.json) -> 与 classify_arena 同形状的结果。
+
+    与 monthly 版的两点差别:
+      ① 这张表管**非月场**, rule 可能是 element(元素场) 或 class(角色场);
+      ② 角色场的 class 值必须**原样保留带空格的官方名**('Ms. Fortune'/'Big Band'),
+         因为 pf_bot 拿它查 CHARACTER_CHIPS, 那张表的键是带空格原名 ——
+         归一后 get() 返回 None, 约束会**静默失效**(migrate 脚本已踩过同款坑)。
+    """
+    tag = spec.get("tag") or UNKNOWN_TAG
+    tgt, energy, rule_kind = conditions_of(tag)
+    rule = None
+    if rule_kind == "element":
+        elem = norm_element(spec.get("element"))
+        rule = {"type": "element", "value": elem} if elem else None
+    elif rule_kind == "class":
+        char = spec.get("char")
+        rule = {"type": "class", "value": char} if char else None
+    note = (f"tag={tag} <- 人工配置arena_manual.json[{spec.get('_name')!r}]"
+            f" (卡名->类别取自 SGM 社区汇总; 依据={spec.get('依据','?')})")
+    if rule_kind == "element" and not rule:
+        note += " |⚠️ 人工表缺元素名, 未挂 element 限制"
+    if rule_kind == "class" and not rule:
+        note += " |⚠️ 人工表缺角色名, 未挂 class 限制"
+    return {"tag": tag, "matched": True, "name": spec.get("_name"),
+            "score": 1.0, "rule": rule, "score_target": tgt,
+            "energy_cost": energy, "note": note}
+
+
 def classify_arena(title: str, index: list,
                    threshold: float = MATCH_THRESHOLD,
-                   manual: dict = None, day: str = None) -> dict:
+                   manual: dict = None, day: str = None,
+                   arena_manual: dict = None) -> dict:
     """hub 扫出的一个场地名 -> tag 与取值条件。
 
     返回 {tag, matched, name, score, rule, score_target, energy_cost, note}。
@@ -549,6 +595,15 @@ def classify_arena(title: str, index: list,
     mspec = _manual_match(title, manual, day)
     if mspec is not None:
         return _from_manual(title, mspec)
+
+    # ①b 卡名人工表 (元素/角色/金币/招式/星) —— **必须排在相似度之前**。
+    # sgmnow 的 `name` 是元素/角色名, hub 卡面是主题场名, 两者不相交; 不先查这张
+    # 表, 真实卡名会一律落到 ③ 的相似度并全部落 unknown (2026-10-12 实测)。
+    if arena_manual is None:
+        arena_manual = _load_manual(ARENA_MANUAL_PATH)
+    aspec = _manual_match(title, arena_manual, day, want_monthly=False)
+    if aspec is not None:
+        return _from_arena_manual(title, aspec)
 
     # ② 本地中文场次名里的类别词 (「202609角色月场」-> monthly_character)
     # 必须在相似度之前: 这类自起名在 sgmnow 索引里根本不存在(名字对不上),
@@ -617,9 +672,11 @@ def classify_all(arenas: list, snapshot: dict, *,
     index = build_tag_index(snapshot, only_active=only_active)
     if day is None:
         day = (snapshot or {}).get("day")
+    arena_manual = _load_manual(ARENA_MANUAL_PATH)   # 只读一次, 逐卡复用
     out = []
     for a in arenas or []:
-        r = classify_arena(a.get("title"), index, threshold, day=day)
+        r = classify_arena(a.get("title"), index, threshold, day=day,
+                           arena_manual=arena_manual)
         r["idx"] = a.get("idx")
         r["title"] = a.get("title")
         r["hub_score"] = a.get("score")
