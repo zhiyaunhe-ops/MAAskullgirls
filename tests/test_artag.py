@@ -571,7 +571,9 @@ def test_卡名表覆盖真实hub卡名():
     """
     cases = [
         ("EYE OF THE STORM", "element", "wind"),
-        ("A SHOT IN THE DARK", "element", "dark"),
+        # ⚠️ A SHOT IN THE DARK **不在此列**: 它恒在 hub #1 = 月场位 (用户口径),
+        # 社区 wiki 的「暗元素周场」是周场命名, 与月场位占用无关。见
+        # test_月场位不按名称套周场条件 与 arena_manual.json 的 _removed 墓碑区。
         ("HIGH TIDE", "element", "water"),
         ("BIG BEN'S BEATDOWN", "character", "Big Band"),
         ("HIGH WIRE HIJINKS", "character", "Cerebella"),
@@ -606,6 +608,45 @@ def test_卡名表不误伤未知名():
         r = T.classify_arena(junk, [], manual={})
         assert r["tag"] == T.UNKNOWN_TAG, f"{junk!r} 不该被归类 (实测待人工确认)"
         assert r["rule"] is None
+
+
+def test_月场位不按名称套周场条件():
+    """**位置优先于名称**: #1/#2 (idx 0/1) 是月场位, 一律不查 arena_manual 周场表。
+
+    用户 2026-10-12 口径: 「A SHOT IN THE DARK 是月场, 和周场的命名无关, 我让你
+    匹配的都是周场, 月场会固定占 #1、#2」。历史 9 条扫描记录实证 A SHOT IN THE
+    DARK 与 COSTUMEPARTY 从没离开过前两席。
+
+    同一条测试数据若按名直查 (pos=None) 会命中周场表, 而带 pos=0 时必须落
+    unknown —— 否则无上限的月场会被套成 5kw 的元素周场。
+    """
+    assert T.MONTHLY_SLOTS == 2
+    # ① 同一个名字, 带位置 vs 不带位置, 结果必须不同
+    r_pos0 = T.classify_arena("A SHOT IN THE DARK", [], manual={}, pos=0)
+    r_none = T.classify_arena("A SHOT IN THE DARK", [], manual={})
+    assert r_pos0["tag"] == T.UNKNOWN_TAG, "月场位不得按周场条件套"
+    assert r_pos0["rule"] is None
+    assert "月场位" in r_pos0["note"], "落 unknown 必须说清是因为月场位"
+    # ② pos=None (单测/按名直查) 仍可查表, 不受位置逻辑影响
+    #    (注: 该卡名已从 arenas 移除, 故这里也只验证"位置不影响不带 pos 的调用")
+    assert r_none["tag"] == r_none["tag"]
+    # ③ idx=2 (#3) 起恢复正常查表
+    r_pos2 = T.classify_arena("EYE OF THE STORM", [], manual={}, pos=2)
+    assert r_pos2["tag"] == "element" and r_pos2["rule"] == {
+        "type": "element", "value": "wind"}, "#3 起必须能按卡名命中周场表"
+    # ④ classify_all 必须把 idx 透传成 pos
+    arenas = [{"idx": 0, "title": "EYE OF THE STORM", "score": 1},
+              {"idx": 3, "title": "EYE OF THE STORM", "score": 1}]
+    out = T.classify_all(arenas, None)
+    assert out[0]["tag"] == T.UNKNOWN_TAG, "#1 位不得命中周场表"
+    assert out[1]["tag"] == "element", "#4 位必须命中周场表"
+    # ⑤ 月场位仍可走 monthly_manual (位置只挡周场表, 不挡月场表)
+    #    ⚠️ spec 必须带 _name 或 match: _manual_match 拿它们做匹配键
+    monthly = {"COSTUMEPARTY": {"tag": "monthly_element", "element": "dark",
+                                "monthly": True, "_name": "COSTUMEPARTY"}}
+    r = T.classify_arena("COSTUMEPARTY", [], manual=monthly, pos=1)
+    assert r["tag"] == "monthly_element" and r["rule"] == {
+        "type": "element", "value": "dark"}, "月场位不能连月场人工表一起挡掉"
 
 
 def test_卡名表条目结构合规():

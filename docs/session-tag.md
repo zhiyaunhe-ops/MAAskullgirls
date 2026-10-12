@@ -59,8 +59,10 @@
 1. **`JJC.today()` 先更新场次** —— 当天有快照就用，没有现抓 sgmnow。
    缺这一步＝拿昨天数据比今天场地。
 2. `pf_artag.classify_arena()` 定 tag，**顺序即优先级**：
-   ① 月场人工表 → ② **卡名人工表**（`arena_manual.json`）→ ③ 场次名类别词
-   → ④ sgmnow 名称相似度（阈值 **0.75**）。②必须早于④，否则真实卡名全落 unknown。
+   ① 月场人工表 → ② **卡名人工表**（`arena_manual.json`，**仅 #3 及以后**）
+   → ③ 场次名类别词 → ④ sgmnow 名称相似度（阈值 **0.75**）。
+   ②必须早于④，否则真实卡名全落 unknown；②又必须**只覆盖 #3 以后**，
+   否则月场位的卡会被按周场条件套（见下「月场固定占 #1/#2」）。
 3. 条件**一律从条件表按 tag 取**，不继承任何场次。
 4. `ScoreStore.create_tagged()` 建独立场次（名字带日期，供连刷编排识别）。
 
@@ -126,6 +128,36 @@ sgmnow 的 Monthly PF **只有一个 `holi` 条目、只给场次名** —— �
 `unknown` 与 `gold`/`move`/`assist` 的条件相同（4kw/4/无规则），所以漏判代价低；
 真正有代价的是 **element**（5kw + 元素限制）与 **character**（5kw + 防守角色），
 这两类必须判准。
+
+## ⚠️⚠️ 月场固定占 #1/#2 —— 位置优先于名称（2026-10-12 用户口径）
+
+用户原话：「**A SHOT IN THE DARK 是月场，和周场的命名无关，我让你匹配的都是周场，
+月场会固定占 #1、#2**。」
+
+**这不是推断，有历史实证**：`pf.log` 里 9 条「场地扫描录入」记录，
+`A SHOT IN THE DARK` 与 `COSTUMEPARTY` **从没离开过前两席**，其余场
+（`SEEING STARS` / `MEDICI SHAKEDOWN` / `EYE OF THE STORM` / `SHOWOMETOUR`…）
+全在 #3 以后。
+
+⇒ `pf_artag.MONTHLY_SLOTS = 2`，`classify_arena` 新增 `pos` 参数（`classify_all`
+把 `arenas[].idx` 透传进去）：**idx < 2 的卡一律不查 `arena_manual.json` 周场表**，
+只走 `monthly_manual.json` + sgmnow 相似度。
+
+**首版正是栽在这里**：`A SHOT IN THE DARK` 被照社区 wiki「暗元素周场」录成
+`element/dark`，于是恒在 #1 的它每次都被套上 5kw 上限 + 暗元素限定 ——
+而它实际是**无上限的月场**。社区那份清单是**周场命名**，跟月场位占用什么卡无关。
+（`sessions.json` 里 `A SHOT IN THE DARK 09-20 tag=element` 也是同一来源的旧错，
+迁移脚本照 `arena_rules.json` 迁的。）
+
+两条教训：
+
+1. **位置是可用的判据，且比名称硬** —— hub 的槽位顺序是游戏 UI 的固定结构，
+   不会随场地改名而变；卡名反而会改、会被 OCR 读错。
+2. **社区清单要连"它描述的是哪一类场"一起读**。把周场命名套到月场位上，
+   比不判更糟（会给错的上限和错的元素限定）。
+
+误录条目已移入 `arena_manual.json` 的 `_removed` 墓碑区（`_load_manual` 只读
+`arenas`，墓碑不参与匹配，只是防止下一轮又照社区名录抄一遍）。
 
 ### ⚠️ 卡名会被 `KNOWN_TITLES` 误归一
 

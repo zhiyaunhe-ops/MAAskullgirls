@@ -289,6 +289,18 @@ MANUAL_PATH = Path(__file__).resolve().parent / "data" / "monthly_manual.json"
 #   本表把那份汇总落成数据。月场不在此表 (仍归 monthly_manual.json)。
 ARENA_MANUAL_PATH = Path(__file__).resolve().parent / "data" / "arena_manual.json"
 
+# 月场固定占 hub 前两席 (idx 0/1, 即界面上的 #1/#2)。
+# 用户 2026-10-12 口径: 「A SHOT IN THE DARK 是月场, 和周场的命名无关, 我让你匹配的
+# 都是周场, 月场会固定占 #1、#2」。历史 9 条扫描记录实证: A SHOT IN THE DARK 与
+# COSTUMEPARTY 从没离开过前两席, 其余场 (SEEING STARS / MEDICI SHAKEDOWN /
+# EYE OF THE STORM / SHOWOMETOUR...) 全在 #3 以后。
+# ⇒ **位置优先于名称**: 这两席一律不查 arena_manual 周场表。否则同一张卡在月场位
+# 会被按周场条件套 (活例: A SHOT IN THE DARK 社区说是「暗元素周场」, 实测恒在 #1
+# 月场位; 首版就因照社区名录入而误判, 把无上限的月场套成 5kw 的元素周场)。
+# 月场这两席归 monthly_manual.json (用户口径给类别/元素), 查不到就落 unknown ——
+# 宁可漏判也不错判 (unknown 与 gold/move/assist 同条件, 代价低)。
+MONTHLY_SLOTS = 2
+
 
 def _load_manual(path=None) -> dict:
     """读月场人工补丁表 -> {归一key: spec}。读不了返回空表。
@@ -571,7 +583,7 @@ def _from_arena_manual(title: str, spec: dict) -> dict:
 def classify_arena(title: str, index: list,
                    threshold: float = MATCH_THRESHOLD,
                    manual: dict = None, day: str = None,
-                   arena_manual: dict = None) -> dict:
+                   arena_manual: dict = None, pos: int = None) -> dict:
     """hub 扫出的一个场地名 -> tag 与取值条件。
 
     返回 {tag, matched, name, score, rule, score_target, energy_cost, note}。
@@ -588,7 +600,12 @@ def classify_arena(title: str, index: list,
     相似度判定**: 人工配置是明确依据, 名字匹配只是猜测 —— 且月场名字
     ('Costume Party') 根本不含元素线索, 走相似度只会得到 monthly 这种没法再分
     的 tag。补丁表只按名字覆盖, 不影响非月场归类。
+
+    pos = 该卡在 hub 上的 0 起序号 (arenas[].idx)。**月场位不查 arena_manual
+    周场表** (MONTHLY_SLOTS): 位置优先于名称, 同一张卡在 #1/#2 就是月场。
+    缺省 None = 不按位置限制 (单测/按名直查仍可用)。
     """
+    monthly_slot = pos is not None and pos < MONTHLY_SLOTS
     # ① 月场人工补丁 (sgmnow 缺的那部分: 类别 + 元素名)
     if manual is None:
         manual = _load_manual()
@@ -599,11 +616,14 @@ def classify_arena(title: str, index: list,
     # ①b 卡名人工表 (元素/角色/金币/招式/星) —— **必须排在相似度之前**。
     # sgmnow 的 `name` 是元素/角色名, hub 卡面是主题场名, 两者不相交; 不先查这张
     # 表, 真实卡名会一律落到 ③ 的相似度并全部落 unknown (2026-10-12 实测)。
-    if arena_manual is None:
-        arena_manual = _load_manual(ARENA_MANUAL_PATH)
-    aspec = _manual_match(title, arena_manual, day, want_monthly=False)
-    if aspec is not None:
-        return _from_arena_manual(title, aspec)
+    # ⚠️ 但月场位 (#1/#2) 跳过: 那两席是月场, 社区清单里同名卡是**周场**命名,
+    # 按名字套上去就会把无上限月场套成 5kw 周场 (2026-10-12 A SHOT IN THE DARK 实测)。
+    if not monthly_slot:
+        if arena_manual is None:
+            arena_manual = _load_manual(ARENA_MANUAL_PATH)
+        aspec = _manual_match(title, arena_manual, day, want_monthly=False)
+        if aspec is not None:
+            return _from_arena_manual(title, aspec)
 
     # ② 本地中文场次名里的类别词 (「202609角色月场」-> monthly_character)
     # 必须在相似度之前: 这类自起名在 sgmnow 索引里根本不存在(名字对不上),
@@ -632,10 +652,14 @@ def classify_arena(title: str, index: list,
     if not cands or best_score < threshold:
         near = (f"最高相似度 {best_score:.2f} (vs {cands[0]['name']!r})"
                 if cands else "索引为空")
+        note = f"未过阈值({threshold}): {near}"
+        if monthly_slot:
+            # 说清「为什么没查周场表」—— 否则翻日志会以为漏了判据。
+            note += (f" | ⚠️ 该卡在 #{pos + 1} = 月场位 (固定占 #1/#2), 已按位置"
+                     f"跳过 arena_manual 周场表; 月场类别请补 monthly_manual.json")
         return {"tag": UNKNOWN_TAG, "matched": False, "name": None, "score": 0.0,
                 "rule": None, "score_target": DEFAULT_SCORE_TARGET,
-                "energy_cost": DEFAULT_ENERGY_COST,
-                "note": f"未过阈值({threshold}): {near}"}
+                "energy_cost": DEFAULT_ENERGY_COST, "note": note}
     hit, collisions = _pick(cands)
     tgt, energy, rule_kind = conditions_of(hit["tag"])
     rule = None
@@ -668,6 +692,9 @@ def classify_all(arenas: list, snapshot: dict, *,
 
     day = 游戏日(YYYY-MM-DD), 用于判人工补丁有效期。缺省时快照里的 day
     自动取(snapshot 本身带 day 字段); 都没有则补丁一律认有效。
+
+    arenas[].idx 会透传成 classify_arena 的 pos —— 月场位 (#1/#2) 因此不查
+    arena_manual 周场表 (MONTHLY_SLOTS, 位置优先于名称)。
     """
     index = build_tag_index(snapshot, only_active=only_active)
     if day is None:
@@ -676,7 +703,7 @@ def classify_all(arenas: list, snapshot: dict, *,
     out = []
     for a in arenas or []:
         r = classify_arena(a.get("title"), index, threshold, day=day,
-                           arena_manual=arena_manual)
+                           arena_manual=arena_manual, pos=a.get("idx"))
         r["idx"] = a.get("idx")
         r["title"] = a.get("title")
         r["hub_score"] = a.get("score")
