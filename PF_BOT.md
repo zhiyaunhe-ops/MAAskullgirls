@@ -31,6 +31,7 @@
 | tools/pf_webui.py／static/ | HTTP、API／HTML、CSS、JS、主题、图标 |
 | tools/pf_scene.py／pf_schedule.py／pf_tray.py | 导航／调度／托盘 |
 | tools/jjc_store.py | 日程快照、配置版本 |
+| tools/pf_roster.py／pf_fighters.py | 角色仓库全量扫描（只读卡名 + 不重复统计）／卡名→角色类型映射（§6.15） |
 | assets/resource/base/ | post_bundle资源根；pipeline、image、model |
 | docs/screenshots/、docs/explore/ | 界面参考／探索报告（2026-09-30 起本地不入库：游戏截图含账号信息） |
 
@@ -249,6 +250,23 @@ tailscale serve --https=8444 off
 | ⚠️ 已知缺口 | `CHARACTER_CHIPS` 只覆盖 12 个角色（缺 Parasoul/Peacock/Valentine/Squigly/Robo-Fortune/Umbrella）⇒ 这几类角色场的防守约束**静默跳过**（日志有 warn），需人工在 WebUI 补规则 |
 | 专跑角色场 | `--action run_new_pf --params {"want_tag":"character"}`：只从 score=0 的新场里挑角色场（挑不中告警并退回「取第一个」）；月场位 #1/#2 不参与挑场（位置优先于名称） |
 
+## 6.15 角色仓库扫描（`tools/pf_roster.py`，2026-10-14）
+
+用户口径：**只读上方那条卡名**（卡面装饰大字，如 `REGALLY BLONDE`），小字号名条（角色本名）不读；
+"到头"判据与既有轮播同款；真正的难点是**滑动后怎么定位同一张卡，做到不重复统计**。
+
+| 项 | 内容 |
+|---|---|
+| 版式 | 2 行 × N 列**列优先**网格（同一列上下两行 = 列表里相邻两个条目）；列距 165.5；卡名带 y 296..326 / 526..556，名条带 y 322..350 / 552..580 |
+| 定位 | 名条带 det **只取框**（小字规整 → 一卡一框，框中心即卡中心），卡名带在 `cx ± 76` 上跑 **rec-only**。每卡只要 1 次识别往返；实测 3 屏 × 14 格 = **42 格全对**（卡名带直接 det+rec 只有 35/42，装饰字太宽会被切碎） |
+| 去重（四道） | ① **不按名字** —— 同屏 3 张 `NUNSENSE`、11 张 `UNDERDOG` 都是真副本；② **不写死坐标** —— 拖动量任意（实测连续平移 640~660，不是列距整数倍）；③ **不只靠几何投票** —— 列是周期性的，真平移 ±165.5k 的别名同样成立；④ **卡名内容打分** —— 候选 Δ 按最近邻配对，名字对上 +1 / 冲突 −1，**同分先比冲突数**、再比运动先验（`Store._align`） |
+| 到头 | 连续 2 次画面不动（取两次，防 `_adb_shell` 静默失效把"滑不动"当"到头"）**且第二次换一条拖拽几何** —— 列表端点的屏幕是一大片空白 + ADD 槽，主几何的起手点落在空白上，"拖不动"是假象（实测右端换 3 种几何全不动才判真到头） |
+| 实机结果 | 同一份仓库跑两遍都是 **255 张**（row1 128 列 / row2 127 列，最后一列的 row2 格是 ADD 槽）；两轮**逐列一致**，`dup_gaps`/`miss_gaps`/`conflicts` 全空、未识别 0 |
+| ⚠️ UI 计数对不上 | 右上角 `FIGHTERS 257 / 350` 比网格内容多 2。网格内容经**两条独立方法**确认：图像相关测真实步长累加出的跨度 21019px ÷ 165.5 = 128 列（`_probe_frame_shift.py`），以及跨帧名条框交叉映射 ⇒ **255 是网格真值**，257 是 UI 口径（疑含不在本网格里的项）。**别为了对齐 UI 数字去改扫描** |
+| 跑法 | 实机 `python tools/pf_roster.py scan --out debug/pf/roster/roster.json`；离线复跑留档帧 `python tools/pf_roster.py images <帧...>` |
+| 复核工具 | `python tools/_probe_frame_shift.py <帧目录>`：**图像相关**测相邻帧真实像素位移，完全绕开 OCR/配准 —— "到底该谁对"的争议一律用它裁（纯离线，不连设备） |
+| 测试 | `tests/test_roster_scan.py`（13 条，全合成帧，不碰设备）；跑法 `anaconda python -m pytest tests/test_roster_scan.py -q` |
+
 ## 7. 实测记录（历史；本次未重跑）
 
 | 日期 | 原记录结果 | 范围 |
@@ -300,6 +318,7 @@ tailscale serve --https=8444 off
 | 34 | `ocr_lines` 按 `getattr(box,'x',0)` 读 det 框，而 MAA 的 **`OCRResult.box` 是 `[x,y,w,h]` 列表** → 所有框退化成 `(0,y0,1,y1)`、余量恒 2px、重裁形同虚设；**文本照样读得出**（rec 是 MAA 自己按 det 框做的）⇒ 不报错、**静默降级**，只有把框打印出来才看得见（2026-10-13 角色仓库验证时发现） | 新增 `PfBot._ocr_box` 按序列解包（兼容对象式绑定）；框恢复 `(141,555,52,15)`。凡"拿框再加工"的代码都要先确认解包对不对 |
 | 35 | 文本读取余量写死像素：旧 `TEXT_PAD_X/Y=6/12`。而 MAA 的 det 框**自带 unclip**（`box_h ≈ 1.87×字高`），固定 12px 在字高 8px 的名条上 = crop 4 倍字高 → 归一化到 rec 的 48px 后文字反而变小，末字丢（`PAINWHEEL`→`PAINWHEE`） | 改 `TEXT_PAD_X=10`（横向才是主杠杆: MAA 框横向偏紧，`FILIA` 只框 26px → `ALIA`）+ `TEXT_PAD_Y_RATIO=0.2`（相对框高）+ `TEXT_DET_UPSCALE=2`（1x 93/2x 100/3x 96%）。实测口径见 §6.1「文本读取」与 MEMORY.md「读卡 OCR」 |
 | 36 | **角色名两套命名空间**：`variants.json` 的 `name` 第 2 段是游戏内部标识（`MsFortune`/`BigBand`/`BlackDahlia`/`RoboFortune`），而 `CHARACTER_CHIPS`/`CLASS_CHIPS` 的键是显示名（`Ms. Fortune`/`Big Band`/…）——拿内部标识查芯片坐标**静默 miss**（12 个已覆盖角色里 3 个对不上；无异常无日志，只是"芯片没点到"）。同类坑早在 hub 卡名上出现过（`pf_nav._match_known` 把 `FALL OF THE DARK` 吸成 `A SHOT IN THE DARK`） | `pf_fighters.char_of_base()` 统一输出 `CHAR_DISPLAY`（18 个角色全给，缺 chip 的 6 个也按官方写法）；要内部标识走 `internal_of_base()`。2026-10-13 `_probe_roster.py` 42 格实测时发现 |
+| 37 | **配准别名 → 漏统计（不是重复统计）**：列是周期性的，长串同名卡里"差一个列距"的别名 Δ 能命中**一样多甚至更多**的卡。run1 frame0033 出现**三档同分**（13920/14085/14251），旧版 `s > best_s` 同分取 Δ 最小的那个 ⇒ 选中 miss=1 的别名，整帧并成 dup、那一列再没人补。症状极具迷惑性：同一份仓库两遍跑出 **255 / 253**，而两轮**左端帧和右端帧一模一样**、`dup_gaps`/`miss_gaps` 全空 | 打分并列时先比**冲突数 `miss`**（真值恒 0 冲突），运动先验 `Store._predict` 只当最后一档（单用它反而过头，把真值顶成差 2 列的 ⇒ 259 张）。**切分真值必须用 `tools/_probe_frame_shift.py`**（图像相关测真实步长，与 OCR/配准完全无关）。回归 `tests/test_roster_scan.py::test_align_prefers_zero_conflict_on_score_tie` |
 
 ## 9. 常用操作
 
@@ -311,6 +330,7 @@ tailscale serve --https=8444 off
 | 调度 | python tools/pf_schedule.py；--list；--fire 任务名 |
 | 轮询分数 | python tools/poll_score.py [目标分=1000000] [分钟数=8]；到线退 0、超时退 2（验证任务用，见 §6.14） |
 | 专跑角色场 | python tools/pf_schedule.py --action run_new_pf --params '{"want_tag":"character"}'（只挑 score=0 新场里的角色场；起跑前自动切 Diamond，见 §6.14） |
+| 扫描角色仓库 | python tools/pf_roster.py scan --out debug/pf/roster/roster.json（实机）；python tools/pf_roster.py images <帧...> 离线复跑；复核位移用 tools/_probe_frame_shift.py，见 §6.15 |
 | 截图 | python tools/screencap.py |
 | 日程 | python tools/jjc_store.py fetch；show；days；versions（子命令分别执行） |
 | 排障 | debug/debug/maafw.log；debug/pf/bot_stdout.log 与重生世代 debug/pf/bot_stdout_*.log；debug/pf/run/；端口占用 netstat -ano findstr 8790；adb 侧 Get-CimInstance Win32_Process -Filter "Name='adb.exe'" 看 SessionId/创建时间（session 0=别的服务拉起的，5555=guest adbd 连接）；**谁在动 adb**：K70 巡检日志 D:\Downloads\shared_file\tailshare\data\k70pro\watch.log（与 bot 共享 5037）；清僵尸 adb 要**管理员** Stop-Process -Id <pid> -Force（普通权限报"拒绝访问"），但 5037 上 LISTENING 的那个是活 server，别杀 |
