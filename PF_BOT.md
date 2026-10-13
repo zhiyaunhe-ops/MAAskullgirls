@@ -115,7 +115,7 @@
 | 6.0 | 退出路径 | run()返回后挂25s退出看门狗→MAA销毁卡死则强制 os._exit(0)；修09-27「点停止只留一行日志、端口不还」 |
 | 6.1 | step优先级 | 弹窗X→队伍存档确认→服务器错误→详情→hub→防守队弹窗→防守编辑器(CONFIRM)→REFRESH→编队→VS→结算→未知 |
 | 6.1 | KEEP STREAK? | 关X；不点CONFIRM／WATCH AD |
-| 6.1 | 队伍存档确认弹窗 (2026-10-13) | 「Save changes to your Team?」（无 X，NO/YES）：带未保存改动离开防守队编辑器时弹，压住大厅菱形与编辑器 CONFIRM。正文分带 OCR 单探针（`SAVECHANGES`/`YOURTEAM`，band 400,305-870,375）+ 点 YES(751,441) 保存；**判据+动作收口 `PfBot.confirm_save_team_popup`**，四条链共用（`pf_scene.wait_hall`／`dismiss_popup_once`／`pf_nav.goto_pf_hub`／`pf_bot.step`），只写 `if self.confirm_save_team_popup(img): continue`；连点 3 次不消失=判据误报/点击失效 → 置 give-up 交回各链逃逸（换场次复位）。离线复刻 MAA rec-only OCR 验证：正样本命中、180 张负样本帧零误报；**实机路径未验证**（用户 2026-10-13 口径：先不入测试） |
+| 6.1 | 队伍存档确认弹窗 (2026-10-13) | 「Save changes to your Team?」（无 X，NO/YES）：带未保存改动离开防守队编辑器时弹，压住大厅菱形与编辑器 CONFIRM。正文分带 OCR 单探针（`SAVECHANGES`/`YOURTEAM`，band 400,305-870,375）+ 点 YES(751,441) 保存；**判据+动作收口 `PfBot.confirm_save_team_popup`**，五条链共用（`pf_scene.wait_hall`／`dismiss_popup_once`／`pf_nav.goto_pf_hub`／`pf_bot.step`／`pf_bot.wait_battle_end`），只写 `if self.confirm_save_team_popup(img): continue`；连点 3 次不消失=判据误报/点击失效 → 置 give-up 交回各链逃逸（换场次复位）。离线复刻 MAA rec-only OCR 验证：正样本命中、180 张负样本帧零误报；**实机路径未验证**（用户 2026-10-13 口径：先不入测试） |
 | 6.1 | 未知界面 | 等待→交替返回／右上X；单按左上可能开OPTIONS |
 | 6.1 | 防守队入口 | 弹窗(点OK进)与编辑器(CONFIRM)两个入口共用；编辑器页无OK, 乱点会碰名册 |
 | 6.1 | 防守队失败 | 本轮不重复处理（_defense_done）；看截图 run/日期/防守队确认前 |
@@ -244,6 +244,7 @@ tailscale serve --https=8444 off
 | 安全闸 | 读不到 DIAMOND 时**不起 bot**，留档 `difficulty_fail` 截图；人工在 hub 切好后可用 WebUI 开跑 |
 | 防守队 | 角色场 `class` 规则只约束**防守队**（出战队不受限）：`setup_defense_team` 双入口（「先设防守队」弹窗点 OK / 直接落在编辑器认 CONFIRM），左1 放该期角色（CHARACTER_CHIPS 筛选 + `put_char_in_defense` + 槽位角色名/副名 OCR 复验） |
 | 编辑器退出弹窗 | 带着未保存改动离开防守队编辑器会弹「Save changes to your Team?」（无 X，NO/YES）→ 由 scene 判据 `confirm_save_team_popup` 点 YES 保存（见 §6.1 同题行）|
+| 完整流程（五段） | ① 归类 `classify_and_create`（`arena_manual.json`）认 tag=character → ② 切档 `act_run_new_pf` 对 `DIAMOND_TAGS` 调 `ensure_diamond`，**未确认 Diamond 不起 bot** → ③ 进：起 bot + `/api/start`，`step` 点 PLAY!→FIGHT! → ④ 调防守队 `setup_defense_team`（弹窗点 OK 或直落编辑器认 CONFIRM → 左1 放该期角色 → 点 CONFIRM）→ ⑤ 存档 `confirm_save_team_popup` 点 YES 保存。**第⑤步判据挂五条链**（§6.1 同题行）——`wait_battle_end` 是第④步 CONFIRM 后的下一跳，2026-10-13 复核时补接 |
 | ⚠️ 已知缺口 | `CHARACTER_CHIPS` 只覆盖 12 个角色（缺 Parasoul/Peacock/Valentine/Squigly/Robo-Fortune/Umbrella）⇒ 这几类角色场的防守约束**静默跳过**（日志有 warn），需人工在 WebUI 补规则 |
 | 专跑角色场 | `--action run_new_pf --params {"want_tag":"character"}`：只从 score=0 的新场里挑角色场（挑不中告警并退回「取第一个」）；月场位 #1/#2 不参与挑场（位置优先于名称） |
 
@@ -294,7 +295,7 @@ tailscale serve --https=8444 off
 | 30 | pf_scene 自带清理器把**待命中 bot 进程**的 run_dir 当旧目录整删（protected 只护调用者自己）→ bot 恢复运行写帧 FileNotFoundError 直接 ERROR 停摆（01:17 实测） | cleanup_debug 加"还在写"窗口 LIVE_WINDOW_S=30min 不删活动目录；snap() 补建目录+存档容错（帧是调试产物, 不许带崩主循环） |
 | 31 | 防守队编辑器**无能量黄钉**（黄钉是出战队概念）→ 常规编队把能量全读 0 空烧到「无可用能量角色」停摆；且确认钮是 CONFIRM 不是 FIGHT/CONTINUE, 老代码报「都找不到」 | step() 加 CONFIRM 分支（排在 DRAGHINT 前）+ setup_defense_team 双入口 + 新模板 pf/defense_confirm.png；见 §6.1/§6.4 |
 | 32 | adb_path 指向别项目 platform-tools 后, "adb 同目录"找 MuMuManager 必然落空 → 达标关机失败(09-28 23:54)、「MuMu 未运行」假报(01:17/06:04)、冷启动废 | config.json 加 `"mumu_dir"`（mumu_paths 同目录探测失败后回落）；实测恢复 start_finished 探测与关机 |
-| 33 | 「Save changes to your Team?」存档确认弹窗**无 X**（NO/YES）→ `find_any_popup_x` 三路关闭钮全不认它；它压住大厅菱形, wait_hall 连点 3 次房子后 150s 超时「未回到大厅」（01:47 实测，帧 debug/pf/stuck_1013.png），流水线全链卡死需人工点 YES | 走正文判据而非图形: `PfBot.confirm_save_team_popup`（band 400,305-870,375 探针 `SAVECHANGES`/`YOURTEAM` → 点 YES(751,441) 保存），四条链共用；判据+动作收口一处，避免 step/goto_pf_hub 两表不同步；见 §6.1/§6.14 |
+| 33 | 「Save changes to your Team?」存档确认弹窗**无 X**（NO/YES）→ `find_any_popup_x` 三路关闭钮全不认它；它压住大厅菱形, wait_hall 连点 3 次房子后 150s 超时「未回到大厅」（01:47 实测，帧 debug/pf/stuck_1013.png），流水线全链卡死需人工点 YES | 走正文判据而非图形: `PfBot.confirm_save_team_popup`（band 400,305-870,375 探针 `SAVECHANGES`/`YOURTEAM` → 点 YES(751,441) 保存），五条链共用（末条 `wait_battle_end` 为 2026-10-13 复核「角色场→切 Diamond→进→调防守队→存档」完整流程时补接：它是 `setup_defense_team` 点 CONFIRM 后的下一跳，漏掉只能干等 300s 超时）；判据+动作收口一处，避免 step/goto_pf_hub 两表不同步；见 §6.1/§6.14 |
 
 ## 9. 常用操作
 

@@ -1240,6 +1240,14 @@ class PfBot(SceneNav):
                 self.controller.post_click(*srv).wait()
                 time.sleep(2.5)
                 continue
+            # 队伍存档确认弹窗 (无 X 的 YES/NO 模态) 也在这里剥: 本函数是
+            # setup_defense_team 点 CONFIRM 之后的**下一跳**, 正是该弹窗最容易
+            # 出现的位置。2026-10-13 复核「角色场→切 Diamond→进→调防守队→存档」
+            # 完整流程时发现: 判据此前只接在 wait_hall / dismiss_popup_once /
+            # goto_pf_hub / step 四条链上, 唯独漏了这里 → 弹窗压上来只能干等
+            # 满 300s 报「战斗等待超时」。判据+动作仍收口在 confirm_save_team_popup。
+            if self.confirm_save_team_popup(img):
+                continue
             # 弹窗优先于"结束"判据: KEEP STREAK?/能量弹窗会盖住结算 CONTINUE,
             # 不剥掉就一直找不到结算 → 干等满 300s 超时。
             # (2026-09-19: 结算链与主循环都有 find_popup_x, 唯独这里漏了。)
