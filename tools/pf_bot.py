@@ -565,6 +565,68 @@ class PfBot(SceneNav):
         parts = [r.text for r in (reco.all_results or []) if r.text]
         return " ".join(parts).strip()
 
+    # ---------- 文本行读取: det 定位 + 余量裁剪 = 标准做法 (2026-10-13 用户口径) ----------
+    # MEMORY.md「读卡 OCR」离线实测三条:
+    #   ① rec 只吃**单行** (整块大字域直喂返回空串, CTC blank);
+    #   ② 纵向余量不足切掉字形上沿就丢字母 (det 紧框把 FALL OF THE DARK 读成
+    #      'ALLOFIHFDARK'), 余量过大又带进邻接装饰 (pad_y=16 -> 'IWOTOTANGL');
+    #   ③ 可靠区间 = det 行框**上下各 12px / 左右各 6px**。
+    # 所以**文字** (装饰字体卡名 / 名条 / 弹窗正文) 一律走 ocr_text_line;
+    # **数值** (分数 / 倍率) 继续用 rec-only 的 ocr_text —— 数字字体规整, det 只多两次往返。
+    TEXT_PAD_X, TEXT_PAD_Y = 6, 12
+
+    def ocr_lines(self, img, roi: tuple):
+        """det+rec: 返回 [((x0,y0,x1,y1), text)], roi 为 (x0,y0,x1,y1)。"""
+        job = self.tasker.post_recognition(
+            JRecognitionType.OCR,
+            JOCR(roi=self.to_maa_roi(roi), only_rec=False),
+            img,
+        )
+        job.wait()
+        detail = job.get()
+        reco = detail.nodes[0].recognition if detail and detail.nodes else None
+        out = []
+        for r in (getattr(reco, "all_results", None) or []):
+            box = getattr(r, "box", None)
+            txt = (getattr(r, "text", "") or "").strip()
+            if box is None or not txt:
+                continue
+            bx, by = int(getattr(box, "x", 0)), int(getattr(box, "y", 0))
+            out.append(((bx, by, bx + int(getattr(box, "w", 0)),
+                         by + int(getattr(box, "h", 0))), txt))
+        return out
+
+    def ocr_text_line(self, img, roi: tuple) -> str:
+        """**文本行**读取标准做法: det 定位行框 -> 按实测余量重裁 -> rec。
+
+        roi 应是"可能含目标文字"的**宽松区域** (比目标行大); det 会在里面找行,
+        取面积最大的一行为主文本行 (小装饰行面积小)。det 一行都没找到时回落
+        ocr_text (保持旧行为, 不会比原来更差)。
+        """
+        lines = self.ocr_lines(img, roi)
+        if not lines:
+            return self.ocr_text(img, roi)
+        (bx0, by0, bx1, by1), _ = max(
+            lines, key=lambda it: (it[0][2] - it[0][0]) * (it[0][3] - it[0][1]))
+        h, w = img.shape[:2]
+        crop = img[max(0, by0 - self.TEXT_PAD_Y):min(h, by1 + self.TEXT_PAD_Y),
+                   max(0, bx0 - self.TEXT_PAD_X):min(w, bx1 + self.TEXT_PAD_X)]
+        if crop.size == 0:
+            return ""
+        job = self.tasker.post_recognition(
+            JRecognitionType.OCR,
+            JOCR(roi=(0, 0, 0, 0), only_rec=True),
+            crop,
+        )
+        job.wait()
+        detail = job.get()
+        reco = detail.nodes[0].recognition if detail and detail.nodes else None
+        if not reco:
+            return ""
+        if reco.best_result and reco.best_result.text:
+            return reco.best_result.text.strip()
+        return " ".join(r.text for r in (reco.all_results or []) if r.text).strip()
+
     EXPECTED_MULTS = ["x1", "x1.5", "x2", "x2.5", "x3", "x4", "x5"]
 
     def ocr_expected(self, crop) -> str:
@@ -877,9 +939,22 @@ class PfBot(SceneNav):
         base = re.sub(r"[^A-Z]", "",
                       self.ocr_text(img, DEF_SLOT_SUBNAME_ROI[slot_i]).upper())
         want_norm = re.sub(r"[^A-Z]", "", want.upper())
+        if not (want_norm in got or want_norm in base):
+            # 主名/副名都没对上 -> 用 det 定位重读一次再判 (装饰字体卡名/名条会丢字母)。
+            # 仍不对才判失败, 所以这是纯增量: 原来失败的场景最多还是失败。
+            got2 = re.sub(r"[^A-Z]", "",
+                          self.ocr_text_line(img, DEF_SLOT_NAME_ROI[slot_i]).upper())
+            base2 = re.sub(r"[^A-Z]", "",
+                           self.ocr_text_line(img, DEF_SLOT_SUBNAME_ROI[slot_i]).upper())
+            if got2 != got or base2 != base:
+                STATE.log(f"防守队: 槽位{slot_i + 1} 名条 rec-only 未命中, "
+                          f"det 定位重读 {got2!r}/{base2!r}", "warn")
+            got = got2 or got
+            base = base2 or base
         if want_norm and (want_norm in got
                           or difflib.SequenceMatcher(None, want_norm, got).ratio() >= 0.7
-                          or want_norm in base):
+                          or want_norm in base
+                          or difflib.SequenceMatcher(None, want_norm, base).ratio() >= 0.7):
             STATE.log(f"防守队: 槽位{slot_i + 1} 已放入 {want} "
                       f"(OCR 主名 {got!r} / 本名 {base!r})")
             return True

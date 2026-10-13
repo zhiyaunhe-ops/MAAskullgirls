@@ -92,6 +92,10 @@ ROI_CARD_TITLE = (500, 290, 780, 378)  # 居中卡场地名 (可两行)
 #    A CLASS / AGAINST / MEDICI 各帧上读出的是垃圾 ('PSOOS'/'M') 但都不命中
 #    已知名 —— 不会误匹配。只在原 ROI 未命中已知名时才启用, 既有卡行为不变。
 ROI_CARD_TITLE_FALLBACK = (520, 255, 780, 310)
+# det 定位兜底用的**宽松**大字域 (两个固定 ROI 都读不出卡名时才用, 见 read_center_card)。
+# 2026-10-13 离线实测: 此域内 det 找到的"面积最大的行"对 FALL OF THE DARK (y339) 与
+# TWO TO TANGLE (y270) 都是标题行, 不误取倒计时 —— 两卡标题相差 70px, 固定 ROI 无通吃解。
+ROI_CARD_TITLE_DET = (440, 210, 910, 400)
 HOME_BTN = (115, 37)                  # 顶栏房子: 从 PF 任意页回大厅
 NAV_TIMEOUT = 300.0                   # 场景导航总超时 (300s: 含冷启动拉游戏; 战斗中途点
                                       # 「开始」/结束后重开时要等残留战斗打完才回得了大厅,
@@ -296,6 +300,20 @@ class SceneNav:
             elif not cands[0] and cands2[0]:
                 # primary 剥完是空串而 fallback 读出了字母 -> 采用 fallback 串留痕
                 full, cands, stripped = full2, cands2, stripped2
+        if best is None:
+            # 两个固定 ROI 都读不出可辨认的卡名 -> 用 det 定位那一行再留余量读一次。
+            # 固定 ROI 对每种版式都要人工调参 (两卡标题相差 70px), 装饰字体卡尤其容易
+            # 丢字母; det 的价值是"找到行在哪", 见 pf_bot.ocr_text_line 注释。
+            raw3 = self.bot.ocr_text_line(img, ROI_CARD_TITLE_DET)
+            full3, cands3, stripped3 = self._title_cands(raw3)
+            best3 = self._match_known(cands3)
+            if best3 is not None:
+                STATE.log(f"标题固定 ROI 全失效, det 定位读出 {raw3!r} -> {best3!r}", "warn")
+                full, cands, stripped = full3, cands3, stripped3
+                best = best3
+            elif not cands[0] and cands3[0]:
+                full, cands, stripped = full3, cands3, stripped3
+                STATE.log(f"det 定位兜底留痕: {raw_title!r}/{raw2!r} -> {raw3!r}", "warn")
         has_score_label = bool(re.search(r"(?i)score", raw_score))
         # 无 SCORE 行 + 分数读不出 (<10000 或 -1) -> 新场 0 分。
         # -1 也放行 (2026-10-13): 高标题版式卡 (DEATH METTLE/INFINITY AND
