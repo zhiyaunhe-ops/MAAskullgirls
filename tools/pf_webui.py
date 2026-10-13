@@ -29,6 +29,11 @@ POST /api/chain/save    {blocks:[{pos,title}], enabled} 场块槽位同步成场
                         入参 block 的 target 被**忽略** (分数上限唯一入口 = 场次页签,
                         2026-10-08 收敛, 见 sync_chain 注释)
 POST /api/scan          待命中请求去 PF hub 扫描录入今日场地 (运行中 409)
+GET  /api/roster        {state, phase, drags, total, log, result}  角色仓库扫描进度 + 上次结果
+                        (state: idle/queued/running/done/error; 结果落盘
+                         debug/pf/roster/roster.json, 进程重启后仍能看)
+POST /api/roster/scan   待命中扫一次角色仓库 (运行中/已有扫描在跑 409)。**不导航** ——
+                        屏幕须先手动停在角色仓库 FIGHTERS 页, 否则开扫前探帧失败即退出
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
 POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删;
                         场次可带 scene=PF 场地关键词, 开始时自动识别并居中该场）
@@ -78,6 +83,92 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 SGM_DIR = Path(__file__).resolve().parent.parent / "sgm"
 DAILY_PATH = Path(__file__).resolve().parent.parent / "debug" / "pf" / "daily.json"
 CHAIN_PATH = Path(__file__).resolve().parent.parent / "debug" / "pf" / "chain.json"
+ROSTER_PATH = (Path(__file__).resolve().parent.parent
+               / "debug" / "pf" / "roster" / "roster.json")
+
+# 仓库扫描进度通道 (2026-10-14)。扫描**跑在主循环里** —— 设备(Tasker/controller)是
+# 独占资源, 单独起线程去碰它会和主循环抢注入 (见 PF_BOT.md §8-12 双实例那条的同类风险)。
+# 所以 HTTP 线程只能被动读这个容器: 主循环写, 这里读, 用锁隔开。
+_ROSTER_LOCK = threading.Lock()
+_ROSTER = {
+    "state": "idle",     # idle / queued / running / done / error
+    "phase": "",         # 锚定 / 回起点 / 扫
+    "drags": 0,          # 累计拖拽次数
+    "frames": 0,         # 最近一帧读到的卡数
+    "total": 0,          # 累计扫到的卡数
+    "log": [],           # 最近若干行文本 (给人看, 不是给程序解析)
+    "result": None,      # 上次的 summary
+    "error": None,
+    "started": 0.0,
+    "finished": 0.0,
+}
+_ROSTER_LOG_MAX = 300
+_roster_file = {"mtime": None, "data": None}   # 落盘结果缓存 (重启后也能看上次的)
+
+
+def roster_begin() -> None:
+    """扫描开始: 清进度, 置 running。"""
+    with _ROSTER_LOCK:
+        _ROSTER.update(state="running", phase="准备", drags=0, frames=0, total=0,
+                       log=[], result=None, error=None, started=time.time(),
+                       finished=0.0)
+
+
+def roster_line(text: str) -> None:
+    """扫描日志一行 (接 pf_roster 的 log 回调)。"""
+    with _ROSTER_LOCK:
+        _ROSTER["log"].append(text)
+        del _ROSTER["log"][:-_ROSTER_LOG_MAX]
+
+
+def roster_step(step: dict) -> None:
+    """结构化进度点 (接 pf_roster 的 on_step 回调)。"""
+    with _ROSTER_LOCK:
+        if step.get("phase"):
+            _ROSTER["phase"] = step["phase"]
+        _ROSTER["drags"] += 1 if step.get("n") else 0
+        for k in ("frames", "total"):
+            if step.get(k) is not None:
+                _ROSTER[k] = step[k]
+
+
+def roster_finish(result: dict = None, error: str = None) -> None:
+    """扫描收尾: 成功带 summary, 失败带一句话。"""
+    with _ROSTER_LOCK:
+        _ROSTER.update(state="error" if error else "done", result=result,
+                       error=error, finished=time.time())
+
+
+def _read_roster_file() -> dict:
+    """读落盘的 roster.json (按 mtime 缓存) —— 进程重启后仍能看上次扫描结果。"""
+    try:
+        mtime = ROSTER_PATH.stat().st_mtime
+    except OSError:
+        return None
+    if _roster_file["mtime"] != mtime:
+        try:
+            _roster_file["data"] = json.loads(ROSTER_PATH.read_text(encoding="utf-8"))
+            _roster_file["mtime"] = mtime
+        except (OSError, json.JSONDecodeError):
+            return _roster_file["data"]
+    return _roster_file["data"]
+
+
+def roster_snapshot() -> dict:
+    """给 /api/roster 的快照。内存里没有结果就回落到落盘的那份。"""
+    with _ROSTER_LOCK:
+        out = {k: v for k, v in _ROSTER.items()}
+        out["log"] = list(_ROSTER["log"])
+    out["saved"] = False
+    if out["result"] is None and out["state"] in ("idle", "done"):
+        saved = _read_roster_file()
+        if saved:
+            out["result"] = saved
+            out["state"] = "done"
+            out["saved"] = True      # 前端据此标一句"上次扫描的结果"
+    end = out["finished"] or time.time()
+    out["elapsed"] = round(end - out["started"], 1) if out["started"] else 0
+    return out
 
 
 def _read_adb_config() -> dict:
@@ -628,6 +719,10 @@ class _Handler(BaseHTTPRequestHandler):
                              "energy_cost": _T.DEFAULT_ENERGY_COST,
                              "label": "未识别兜底"}},
                 ensure_ascii=False).encode("utf-8"))
+        elif path == "/api/roster":
+            # 角色仓库扫描的进度 + 上次结果 (前端 2s 轮询; 状态由主循环写, 见 _ROSTER)
+            self._send(200, "application/json",
+                       json.dumps(roster_snapshot(), ensure_ascii=False).encode("utf-8"))
         elif path.startswith("/static/"):
             try:
                 fp = (STATIC_DIR / path[len("/static/"):]).resolve()
@@ -770,6 +865,25 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             STATE.scan_requested = True
             STATE.log("收到 WebUI 扫描请求, 待命中将去 PF hub 扫一遍录入", "warn")
+            self._send(200, "application/json", b'{"ok":true}')
+        elif self.path == "/api/roster/scan":
+            # 角色仓库扫描: 待命中由主循环执行 (设备独占, 不能在这儿起线程抢)。
+            # 与 /api/scan 分两个请求位: 场地扫描会**自己导航**去 PF hub, 仓库扫描
+            # 不导航 —— 屏幕得**先手动停在 FIGHTERS 页** (主循环开扫前会探一帧,
+            # 不在仓库页就报错退出, 不会对着主界面乱拖)。
+            if STATE.running:
+                self._json_err(409, "运行中不扫仓库 (先结束场次)")
+                return
+            with _ROSTER_LOCK:
+                busy = _ROSTER["state"] in ("queued", "running")
+            if busy:
+                self._json_err(409, "已经有一次仓库扫描在跑 (或待启动)")
+                return
+            STATE.roster_scan_requested = True
+            with _ROSTER_LOCK:
+                _ROSTER["state"] = "queued"
+            STATE.log("收到 WebUI 仓库扫描请求 —— 待命中开始; 请确认游戏停在 "
+                      "FIGHTERS(角色仓库) 页", "warn")
             self._send(200, "application/json", b'{"ok":true}')
         elif self.path == "/api/sessions/select":
             # 仅绑定当前场次不开始; 之后可在主页改规则/上界/休息

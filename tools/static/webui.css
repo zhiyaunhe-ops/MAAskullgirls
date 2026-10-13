@@ -719,3 +719,29 @@ progress::-moz-progress-bar { background:var(--gold); }
   .chain-cols { flex-direction:column; }
   .chain-pool { flex:none; width:100%; }
 }
+
+/* ===== 角色仓库扫描 (2026-10-14) =====
+   扫描本身跑在服务端主循环 (设备独占), 这里只是进度面板。
+   ⚠️ 状态只有经 /api/roster 出来这一条路: 别在前端自己算张数/自己判"到头"。 */
+#rosterwrap { padding:0; display:flex; flex-direction:column; gap:14px; }
+#roster-kpi { display:grid; grid-template-columns:repeat(auto-fit,minmax(126px,1fr)); gap:10px; }
+#rosterwrap .chain-cols > .dpanel:first-child { flex:0 0 320px; }
+#rosterwrap .chain-cols > .dpanel:last-child { flex:1; min-width:0; }
+#roster-chars, #roster-dups { padding:2px 16px 16px; }
+.roster-chip {
+  display:inline-flex; align-items:baseline; gap:6px; margin:0 6px 6px 0;
+  padding:4px 9px; border:1px solid var(--line); border-radius:999px;
+  background:var(--panel2); font-size:12px; white-space:nowrap;
+}
+.roster-chip i { color:var(--dim); font-style:normal; font-size:11px; }
+.roster-dupline { font-size:12px; line-height:2; margin-top:10px; }
+.roster-dupline code { font-size:11px; color:var(--dim); }
+#roster-log {
+  padding:10px 16px 16px; font-size:11px; line-height:1.7;
+  max-height:430px; overflow:auto; white-space:pre-wrap; word-break:break-all;
+  color:var(--txt2);
+}
+@media (max-width:900px) {
+  #roster-kpi { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  #rosterwrap .chain-cols > .dpanel:first-child { flex:none; width:100%; }
+}

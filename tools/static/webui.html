@@ -79,6 +79,7 @@
     <button id="subtab-run" class="on" onclick="switchPfSub('run')">运行监控</button>
     <button id="subtab-chart" onclick="switchPfSub('chart')">战绩分析</button>
     <button id="subtab-chain" onclick="switchPfSub('chain')">连刷编排</button>
+    <button id="subtab-roster" onclick="switchPfSub('roster')">仓库扫描</button>
   </div>
   <div id="pf-run" class="pf-sub on">
   <div id="runwrap">
@@ -132,6 +133,22 @@
       <section class="chain-pool dpanel"><div class="dpanel-title">今日场地</div><div id="arena-pool"></div></section>
       <section class="chain-line dpanel"><div class="dpanel-title">连刷链条</div><div id="chain-list"></div></section>
     </div>
+  </div>
+  </div>
+  <div id="pf-roster" class="pf-sub">
+  <div id="rosterwrap">
+    <div class="chain-bar">
+      <button id="roster-run" class="mini-btn primary" onclick="startRosterScan()" title="把角色仓库横向拖一遍: 每帧读卡面上方那条卡名, 按全局坐标合并去重, 扫描与「到头」判据都由服务端主循环执行">开始扫描</button>
+      <button id="roster-refresh" class="mini-btn" onclick="pollRoster(true)" title="只重新读一次进度/结果, 不重新扫描">刷新</button>
+      <span id="roster-status" class="chain-status"></span>
+    </div>
+    <p class="pool-hint">读卡面<b>上方那条装饰卡名</b>（如 <b>REGALLY BLONDE</b>），再按 <b>variants.json</b> 映射成角色。角色名<b>可重复</b>——同名卡的每一张都各算一张。⚠️ 扫描<b>不自动导航</b>：请先把游戏停在 <b>FIGHTERS（角色仓库）</b> 页再点「开始扫描」，停错页会在开扫前直接报错退出（不会对着主界面乱拖）。</p>
+    <div id="roster-kpi"></div>
+    <div class="chain-cols">
+      <section class="dpanel"><div class="dpanel-title">角色分布</div><div id="roster-chars"></div></section>
+      <section class="dpanel"><div class="dpanel-title">扫描进度</div><div id="roster-log" class="mono"></div></section>
+    </div>
+    <section class="dpanel"><div class="dpanel-title">同名多张 · 冲突</div><div id="roster-dups"></div></section>
   </div>
   </div>
 </main>

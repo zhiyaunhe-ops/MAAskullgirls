@@ -68,7 +68,8 @@ from pf_nav import (RESOURCE_DIR, ROI_RESULT, ROI_SCENE_X, ROI_TOPRIGHT,  # noqa
                     TPL_RESULT_CONTINUE, TPL_SCENE_X)
 from pf_domain import ScoreTracker  # noqa: E402  (clean_* 在 pf_webui.apply_session)
 from pf_store import STORE  # noqa: E402
-from pf_webui import apply_session, start_webui  # noqa: E402
+from pf_webui import (apply_session, roster_begin, roster_finish,  # noqa: E402
+                      roster_line, roster_step, start_webui)
 
 SHOT_DIR = PROJECT_ROOT / "debug" / "pf" / "run"
 
@@ -1565,6 +1566,41 @@ class PfBot(SceneNav):
                     except Exception as e:  # noqa: BLE001
                         STATE.log(f"手动扫描失败 (不影响待命): {e}", "err")
                     STATE.step = "-"      # 扫完复位阶段标签 (别一直挂在"扫描场地")
+                    continue
+                if STATE.roster_scan_requested:
+                    # WebUI「仓库扫描」: 待命去角色仓库拖一遍, 列全角色卡。
+                    # 与场地扫描同样是**同步**跑在主循环里 —— 设备 (Tasker/controller)
+                    # 是独占资源, 另起线程去碰它会和主循环抢注入。进度经 pf_webui 的
+                    # 容器传出给 HTTP 线程 (前端 2s 轮询 /api/roster)。
+                    # **不导航**: 屏幕得先停在 FIGHTERS 页, run_scan 开扫前会探帧,
+                    # 不在仓库页直接抛错退出 (不会对着主界面乱拖几十次)。
+                    # 兜底捕获同 scan_requested: 任何失败只许记日志, 不许带崩主循环。
+                    STATE.roster_scan_requested = False
+                    self._nav_running_at_entry = STATE.running
+                    roster_begin()
+
+                    def _roster_log(msg, level="info"):
+                        STATE.log(msg, level)
+                        roster_line(msg)
+
+                    try:
+                        from pf_roster import run_scan
+                        STATE.set_step("扫描角色仓库")
+                        s = run_scan(self, log=_roster_log, on_step=roster_step)
+                        roster_finish(s)
+                        STATE.log(f"仓库扫描完成: {s['count']} 张 (未识别 "
+                                  f"{s['unmapped']}), 列距间隔 {s['min_gap']}~"
+                                  f"{s['max_gap']}", "warn")
+                    except NavAborted:
+                        roster_finish(error="手动中止 (收到开始/停止请求)")
+                        STATE.log("仓库扫描已中止 (收到开始/停止请求)", "warn")
+                    except LinkDead as e:
+                        roster_finish(error=f"连接中断: {e}")
+                        STATE.log(f"仓库扫描中断 (MAA 僵死, 稍后自愈/重生兜底): {e}", "err")
+                    except Exception as e:  # noqa: BLE001
+                        roster_finish(error=str(e))
+                        STATE.log(f"仓库扫描失败 (不影响待命): {e}", "err")
+                    STATE.step = "-"
                     continue
                 if STATE.status == "RUNNING":
                     # 场次刚结束: 先看接力队列 —— 正常打完 (达标/手动结束/场景没找到)

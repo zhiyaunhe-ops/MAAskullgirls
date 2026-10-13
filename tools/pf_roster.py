@@ -68,6 +68,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pf_fighters as fighters  # noqa: E402
 
+ROOT = Path(__file__).resolve().parent.parent   # 项目根 (存档路径别依赖 cwd)
 W, H = 1280, 720
 
 # (行名, 卡名带, 名条带)
@@ -305,7 +306,7 @@ class Store:
         }
 
 
-def scan(make_frame, drag, log=print, max_drags: int = MAX_DRAGS,
+def scan(make_frame, drag, log=print, on_step=None, max_drags: int = MAX_DRAGS,
          settle: float = SETTLE_S) -> Store:
     """拖动 + 逐帧并入. make_frame() 返回卡表; drag(content_left, alt=False) 执行一次拖拽。
 
@@ -314,12 +315,25 @@ def scan(make_frame, drag, log=print, max_drags: int = MAX_DRAGS,
     **"拖不动"不等于"到头"**, 触点落在空白区/ADD 槽上同样拖不动 (端点屏幕上就是
     一大片空白), 所以判到头前必须换条线复验一次 (2026-10-13 实测: 右端换 3 种几何
     都不动, 才敢下"到头"的结论)。
+
+    `on_step(dict)`: 每帧一个结构化进度点 (WebUI 进度条用, 见 run_scan)。
+    `log` 是给人读的文本; 两者分开 —— 别去解析 log 字符串。
     """
     st = Store()
+
+    def emit(**kw):
+        if on_step:
+            try:
+                on_step(kw)
+            except Exception:      # noqa: BLE001  进度上报绝不许带崩扫描
+                pass
+
     cards = make_frame()
     rep = st.merge(cards)
     log(f"[锚定] 首帧 {len(cards)} 卡 (row1 {sum(1 for c in cards if c['row'] == 'row1')}"
         f" / row2 {sum(1 for c in cards if c['row'] == 'row2')})")
+    emit(phase="锚定", n=0, frames=len(cards), new=rep["new"], dup=rep["dup"],
+         conflict=rep["conflict"], total=len(st.cards))
 
     def crawl(content_left: bool, label: str):
         """content_left=True 表示"看后面的卡"; 返回 (结束原因, 拖了几次)。"""
@@ -333,11 +347,15 @@ def scan(make_frame, drag, log=print, max_drags: int = MAX_DRAGS,
             if not rep["aligned"]:
                 log(f"[{label}{n}] 与已读的卡对不上 (拖太多/内容变了, 得分 "
                     f"{rep['score']}) —— **停下报告, 不硬猜**", "warn")
+                emit(phase=label, n=n, stop="unaligned", total=len(st.cards))
                 return "unaligned", n
             moved = prev is not None and abs(rep["delta"] - prev) >= NO_MOVE_PX
             log(f"[{label}{n}] {len(cards):2d} 卡  新增 {rep['new']:2d} 重复 "
                 f"{rep['dup']:2d} 冲突 {rep['conflict']}  平移 "
                 f"{rep['delta'] - prev:+5d}  累计 {len(st.cards)}")
+            emit(phase=label, n=n, frames=len(cards), new=rep["new"], dup=rep["dup"],
+                 conflict=rep["conflict"], total=len(st.cards),
+                 shift=(rep["delta"] - prev) if prev is not None else 0)
             prev = rep["delta"]
             if moved:
                 stale = 0
@@ -345,6 +363,7 @@ def scan(make_frame, drag, log=print, max_drags: int = MAX_DRAGS,
                 stale += 1
                 if stale >= NO_MOVE_STRIKES:
                     log(f"[{label}] 连续 {stale} 次画面不动 (已换过拖拽几何) —— 到头了")
+                    emit(phase=label, n=n, stop="end", total=len(st.cards))
                     return "end", n
         return "cap", n
 
@@ -404,6 +423,25 @@ def _cli_drag(bot):
         bot.scroll_roster(x1, x2, y)
 
     return drag
+
+
+def run_scan(bot, *, log=print, on_step=None, out=None,
+             max_drags: int = MAX_DRAGS, settle: float = SETTLE_S) -> dict:
+    """门面: 用运行中的 PfBot 跑一趟完整扫描, 落盘并返回 summary (WebUI/主循环用)。
+
+    ⚠️ **不做导航** —— 调用方负责让屏幕停在角色仓库 FIGHTERS 页。PF 主链没有
+    "从主界面进 COLLECTION" 的通路, 硬加等于赌一串点击坐标; 宁可先探一帧:
+    首帧一张卡都读不到就抛错, 别对着主界面白拖 30 次 (那会乱点乱划)。
+    """
+    rd = MaaReader(bot)
+    if not make_cards(rd, bot.snap("roster_probe")):
+        raise RuntimeError("当前屏幕没有角色网格 —— 先把模拟器切到角色仓库 FIGHTERS 页")
+    path = Path(out) if out else ROOT / "debug" / "pf" / "roster" / "roster.json"
+    st = scan(lambda: make_cards(rd, bot.snap("roster_scan")), _cli_drag(bot),
+              log=log, on_step=on_step, max_drags=max_drags, settle=settle)
+    s = st.summary()
+    _dump(st, path, log)
+    return s
 
 
 def main(argv):

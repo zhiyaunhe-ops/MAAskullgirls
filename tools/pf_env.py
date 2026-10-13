@@ -324,6 +324,10 @@ class BotState:
         self.arenas = None            # 最近一次场地扫描录入 {"day","arenas":[{idx,title,score}]}
         self.scene_pending = False    # 开始后待做一次场景识别/导航 (每次点「开始」都置位)
         self.scan_requested = False   # WebUI「立即扫描」: 待命主循环去 PF hub 扫一遍录入
+        # WebUI「仓库扫描」: 待命主循环去角色仓库 (FIGHTERS) 拖一遍, 列出全部角色卡。
+        # 与 scan_requested 分两个位: 场地扫描会自己导航去 PF hub, 仓库扫描**不导航**
+        # (人得先把模拟器停在 FIGHTERS 页), 混用一个位就分不清该不该走导航。
+        self.roster_scan_requested = False
         self.end_reason = None        # 场次结束原因: goal/manual/scene/error (接力队列依据)
         self.filter_favorite = True   # 筛选时是否保留 喜爱(爱心) 芯片
         self.rest_every = 0           # 连续 N 场后休息 (0=不启用)

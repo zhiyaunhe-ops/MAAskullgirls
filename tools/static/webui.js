@@ -101,12 +101,13 @@ function switchTab(t) {
 }
 function switchPfSub(s) {
   pfSub = s;
-  for (const n of ['run','chart','chain']) {
+  for (const n of ['run','chart','chain','roster']) {
     document.getElementById('subtab-'+n).classList.toggle('on', n===s);
     document.getElementById('pf-'+n).classList.toggle('on', n===s);
   }
   if (s === 'chart') pollHistory();
   if (s === 'chain') loadChain();
+  if (s === 'roster') pollRoster();
 }
 /* 目标 ETA: 速率来自 /api/summary (本场记分点, 相邻间隔>180s 的空闲段不计入),
    剩余时间在前端用最新 state 的 score 现算 —— 比记分点最后一点新鲜。
@@ -804,6 +805,83 @@ async function toggleChain(on) {
 async function requestScan() {
   await api('/api/scan', {});
   showNotice('已请求扫描: bot 待命中会去 PF hub 扫一遍录入 (几秒到几十秒)');
+}
+/* ================= 角色仓库扫描 (COLLECTION / FIGHTERS) =================
+   扫描跑在**服务端主循环**里 (模拟器是独占资源, 前端不能自己插一脚去拖),
+   这里只发指令 + 轮询 /api/roster。读的是卡面上方那条装饰卡名, 再映射成角色。
+   结果落盘 debug/pf/roster/roster.json —— 服务重启后仍能看到上次那份
+   (响应里的 saved=true 就是"这份来自落盘")。 */
+async function startRosterScan() {
+  const d = await api('/api/roster/scan', {});
+  if (d && d.error) return;   // 运行中 / 已有扫描在跑: api() 已经弹过错误
+  showNotice('已请求扫描角色仓库 —— 请确认游戏停在 FIGHTERS(角色仓库) 页, 扫描不自动导航');
+  pollRoster(true);
+}
+
+async function pollRoster(force) {
+  if (!force && pfSub !== 'roster') return;
+  let d;
+  try { d = await (await uiFetch('/api/roster')).json(); }
+  catch (e) { return; }       // 轮询失败静默, 下一拍再来
+  renderRoster(d);
+}
+
+function renderRoster(d) {
+  const busy = d.state === 'running' || d.state === 'queued';
+  const btn = document.getElementById('roster-run');
+  if (btn) { btn.disabled = busy; btn.textContent = busy ? '扫描中…' : '开始扫描'; }
+  const R = d.result;
+  const label = d.state === 'queued' ? '排队中 —— 等主循环空闲 (运行中不开扫)'
+    : d.state === 'running' ? `扫描中 · ${d.phase || '…'} · 已拖 ${d.drags} 次 · 累计 ${d.total} 张`
+      : d.state === 'error' ? `失败: ${d.error || '未知原因'}`
+        : R ? `${d.saved ? '上次扫描结果 (来自落盘)' : '扫描完成'} · 用时 ${d.elapsed}s`
+          : '尚未扫描';
+  const st = document.getElementById('roster-status');
+  if (st) st.textContent = label;
+
+  const kpi = document.getElementById('roster-kpi');
+  if (kpi) {
+    kpi.innerHTML = R ? [
+      ['合计张数', R.count, 'v-gold'],
+      ['未识别', R.unmapped, R.unmapped ? 'v-red' : ''],
+      ['列距间隔', `${R.min_gap} ~ ${R.max_gap}`, ''],
+      ['读数冲突', (R.conflicts || []).length, (R.conflicts || []).length ? 'v-red' : ''],
+    ].map(([k, v, cls]) =>
+      `<div class="stat-card"><div class="k">${esc(k)}</div>` +
+      `<div class="v ${cls}">${esc(v)}</div></div>`).join('') : '';
+  }
+
+  const chars = document.getElementById('roster-chars');
+  if (chars) {
+    const rows = Object.entries((R && R.by_char) || {}).sort((a, b) => b[1] - a[1]);
+    chars.innerHTML = rows.length
+      ? rows.map(([c, n]) =>
+        `<span class="roster-chip"><b>${esc(c)}</b><i>${esc(n)}</i></span>`).join('')
+      : '<p class="pool-hint">还没有结果 —— 点「开始扫描」。</p>';
+  }
+
+  const dups = document.getElementById('roster-dups');
+  if (dups) {
+    const top = Object.entries((R && R.dup_names) || {})
+      .sort((a, b) => b[1] - a[1]).slice(0, 24);
+    const cf = (R && R.conflicts) || [];
+    dups.innerHTML =
+      (top.length
+        ? `<div class="roster-dupline">同名多张 (每张各算一张): ${top.map(([n, k]) =>
+          `<span class="roster-chip"><b>${esc(n)}</b><i>×${esc(k)}</i></span>`).join('')}</div>`
+        : '<p class="pool-hint">没有同名卡。</p>') +
+      (cf.length
+        ? `<div class="roster-dupline">同一张卡两次读数不同 (建议人工核):<br>` +
+          cf.map(c => `<code>${esc(c)}</code>`).join('<br>') + '</div>'
+        : '');
+  }
+
+  const pane = document.getElementById('roster-log');
+  if (pane) {
+    const lines = (d.log || []).slice(-160);
+    pane.textContent = lines.length ? lines.join('\n') : '（暂无进度）';
+    pane.scrollTop = pane.scrollHeight;
+  }
 }
 document.getElementById('arena-pool').addEventListener('click', e => {
   const blk = e.target.closest('.arena-block');
@@ -1605,6 +1683,8 @@ document.addEventListener('keydown', e => {
 setInterval(pollState, 1500);
 setInterval(pollMumu, 4000);
 setInterval(() => { if (pfSub === 'chart' && document.getElementById('page-pf').classList.contains('on')) pollHistory(); }, 2500);
+/* 仓库扫描: 主循环里一次要跑 1~2 分钟 (几十次拖拽), 2s 一拍够看进度 */
+setInterval(() => { if (pfSub === 'roster' && document.getElementById('page-pf').classList.contains('on')) pollRoster(); }, 2000);
 /* 初始化: 主题沿用 localStorage(首屏已由 head 脚本打好), 模拟器状态点立即取一次 */
 applyTheme(document.documentElement.dataset.theme || 'midnight');
 pollState();

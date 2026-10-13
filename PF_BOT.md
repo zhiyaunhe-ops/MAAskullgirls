@@ -264,6 +264,7 @@ tailscale serve --https=8444 off
 | 实机结果 | 同一份仓库跑两遍都是 **255 张**（row1 128 列 / row2 127 列，最后一列的 row2 格是 ADD 槽）；两轮**逐列一致**，`dup_gaps`/`miss_gaps`/`conflicts` 全空、未识别 0 |
 | ⚠️ UI 计数对不上 | 右上角 `FIGHTERS 257 / 350` 比网格内容多 2。网格内容经**两条独立方法**确认：图像相关测真实步长累加出的跨度 21019px ÷ 165.5 = 128 列（`_probe_frame_shift.py`），以及跨帧名条框交叉映射 ⇒ **255 是网格真值**，257 是 UI 口径（疑含不在本网格里的项）。**别为了对齐 UI 数字去改扫描** |
 | 跑法 | 实机 `python tools/pf_roster.py scan --out debug/pf/roster/roster.json`；离线复跑留档帧 `python tools/pf_roster.py images <帧...>` |
+| 前端 | PF 页第四子页签**「仓库扫描」**：`POST /api/roster/scan` 置 `STATE.roster_scan_requested` → 主循环 IDLE 分支消费；`GET /api/roster` 回进度/结果（前端 2s 轮询，`state`: idle/queued/running/done/error）。**不导航** —— 先把游戏手动停在 FIGHTERS 页（开扫前 `run_scan` 探一帧，0 张卡直接抛错退出，不会对着主界面白拖）。结果落盘同一份 `roster.json`，服务重启后前端仍能看上次那份（响应 `saved=true`）。测试 `tests/test_roster_webui.py`（7 条，纯 HTTP 契约，不连设备） |
 | 复核工具 | `python tools/_probe_frame_shift.py <帧目录>`：**图像相关**测相邻帧真实像素位移，完全绕开 OCR/配准 —— "到底该谁对"的争议一律用它裁（纯离线，不连设备） |
 | 测试 | `tests/test_roster_scan.py`（13 条，全合成帧，不碰设备）；跑法 `anaconda python -m pytest tests/test_roster_scan.py -q` |
 
@@ -319,6 +320,8 @@ tailscale serve --https=8444 off
 | 35 | 文本读取余量写死像素：旧 `TEXT_PAD_X/Y=6/12`。而 MAA 的 det 框**自带 unclip**（`box_h ≈ 1.87×字高`），固定 12px 在字高 8px 的名条上 = crop 4 倍字高 → 归一化到 rec 的 48px 后文字反而变小，末字丢（`PAINWHEEL`→`PAINWHEE`） | 改 `TEXT_PAD_X=10`（横向才是主杠杆: MAA 框横向偏紧，`FILIA` 只框 26px → `ALIA`）+ `TEXT_PAD_Y_RATIO=0.2`（相对框高）+ `TEXT_DET_UPSCALE=2`（1x 93/2x 100/3x 96%）。实测口径见 §6.1「文本读取」与 MEMORY.md「读卡 OCR」 |
 | 36 | **角色名两套命名空间**：`variants.json` 的 `name` 第 2 段是游戏内部标识（`MsFortune`/`BigBand`/`BlackDahlia`/`RoboFortune`），而 `CHARACTER_CHIPS`/`CLASS_CHIPS` 的键是显示名（`Ms. Fortune`/`Big Band`/…）——拿内部标识查芯片坐标**静默 miss**（12 个已覆盖角色里 3 个对不上；无异常无日志，只是"芯片没点到"）。同类坑早在 hub 卡名上出现过（`pf_nav._match_known` 把 `FALL OF THE DARK` 吸成 `A SHOT IN THE DARK`） | `pf_fighters.char_of_base()` 统一输出 `CHAR_DISPLAY`（18 个角色全给，缺 chip 的 6 个也按官方写法）；要内部标识走 `internal_of_base()`。2026-10-13 `_probe_roster.py` 42 格实测时发现 |
 | 37 | **配准别名 → 漏统计（不是重复统计）**：列是周期性的，长串同名卡里"差一个列距"的别名 Δ 能命中**一样多甚至更多**的卡。run1 frame0033 出现**三档同分**（13920/14085/14251），旧版 `s > best_s` 同分取 Δ 最小的那个 ⇒ 选中 miss=1 的别名，整帧并成 dup、那一列再没人补。症状极具迷惑性：同一份仓库两遍跑出 **255 / 253**，而两轮**左端帧和右端帧一模一样**、`dup_gaps`/`miss_gaps` 全空 | 打分并列时先比**冲突数 `miss`**（真值恒 0 冲突），运动先验 `Store._predict` 只当最后一档（单用它反而过头，把真值顶成差 2 列的 ⇒ 259 张）。**切分真值必须用 `tools/_probe_frame_shift.py`**（图像相关测真实步长，与 OCR/配准完全无关）。回归 `tests/test_roster_scan.py::test_align_prefers_zero_conflict_on_score_tie` |
+| 38 | 把分钟级长任务（仓库扫描）接 WebUI 时，第一反应是「在 `/api/roster/scan` 里起个后台线程跑」—— 但**设备（Tasker/controller）是独占资源**，HTTP 线程去碰它就会和主循环抢注入（设备侧的"双实例"，同 §8-12） | 长任务**同步跑在主循环 IDLE 分支**（沿用 `/api/scan` 的既有范式）：HTTP 只置 `STATE.roster_scan_requested`，进度经 `pf_webui._ROSTER`（带锁容器）**单向**传出，前端轮询 `GET /api/roster`。顺带两个防呆：**待命中才有意义**（运行中 409，且拒绝时**不置位**，别留悬空请求）、**不导航**（先把屏幕停在 FIGHTERS 页，开扫前探帧 0 卡即抛错，见 §6.15）。回归 `tests/test_roster_webui.py` |
+| 39 | `tools/lint_webui.py` 的资源检查认死前缀 `/static/`，而 `webui.html` 里是**相对路径** `static/…`（为托管预览的 `UI_BASE` 改造服务的，见 webui.js 首行）⇒ lint **一直红**（2026-10-14 发现：HEAD 版同样如此）。红着的 lint 等于没人跑，这个脚本的 id 唯一/顶层重名/语法检查全部形同虚设 | 前缀判断改为两种都收（`startswith(("/static/", "static/"))` + `removeprefix` 两次），全绿 |
 
 ## 9. 常用操作
 
