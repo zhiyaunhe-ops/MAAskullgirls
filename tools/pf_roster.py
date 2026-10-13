@@ -76,7 +76,7 @@ ROWS = (("row1", (296, 326), (322, 350)),
         ("row2", (526, 556), (552, 580)))
 HALF = 76           # 以卡中心为准的左右半宽 (卡名带 ROI)
 EDGE_L, EDGE_R = 40, 1240   # 名条框完全落在此区间才算"完整卡", 边缘半张不评
-PITCH = 165.5       # 列距 (只用于自检, 去重不依赖它)
+PITCH = 165.5       # 标称列距 (只用于自检兜底, 去重不依赖它)
 
 DRAG_FROM, DRAG_TO, DRAG_Y = 1150, 400, 460   # 一次拖 750px ≈ 4.5 列
 # 备用拖拽几何 (判"到头"前的复验): 换到**行1 卡面**上起手, 且从更靠内容一侧出发 ——
@@ -285,8 +285,15 @@ class Store:
         # 自检 B: 远大于列距 = 中间漏了卡 (配准漂移或某列从没完整可见)。
         # 2026-10-13 实测: 253 张的 253 个间隔全在 162~169, 两条自检都空 —— 这才敢
         # 说"253 是网格的完整内容", 而不是"扫到的部分"。
-        dup_gaps = [round(g, 1) for g in all_gaps if g < PITCH * 0.6]
-        miss_gaps = [round(g, 1) for g in all_gaps if g > PITCH * 1.4]
+        # 2026-10-14: 参考列距改成**观测中位数** (兜底 = 标称 PITCH) —— 支持
+        # "游戏内先筛选再扫" 的加速用法: 用户在游戏里点右下漏斗 (如只看钻石) 后
+        # 网格重排, 间隔可能与标称不同; 去重/配准本就不依赖固定列距, 只有这里需要跟。
+        # med 用 max(med, 0.6*PITCH) 兜底: 若去重真坏了 (一串 gap≈0), 中位数会跟着
+        # 变小、自检反而失效 —— 此时回落到标称列距的 0.6 倍照样报 dup。
+        med = sorted(all_gaps)[len(all_gaps) // 2] if all_gaps else PITCH
+        ref = max(med, PITCH * 0.6)
+        dup_gaps = [round(g, 1) for g in all_gaps if g < ref * 0.6]
+        miss_gaps = [round(g, 1) for g in all_gaps if g > ref * 1.4]
         by_name: dict[str, int] = {}
         for r in cards:
             by_name[r["name"]] = by_name.get(r["name"], 0) + 1
@@ -487,7 +494,7 @@ def main(argv):
               max_drags=a.max_drags, settle=a.settle)
     s = st.summary()
     print(f"\n合计 {s['count']} 张 (未识别 {s['unmapped']}), 间隔 {s['min_gap']}~"
-          f"{s['max_gap']} (列距约 {PITCH})")
+          f"{s['max_gap']} (观测中位数为参考)")
     print("角色分布:", s["by_char"])
     if s["dup_gaps"]:
         print(f"⚠️ 间隔过小 {s['dup_gaps']} —— 去重可能失效 (同一张卡记了两次)")

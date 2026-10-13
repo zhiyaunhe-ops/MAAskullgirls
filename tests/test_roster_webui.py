@@ -126,3 +126,64 @@ def test_finish_success_and_error(srv):
 def test_post_still_requires_json(srv):
     """门卫没被新路由绕过 (415 纯文本错误体)。"""
     assert _req("POST", "/api/roster/scan", ctype="text/plain")[0] == 415
+
+
+# ---------- 收藏统计 + 炫耀页 (2026-10-14) ----------
+
+def test_collection_shape_or_empty(srv):
+    """有落盘结果 -> 聚合+评分; 没有 -> ok:false 且带引导文案 (不 500)。"""
+    code, d = _req("GET", "/api/roster/collection")
+    assert code == 200
+    if not Path(W.ROSTER_PATH).is_file():
+        assert d["ok"] is False and "扫描" in d["error"]
+        return
+    assert d["ok"] is True
+    agg, sc = d["agg"], d["score"]
+    assert agg["total_cards"] > 0 and agg["variant_kinds"] > 0
+    assert sum(agg["by_tier"].values()) == agg["variant_kinds"]      # 分桶不丢
+    assert set(sc) >= {"total", "grade", "grade_title", "completeness",
+                       "rarity", "coverage", "chars_covered"}
+    assert 0 <= sc["total"] <= 100 and sc["grade"] in "SABCDE"
+    v = agg["variants"][0]
+    assert {"id", "fandom", "char", "element", "tier", "count", "sa_title",
+            "sa_official"} <= set(v)
+
+
+def test_collection_matches_direct_recompute(srv):
+    """服务端快照必须等于直接调 pf_collection 的结果 (聚合口径不被路由层改写)。"""
+    if not Path(W.ROSTER_PATH).is_file():
+        return
+    import pf_collection as C
+    raw = json.loads(Path(W.ROSTER_PATH).read_text(encoding="utf-8"))
+    agg = C.aggregate(raw.get("cards") or [])
+    W._collection_file["mtime"] = None     # 强制重算, 别吃别的用例的缓存
+    code, d = _req("GET", "/api/roster/collection")
+    assert code == 200 and d["ok"]
+    assert d["agg"]["variant_kinds"] == agg["variant_kinds"]
+    assert d["agg"]["total_cards"] == agg["total_cards"]
+    assert d["score"] == C.score(agg)
+
+
+def test_export_showcase_html(srv):
+    """炫耀页: 单文件 HTML + 内嵌数据; ?download=1 带附件头; 无数据 404。"""
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/roster/export")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            body = r.read().decode("utf-8")
+            assert r.status == 200
+            assert "text/html" in r.headers["Content-Type"]
+            assert "Content-Disposition" not in r.headers
+    except urllib.error.HTTPError as e:
+        assert not Path(W.ROSTER_PATH).is_file() and e.code == 404
+        return
+    assert "Skullgirls Mobile 收藏图鉴" in body
+    assert "const DATA=" in body
+    # 数据必须已转义 "</", 否则文案里出现 </script> 会打断脚本
+    import re
+    m = re.search(r"const DATA=(\{.*?\});\n", body, re.S)
+    assert m and json.loads(m.group(1).replace("<\\/", "</"))["total_cards"] > 0
+
+    req2 = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}/api/roster/export?download=1")
+    with urllib.request.urlopen(req2, timeout=5) as r:
+        assert "attachment" in r.headers.get("Content-Disposition", "")

@@ -32,6 +32,7 @@
 | tools/pf_scene.py／pf_schedule.py／pf_tray.py | 导航／调度／托盘 |
 | tools/jjc_store.py | 日程快照、配置版本 |
 | tools/pf_roster.py／pf_fighters.py | 角色仓库全量扫描（只读卡名 + 不重复统计）／卡名→角色类型映射（§6.15） |
+| tools/pf_collection.py | 收藏聚合/评分/炫耀页导出（roster.json 之上的展示层，§6.16） |
 | assets/resource/base/ | post_bundle资源根；pipeline、image、model |
 | docs/screenshots/、docs/explore/ | 界面参考／探索报告（2026-09-30 起本地不入库：游戏截图含账号信息） |
 
@@ -264,7 +265,23 @@ tailscale serve --https=8444 off
 | 实机结果 | 同一份仓库跑两遍都是 **255 张**（row1 128 列 / row2 127 列，最后一列的 row2 格是 ADD 槽）；两轮**逐列一致**，`dup_gaps`/`miss_gaps`/`conflicts` 全空、未识别 0 |
 | ⚠️ UI 计数对不上 | 右上角 `FIGHTERS 257 / 350` 比网格内容多 2。网格内容经**两条独立方法**确认：图像相关测真实步长累加出的跨度 21019px ÷ 165.5 = 128 列（`_probe_frame_shift.py`），以及跨帧名条框交叉映射 ⇒ **255 是网格真值**，257 是 UI 口径（疑含不在本网格里的项）。**别为了对齐 UI 数字去改扫描** |
 | 跑法 | 实机 `python tools/pf_roster.py scan --out debug/pf/roster/roster.json`；离线复跑留档帧 `python tools/pf_roster.py images <帧...>` |
+| 💡 加速：游戏内先筛选再扫 | 游戏内 COLLECTION 右下**漏斗**可按稀有度/元素/角色筛选（如只看钻石）——筛选后网格重排、总卡数变少 ⇒ 拖拽次数等比变少。扫描器**自适应列距**（`summary()` 的 dup/miss 自检以观测中位数为参考，兜底 `max(med, 0.6×PITCH)`，2026-10-14），去重/配准本就不依赖固定列距 ⇒ 直接扫即可，无需改代码 |
 | 前端 | PF 页第四子页签**「仓库扫描」**：`POST /api/roster/scan` 置 `STATE.roster_scan_requested` → 主循环 IDLE 分支消费；`GET /api/roster` 回进度/结果（前端 2s 轮询，`state`: idle/queued/running/done/error）。**不导航** —— 先把游戏手动停在 FIGHTERS 页（开扫前 `run_scan` 探一帧，0 张卡直接抛错退出，不会对着主界面白拖）。结果落盘同一份 `roster.json`，服务重启后前端仍能看上次那份（响应 `saved=true`）。测试 `tests/test_roster_webui.py`（7 条，纯 HTTP 契约，不连设备） |
+
+## 6.16 收藏统计 + 炫耀页（`tools/pf_collection.py`，2026-10-14）
+
+扫描结果之上的展示层：变体聚合 + 官方介绍 + 筛选 + 评分 + 单文件导出。PF 页第五子页签**「收藏统计」**。
+
+| 项 | 内容 |
+|---|---|
+| 数据流 | roster.json 的 cards → `pf_fighters.variant_of()`（306 变体闭集，OCR 噪声在此被吸收：`IYHOT`→`Icy Hot` 不会裂成两个变体）→ `pf_collection.aggregate()` 按变体聚合，**同变体多张 = count**（同名卡是真副本，不能按名字去重） |
+| 介绍（分层） | 数据源 Krazete/sgm 仓库 `data/{en,zh-cn}.json`（2019 4.1.0 官方本地化，已入库 `tools/data/sgm_text_{en,zh}.json`）：**144/306 变体**有官方 quote + SA 全文（中英双语）；其余 162 条官方表就没有（Krazete 的 variants.json 只含这 144 条，与本地 306 条超集逐字段核对零差异）——SA 名从 key 驼峰分词推导（`RitualSacrifice`→`Ritual Sacrifice`）并标「(推导)」。⚠️ fandom wiki 变体无独立页（`Dark_Lord` 404 实测），别走那条路。desc 里的 `{0}/{0:0%}` 占位符按 SA 三级数值填实（`_fill_desc`，填不了原样返回） |
+| 评分（公开口径） | `score()` = 100 × (0.5×完成度 + 0.3×稀有度 + 0.2×角色覆盖)；完成度 = 独特变体/306；稀有度 = Σ权重/全图鉴满配（钻 8/金 4/银 2/铜 1）；覆盖 = 有卡角色/18。**只算独特变体**（重复卡不加分）。等级 S+~E 映射称号。满图鉴 = 100/S 有单测钉住（分母自洽） |
+| 稀有度来源 | `variants.json` 的 `tier` 字段：0铜/1银/2金/3钻，与 `name` 第 3 段字母（B/S/G/D，RaidBoss 亦钻）一一对应，实测 306/306 吻合 |
+| ⚠️ 元素口径 | 前端元素筛选 chip **只显示整数 id（元0..元5）**——整数→元素名的映射仍未核实（沿用 pf_fighters 的口径），chip hover 给一个代表卡名让用户自己对。**别在前端猜元素名** |
+| 路由 | `GET /api/roster/collection` 聚合+评分（按 roster.json mtime 缓存）；`GET /api/roster/export` 单文件炫耀页（数据内嵌零外链，`</` 已转义；`?download=1` 变附件下载） |
+| 炫耀页 | 深色游戏风单文件 HTML：等级徽章 + 三分项进度条 + 稀有度计数 + 本地筛选（稀有度/角色）+ 变体卡网格（×N 计数、SA、攻血、quote）+ 底注写明评分公式。发给谁都能直接双击打开 |
+| 测试 | `tests/test_pf_collection.py`（11 条纯函数）+ `tests/test_roster_webui.py` 追加 3 条（收藏快照口径、炫耀页转义/附件头）；全合成数据，不碰设备 |
 | 复核工具 | `python tools/_probe_frame_shift.py <帧目录>`：**图像相关**测相邻帧真实像素位移，完全绕开 OCR/配准 —— "到底该谁对"的争议一律用它裁（纯离线，不连设备） |
 | 测试 | `tests/test_roster_scan.py`（13 条，全合成帧，不碰设备）；跑法 `anaconda python -m pytest tests/test_roster_scan.py -q` |
 

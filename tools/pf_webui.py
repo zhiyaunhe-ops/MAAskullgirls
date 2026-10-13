@@ -34,6 +34,8 @@ GET  /api/roster        {state, phase, drags, total, log, result}  角色仓库�
                          debug/pf/roster/roster.json, 进程重启后仍能看)
 POST /api/roster/scan   待命中扫一次角色仓库 (运行中/已有扫描在跑 409)。**不导航** ——
                         屏幕须先手动停在角色仓库 FIGHTERS 页, 否则开扫前探帧失败即退出
+GET  /api/roster/collection  收藏统计: roster.json -> 变体聚合 + 评分 (pf_collection)
+GET  /api/roster/export      炫耀页单文件 HTML (?download=1 变附件下载)
 POST /api/sessions/select  仅绑定当前场次不开始（运行中不可换）
 POST /api/sessions/create|update|delete   场次管理（运行中禁改当前场次; Default 不可删;
                         场次可带 scene=PF 场地关键词, 开始时自动识别并居中该场）
@@ -76,6 +78,7 @@ from pf_domain import (UNSET, clean_rest, clean_target, clean_energy,
                        clean_scene)
 from pf_store import STORE
 from jjc_store import JJC, VERSIONS, ordered_entries, sgm_day
+import pf_collection as _COLL   # 收藏聚合/评分/炫耀页 (纯查表, 零设备 I/O)
 
 SVC_ID = "sgm-pf-bot"    # 本服务的身份标签, 见 _gate 说明与 /api/state
 
@@ -169,6 +172,27 @@ def roster_snapshot() -> dict:
     end = out["finished"] or time.time()
     out["elapsed"] = round(end - out["started"], 1) if out["started"] else 0
     return out
+
+
+_collection_file = {"mtime": None, "data": None}
+
+
+def collection_snapshot() -> dict:
+    """收藏聚合 + 评分 (基于落盘 roster.json, 按 mtime 缓存)。
+
+    纯 CPU 查表 (306 闭集 + 文案表), 毫秒级; 缓存只是省去重复聚合。
+    """
+    try:
+        mtime = ROSTER_PATH.stat().st_mtime
+    except OSError:
+        return {"ok": False,
+                "error": "还没有扫描结果 —— 先去「仓库扫描」页签扫一遍角色仓库"}
+    if _collection_file["mtime"] != mtime or _collection_file["data"] is None:
+        agg = _COLL.aggregate(json.loads(
+            ROSTER_PATH.read_text(encoding="utf-8")).get("cards") or [])
+        _collection_file["mtime"] = mtime
+        _collection_file["data"] = {"ok": True, "agg": agg, "score": _COLL.score(agg)}
+    return _collection_file["data"]
 
 
 def _read_adb_config() -> dict:
@@ -567,9 +591,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._reject(405, "方法不允许")
     do_PUT = do_PATCH = do_DELETE = do_HEAD = do_OPTIONS = _method_na
 
-    def _send(self, code, ctype, body):
+    def _send(self, code, ctype, body, extra_headers: str = ""):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if extra_headers:
+            self.send_header(*extra_headers.split(":", 1))
         # 全响应禁缓存 (2026-10-02): 原来只有图片带 no-store, webui.js 被浏览器
         # 缓住旧版 → 前端半新半旧 (页面有「连刷编排」页签, JS 却是老的, 面板全空,
         # 用户实测踩过)。js/html/json 都是小文件且走局域网, 无脑 no-store 最省心。
@@ -723,6 +749,25 @@ class _Handler(BaseHTTPRequestHandler):
             # 角色仓库扫描的进度 + 上次结果 (前端 2s 轮询; 状态由主循环写, 见 _ROSTER)
             self._send(200, "application/json",
                        json.dumps(roster_snapshot(), ensure_ascii=False).encode("utf-8"))
+        elif path == "/api/roster/collection":
+            # 收藏统计: 变体聚合 + 评分 (数据源 = 落盘的 roster.json)
+            snap = collection_snapshot()
+            self._send(200, "application/json",
+                       json.dumps(snap, ensure_ascii=False).encode("utf-8"))
+        elif path == "/api/roster/export":
+            # 炫耀页: 单文件 HTML (数据内嵌零外链), 默认 inline 预览, ?download=1 下载
+            snap = collection_snapshot()
+            if not snap.get("ok"):
+                self._send(404, "application/json",
+                           json.dumps(snap, ensure_ascii=False).encode("utf-8"))
+            else:
+                html = _COLL.export_html(snap["agg"], snap["score"])
+                extra = ""
+                if qs.get("download"):
+                    extra = ("Content-Disposition: attachment; "
+                             'filename="sgm-showcase.html"')
+                self._send(200, "text/html; charset=utf-8",
+                           html.encode("utf-8"), extra_headers=extra)
         elif path.startswith("/static/"):
             try:
                 fp = (STATIC_DIR / path[len("/static/"):]).resolve()

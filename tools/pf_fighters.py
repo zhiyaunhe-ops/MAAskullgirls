@@ -63,7 +63,7 @@ def _load() -> dict:
     global _cache
     if _cache is None:
         raw = json.loads(VARIANTS_PATH.read_text(encoding="utf-8"))
-        by_name, base_internal = {}, {}
+        by_name, base_internal, entry_by_name = {}, {}, {}
         for entry in raw.values():
             base = entry.get("base")
             # name 形如 'Char_Eliza_D_V4_Name' -> 第 2 段就是角色内部标识 (18 个 base 全唯一)
@@ -73,7 +73,9 @@ def _load() -> dict:
             fandom = (entry.get("fandom") or "").strip()
             if fandom:
                 by_name[_norm(fandom)] = (base, entry.get("element"), fandom)
-        _cache = {"by_name": by_name, "base_internal": base_internal, "size": len(raw)}
+                entry_by_name[_norm(fandom)] = entry
+        _cache = {"by_name": by_name, "base_internal": base_internal,
+                  "size": len(raw), "entry_by_name": entry_by_name}
     return _cache
 
 
@@ -148,3 +150,28 @@ def element_of(card_name: str, cutoff: float = _FUZZY_CUTOFF) -> int | None:
     印象不算证据 —— 在那之前不要在别处 encode 这个顺序。
     """
     return resolve(card_name, cutoff)[2]
+
+
+def variant_of(card_name: str, cutoff: float = _FUZZY_CUTOFF) -> tuple[dict | None, str]:
+    """卡名 -> (variants.json 完整条目, 命中方式)。
+
+    条目含 tier (稀有度 0铜/1银/2金/3钻)、stats (各级攻/血, 组数=tier+1)、
+    sa (签名能力 key 与分级数值)、quote key —— **都是 localization key 不是文案**,
+    真文案在 pf_collection 的 sgm_text_*.json (覆盖 144/306, 见其 docstring)。
+    认不出返回 (None, 'miss:...') —— 与 resolve 同一取舍: 不硬猜。
+    """
+    idx = _load()
+    n = _norm(card_name)
+    if not n:
+        return None, "empty"
+    hit = idx["entry_by_name"].get(n)
+    if hit is not None:
+        return hit, "exact"
+    best, score = None, 0.0
+    for fandom, entry in idx["entry_by_name"].items():
+        r = difflib.SequenceMatcher(None, n, fandom).ratio()
+        if r > score:
+            best, score = entry, r
+    if best is None or score < cutoff:
+        return None, f"miss:{score:.2f}"
+    return best, f"fuzzy:{score:.2f}"
