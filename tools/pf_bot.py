@@ -570,31 +570,90 @@ class PfBot(SceneNav):
     #   ① rec 只吃**单行** (整块大字域直喂返回空串, CTC blank);
     #   ② 纵向余量不足切掉字形上沿就丢字母 (det 紧框把 FALL OF THE DARK 读成
     #      'ALLOFIHFDARK'), 余量过大又带进邻接装饰 (pad_y=16 -> 'IWOTOTANGL');
-    #   ③ 可靠区间 = det 行框**上下各 12px / 左右各 6px**。
+    #   ③ 纵向余量必须**相对框高**, 不能写死像素 (rec 把 crop 归一化到固定高 48px;
+    #      写死 12px 在字高 8px 的小字上 = crop 4 倍字高, 归一化后文字反而变小 ->
+    #      末字丢: PAINWHEEL->'PAINWHEE'、CEREBELLA->'CEREBELL')。
+    #   ④ 横向余量固定 10px —— 在本批样本上这是**主杠杆**: MAA 的框横向偏紧
+    #      ('FILIA' 只框出 26px -> 原始串 'ALIA'), pad_x 补回后 28/28。
     # 所以**文字** (装饰字体卡名 / 名条 / 弹窗正文) 一律走 ocr_text_line;
     # **数值** (分数 / 倍率) 继续用 rec-only 的 ocr_text —— 数字字体规整, det 只多两次往返。
-    TEXT_PAD_X, TEXT_PAD_Y = 6, 12
+    #
+    # ⚠️⚠️ 两个数都对着 **MAA 绑定**标定 (2026-10-13 角色仓库 FIGHTERS 屏:
+    #    14 张完整卡 x 2 屏 = 28 格 + hub 卡名 2 张, 全部逐格比对真值):
+    #      **MAA 的 det 框自带 unclip 余量** —— 字高 8px 的名条框高 13~15px、
+    #      字高 14px 的 hub 卡名框高 25~27px, 即 box_h ≈ 1.87 x 字高。
+    #      因此纵向只需**很小**的余量: ratio 0.1/0.2/0.25/0.3 -> 28/28,
+    #      0.35 -> 93%, 0.5 -> 86%, 0.75 -> 71%, 1.0 -> 14% (hub 侧 0~0.75 都能过)。
+    #      取 0.2 居中 -> crop 高 ≈ 1.4 x box_h ≈ 2.6 x 字高 (理论最优带 2.5~3 倍字高)。
+    #      **不重裁**(直接用 MAA det+rec 的文本) 只有 82% -> 重裁这一步是必要的。
+    #    ⚠️ 离线复刻 `tools/_probe_ocr_offline.DetLocator` **不做 unclip**, 框是紧的
+    #      (同样文本框高 8px), 那边标出来的最优 ratio 是 0.75 —— **两个数字不要互相
+    #      拉平**, 各自对着自己的框高标定 (探针内已注明)。
+    TEXT_PAD_X = 10          # 横向余量 (像素, 固定)
+    TEXT_PAD_Y_RATIO = 0.2   # 纵向余量 = 该比例 x det 行框高 (MAA 框自带 unclip, 故很小)
+    # det 前放大倍数: 1x 时小字的框偏窄/易碎, 2x 稳定, 3x 反而过紧。
+    # 实测 (MAA 路径) 1x 93% / 2x 100% / 3x 96%; 离线复刻同向 94/100/94。
+    TEXT_DET_UPSCALE = 2
 
-    def ocr_lines(self, img, roi: tuple):
-        """det+rec: 返回 [((x0,y0,x1,y1), text)], roi 为 (x0,y0,x1,y1)。"""
+    def ocr_lines(self, img, roi: tuple, upscale: int | None = None):
+        """det+rec: 返回 [((x0,y0,x1,y1), text)] (**全图坐标**), roi 为 (x0,y0,x1,y1)。
+
+        roi 区域先放大 TEXT_DET_UPSCALE 倍再喂 det —— 小字时 1x 的框会碎
+        (见 TEXT_DET_UPSCALE 注释)。框坐标除回 k 再加回 roi 原点, 对调用方
+        仍返回全图坐标, 签名向后兼容。
+        """
+        x0, y0, x1, y1 = roi
+        h, w = img.shape[:2]
+        x0, y0 = max(0, int(x0)), max(0, int(y0))
+        x1, y1 = min(w, int(x1)), min(h, int(y1))
+        if x1 <= x0 or y1 <= y0:
+            # ⚠️ 不收口的话负 x0 会让 numpy 切出空图, MAA 侧刷一屏
+            # "MaaImageBufferSetRawData img is empty [width=0]" 的 ERR 日志
+            # (边缘卡 cx-HALF < 0 就会踩到), 返回值一样是 [] 但日志干净。
+            return []
+        sub = img[y0:y1, x0:x1]
+        k = self.TEXT_DET_UPSCALE if upscale is None else upscale
+        if k > 1:
+            sub = cv2.resize(sub, (sub.shape[1] * k, sub.shape[0] * k),
+                             interpolation=cv2.INTER_CUBIC)
         job = self.tasker.post_recognition(
             JRecognitionType.OCR,
-            JOCR(roi=self.to_maa_roi(roi), only_rec=False),
-            img,
+            JOCR(roi=(0, 0, 0, 0), only_rec=False),
+            sub,
         )
         job.wait()
         detail = job.get()
         reco = detail.nodes[0].recognition if detail and detail.nodes else None
         out = []
         for r in (getattr(reco, "all_results", None) or []):
-            box = getattr(r, "box", None)
+            bx, by, bw, bh = self._ocr_box(getattr(r, "box", None))
             txt = (getattr(r, "text", "") or "").strip()
-            if box is None or not txt:
+            if bw <= 0 or not txt:
                 continue
-            bx, by = int(getattr(box, "x", 0)), int(getattr(box, "y", 0))
-            out.append(((bx, by, bx + int(getattr(box, "w", 0)),
-                         by + int(getattr(box, "h", 0))), txt))
+            bx = bx // k + x0
+            by = by // k + y0
+            bw = max(1, bw // k)
+            bh = max(1, bh // k)
+            out.append(((bx, by, bx + bw, by + bh), txt))
         return out
+
+    @staticmethod
+    def _ocr_box(box):
+        """MAA `OCRResult.box` 是 **[x, y, w, h] 列表**, 不是带 .x/.w 的对象。
+
+        ⚠️ 2026-10-13 实机踩坑: 早前按 `getattr(box, 'x', 0)` 读 —— list 上没这个
+        属性, 默认值 0 让**所有框退化成 (0,y0,1,y1)**, 余量恒为 2px, 重裁形同虚设。
+        文本仍读得出 (rec 是 MAA 自己按 det 框做的), 所以**不报错、静默降级** ——
+        只有把框打出来看才发现。兼容对象式绑定以防御版本差异。
+        """
+        if box is None:
+            return 0, 0, 0, 0
+        if isinstance(box, (list, tuple)):
+            if len(box) < 4:
+                return 0, 0, 0, 0
+            return int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        return (int(getattr(box, "x", 0)), int(getattr(box, "y", 0)),
+                int(getattr(box, "w", 0)), int(getattr(box, "h", 0)))
 
     def ocr_text_line(self, img, roi: tuple) -> str:
         """**文本行**读取标准做法: det 定位行框 -> 按实测余量重裁 -> rec。
@@ -602,6 +661,8 @@ class PfBot(SceneNav):
         roi 应是"可能含目标文字"的**宽松区域** (比目标行大); det 会在里面找行,
         取面积最大的一行为主文本行 (小装饰行面积小)。det 一行都没找到时回落
         ocr_text (保持旧行为, 不会比原来更差)。
+        余量: 横向 TEXT_PAD_X 固定 10px, 纵向 = TEXT_PAD_Y_RATIO x 行框高
+        (MAA 的 det 框自带 unclip 余量, 故纵向比例很小 —— 见常量注释)。
         """
         lines = self.ocr_lines(img, roi)
         if not lines:
@@ -609,7 +670,8 @@ class PfBot(SceneNav):
         (bx0, by0, bx1, by1), _ = max(
             lines, key=lambda it: (it[0][2] - it[0][0]) * (it[0][3] - it[0][1]))
         h, w = img.shape[:2]
-        crop = img[max(0, by0 - self.TEXT_PAD_Y):min(h, by1 + self.TEXT_PAD_Y),
+        pad_y = max(2, int(round(self.TEXT_PAD_Y_RATIO * (by1 - by0))))
+        crop = img[max(0, by0 - pad_y):min(h, by1 + pad_y),
                    max(0, bx0 - self.TEXT_PAD_X):min(w, bx1 + self.TEXT_PAD_X)]
         if crop.size == 0:
             return ""

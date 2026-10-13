@@ -14,9 +14,9 @@
   # 3) 探针扫描: 同一 band 跑一批帧, 报命中帧 (正样本必须有, 负样本不许有)
   python tools/_probe_ocr_offline.py probe <图> x0,y0,x1,y1 PROBE [PROBE...]
          [--glob 'debug/pf/run/**/*.jpg'] [--limit N]
-  # 4) 定位读: band 内先用 det.onnx 找文本行, 再按余量裁剪逐行 rec
-  #    (装饰字体卡名的正确读法, 见 2026-10-13 实验结论)
-  python tools/_probe_ocr_offline.py locate <图> x0,y0,x1,y1 [--pad-x 6] [--pad-y 12]
+  # 4) 定位读: band 内先用 det.onnx 找文本行 (**默认放大 2x 再 det**), 再按余量裁剪逐行 rec
+  #    (文字读取标准做法, 见 pf_bot.TEXT_PAD_* 与本文件 DetLocator 注释)
+  python tools/_probe_ocr_offline.py locate <图> x0,y0,x1,y1 [--ratio 0.75] [--upscale 2] [--pad-x 10]
 
 注意: 探针结论只是"这张留档帧读出来是什么", 不等于实机时序 —— 实机路径仍需
 用户在场时验证 (见 PF_BOT.md §6.1)。
@@ -114,12 +114,32 @@ class DetLocator:
         out.sort(key=lambda b: b[1])
         return out
 
-    def read(self, ocr, img_bgr, roi, pad_x=6, pad_y=12):
-        """逐行裁剪后 rec。返回 [(框, 文本)]; 余量默认取自实验最优值。"""
+    def read(self, ocr, img_bgr, roi, pad_x=10, pad_y=None, ratio=0.75, upscale=2):
+        """逐行裁剪后 rec。返回 [(框, 文本)] (**全图坐标**)。
+
+        ⚠️ 本类的框**不做 unclip** (紧框, 同样文本框高 8px), 而 MAA 的 det 框自带
+        unclip (框高 ≈1.87 x 字高) —— 所以**这边最优 ratio 是 0.75, pf_bot 那边是 0.2**,
+        两个数字不要互相拉平, 各自对着自己的框高标定。
+
+        余量与放大倍数取自 2026-10-13 跨屏实测:
+          横向 pad_x 固定 10px; 纵向 = ratio x 行框高 (即 crop 高约 2.5x 字高);
+          pad_y 给定时按像素用, 否则走 ratio。
+          行框在 upscale 倍放大图上取 —— 小字时 1x 的框会碎
+          ('FILIA' 只框出 19x8), 2x 后完整, 3x 反而过紧。
+        """
+        x0, y0, x1, y1 = roi
+        sub = img_bgr[y0:y1, x0:x1]
+        k = max(1, int(upscale))
+        if k > 1 and getattr(sub, "size", 0):
+            sub = cv2.resize(sub, (sub.shape[1] * k, sub.shape[0] * k),
+                             interpolation=cv2.INTER_CUBIC)
         h, w = img_bgr.shape[:2]
         res = []
-        for bx0, by0, bx1, by1 in self.boxes(img_bgr, roi):
-            crop = img_bgr[max(0, by0 - pad_y):min(h, by1 + pad_y),
+        for bx0, by0, bx1, by1 in self.boxes(sub, None):
+            bx0, by0 = bx0 // k + x0, by0 // k + y0
+            bx1, by1 = bx1 // k + x0, by1 // k + y0
+            py = int(round(ratio * (by1 - by0))) if pad_y is None else pad_y
+            crop = img_bgr[max(0, by0 - py):min(h, by1 + py),
                            max(0, bx0 - pad_x):min(w, bx1 + pad_x)]
             res.append(((bx0, by0, bx1, by1), ocr.read(crop)))
         return res
@@ -141,8 +161,11 @@ def main(argv):
     ap.add_argument("args", nargs="*", help="ROI(x0,y0,x1,y1) / bands 的 x0 x1 y0 y1 / 探针词")
     ap.add_argument("--glob", dest="glob", default="")
     ap.add_argument("--limit", type=int, default=60)
-    ap.add_argument("--pad-x", dest="pad_x", type=int, default=6)
-    ap.add_argument("--pad-y", dest="pad_y", type=int, default=12)
+    ap.add_argument("--pad-x", dest="pad_x", type=int, default=10)
+    ap.add_argument("--pad-y", dest="pad_y", type=int, default=None,
+                    help="纵向余量像素; 不给则用 --ratio x 行框高")
+    ap.add_argument("--ratio", type=float, default=0.75, help="纵向余量 = 比例 x 行框高")
+    ap.add_argument("--upscale", type=int, default=2, help="det 前放大倍数")
     a = ap.parse_args(argv)
     ocr = RecOCR()
     img = load(a.image)
@@ -166,8 +189,10 @@ def main(argv):
     if a.mode == "locate":
         roi = tuple(int(v) for v in a.args[0].split(","))
         det = DetLocator()
-        rows = det.read(ocr, img, roi, pad_x=a.pad_x, pad_y=a.pad_y)
-        print(f"  det 行数 {len(rows)} (pad_x={a.pad_x} pad_y={a.pad_y})")
+        rows = det.read(ocr, img, roi, pad_x=a.pad_x, pad_y=a.pad_y,
+                        ratio=a.ratio, upscale=a.upscale)
+        pad = f"pad_y={a.pad_y}" if a.pad_y is not None else f"ratio={a.ratio}"
+        print(f"  det 行数 {len(rows)} (pad_x={a.pad_x} {pad} upscale={a.upscale})")
         for box, txt in rows:
             print(f"  {box} -> {txt!r}")
         return 0

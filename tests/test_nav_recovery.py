@@ -71,6 +71,9 @@ def _make_bot(monkeypatch, frames):
     bot.battle_speed_level = lambda img: 3 if img == "battle" else 0
     bot.find_modal_x_cv = lambda img: None
     bot.find_popup_x = lambda img: None
+    # 存档确认弹窗判据 (2026-10-13 接入 goto_pf_hub 链) 走 OCR, 会碰真 tasker;
+    # 本测试的桩图是字符串, 同 match_tpl/find_popup_x 一并桩掉。
+    bot.confirm_save_team_popup = lambda img: False
     ctrl = _Ctrl()
     bot.controller = ctrl
     monkeypatch.setattr(pf_nav.time, "sleep", lambda s: None)
