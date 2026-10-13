@@ -115,6 +115,7 @@
 | 6.0 | 退出路径 | run()返回后挂25s退出看门狗→MAA销毁卡死则强制 os._exit(0)；修09-27「点停止只留一行日志、端口不还」 |
 | 6.1 | step优先级 | 弹窗X→队伍存档确认→服务器错误→详情→hub→防守队弹窗→防守编辑器(CONFIRM)→REFRESH→编队→VS→结算→未知 |
 | 6.1 | KEEP STREAK? | 关X；不点CONFIRM／WATCH AD |
+| 6.1 | 文本读取 (2026-10-13 实机标定) | **文字**一律 `PfBot.ocr_text_line`：det 在宽松 ROI 定位行 → 取面积最大行 → 按余量重裁 → rec（找不到行回落 `ocr_text`）。**数值** ROI（分数/倍率）仍走 rec-only 的 `ocr_text`。余量：`TEXT_PAD_X=10`（横向是主杠杆）+ `TEXT_PAD_Y_RATIO=0.2`（相对框高，MAA 框自带 unclip）+ `TEXT_DET_UPSCALE=2`（det 前放大）。⚠️ 离线复刻 `_probe_ocr_offline.DetLocator` **不做 unclip**，那边最优 ratio 为 0.75，**两者勿拉平**。实测 106 passed；口径见 MEMORY.md「读卡 OCR」。**仓库场景**：卡名（装饰大字）经 `tools/data/variants.json` 映射角色类型，比硬读小字号名条更稳 —— 见 `tools/pf_fighters.py`、复跑 `tools/_probe_roster.py` |
 | 6.1 | 队伍存档确认弹窗 (2026-10-13) | 「Save changes to your Team?」（无 X，NO/YES）：带未保存改动离开防守队编辑器时弹，压住大厅菱形与编辑器 CONFIRM。正文分带 OCR 单探针（`SAVECHANGES`/`YOURTEAM`，band 400,305-870,375）+ 点 YES(751,441) 保存；**判据+动作收口 `PfBot.confirm_save_team_popup`**，五条链共用（`pf_scene.wait_hall`／`dismiss_popup_once`／`pf_nav.goto_pf_hub`／`pf_bot.step`／`pf_bot.wait_battle_end`），只写 `if self.confirm_save_team_popup(img): continue`；连点 3 次不消失=判据误报/点击失效 → 置 give-up 交回各链逃逸（换场次复位）。离线复刻 MAA rec-only OCR 验证：正样本命中、180 张负样本帧零误报；**实机路径未验证**（用户 2026-10-13 口径：先不入测试） |
 | 6.1 | 未知界面 | 等待→交替返回／右上X；单按左上可能开OPTIONS |
 | 6.1 | 防守队入口 | 弹窗(点OK进)与编辑器(CONFIRM)两个入口共用；编辑器页无OK, 乱点会碰名册 |
@@ -296,6 +297,8 @@ tailscale serve --https=8444 off
 | 31 | 防守队编辑器**无能量黄钉**（黄钉是出战队概念）→ 常规编队把能量全读 0 空烧到「无可用能量角色」停摆；且确认钮是 CONFIRM 不是 FIGHT/CONTINUE, 老代码报「都找不到」 | step() 加 CONFIRM 分支（排在 DRAGHINT 前）+ setup_defense_team 双入口 + 新模板 pf/defense_confirm.png；见 §6.1/§6.4 |
 | 32 | adb_path 指向别项目 platform-tools 后, "adb 同目录"找 MuMuManager 必然落空 → 达标关机失败(09-28 23:54)、「MuMu 未运行」假报(01:17/06:04)、冷启动废 | config.json 加 `"mumu_dir"`（mumu_paths 同目录探测失败后回落）；实测恢复 start_finished 探测与关机 |
 | 33 | 「Save changes to your Team?」存档确认弹窗**无 X**（NO/YES）→ `find_any_popup_x` 三路关闭钮全不认它；它压住大厅菱形, wait_hall 连点 3 次房子后 150s 超时「未回到大厅」（01:47 实测，帧 debug/pf/stuck_1013.png），流水线全链卡死需人工点 YES | 走正文判据而非图形: `PfBot.confirm_save_team_popup`（band 400,305-870,375 探针 `SAVECHANGES`/`YOURTEAM` → 点 YES(751,441) 保存），五条链共用（末条 `wait_battle_end` 为 2026-10-13 复核「角色场→切 Diamond→进→调防守队→存档」完整流程时补接：它是 `setup_defense_team` 点 CONFIRM 后的下一跳，漏掉只能干等 300s 超时）；判据+动作收口一处，避免 step/goto_pf_hub 两表不同步；见 §6.1/§6.14 |
+| 34 | `ocr_lines` 按 `getattr(box,'x',0)` 读 det 框，而 MAA 的 **`OCRResult.box` 是 `[x,y,w,h]` 列表** → 所有框退化成 `(0,y0,1,y1)`、余量恒 2px、重裁形同虚设；**文本照样读得出**（rec 是 MAA 自己按 det 框做的）⇒ 不报错、**静默降级**，只有把框打印出来才看得见（2026-10-13 角色仓库验证时发现） | 新增 `PfBot._ocr_box` 按序列解包（兼容对象式绑定）；框恢复 `(141,555,52,15)`。凡"拿框再加工"的代码都要先确认解包对不对 |
+| 35 | 文本读取余量写死像素：旧 `TEXT_PAD_X/Y=6/12`。而 MAA 的 det 框**自带 unclip**（`box_h ≈ 1.87×字高`），固定 12px 在字高 8px 的名条上 = crop 4 倍字高 → 归一化到 rec 的 48px 后文字反而变小，末字丢（`PAINWHEEL`→`PAINWHEE`） | 改 `TEXT_PAD_X=10`（横向才是主杠杆: MAA 框横向偏紧，`FILIA` 只框 26px → `ALIA`）+ `TEXT_PAD_Y_RATIO=0.2`（相对框高）+ `TEXT_DET_UPSCALE=2`（1x 93/2x 100/3x 96%）。实测口径见 §6.1「文本读取」与 MEMORY.md「读卡 OCR」 |
 
 ## 9. 常用操作
 
