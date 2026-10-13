@@ -80,6 +80,7 @@
     <button id="subtab-chart" onclick="switchPfSub('chart')">战绩分析</button>
     <button id="subtab-chain" onclick="switchPfSub('chain')">连刷编排</button>
     <button id="subtab-roster" onclick="switchPfSub('roster')">仓库扫描</button>
+    <button id="subtab-coll" onclick="switchPfSub('coll')">收藏统计</button>
   </div>
   <div id="pf-run" class="pf-sub on">
   <div id="runwrap">
@@ -142,13 +143,28 @@
       <button id="roster-refresh" class="mini-btn" onclick="pollRoster(true)" title="只重新读一次进度/结果, 不重新扫描">刷新</button>
       <span id="roster-status" class="chain-status"></span>
     </div>
-    <p class="pool-hint">读卡面<b>上方那条装饰卡名</b>（如 <b>REGALLY BLONDE</b>），再按 <b>variants.json</b> 映射成角色。角色名<b>可重复</b>——同名卡的每一张都各算一张。⚠️ 扫描<b>不自动导航</b>：请先把游戏停在 <b>FIGHTERS（角色仓库）</b> 页再点「开始扫描」，停错页会在开扫前直接报错退出（不会对着主界面乱拖）。</p>
+    <p class="pool-hint">读卡面<b>上方那条装饰卡名</b>（如 <b>REGALLY BLONDE</b>），再按 <b>variants.json</b> 映射成角色。角色名<b>可重复</b>——同名卡的每一张都各算一张。⚠️ 扫描<b>不自动导航</b>：请先把游戏停在 <b>FIGHTERS（角色仓库）</b> 页再点「开始扫描」，停错页会在开扫前直接报错退出（不会对着主界面乱拖）。💡 <b>加速</b>：先在游戏里点右下<b>漏斗</b>筛选（比如只看钻石）再扫 —— 扫描器自适应网格，卡少一半拖拽就少一半。</p>
     <div id="roster-kpi"></div>
     <div class="chain-cols">
       <section class="dpanel"><div class="dpanel-title">角色分布</div><div id="roster-chars"></div></section>
       <section class="dpanel"><div class="dpanel-title">扫描进度</div><div id="roster-log" class="mono"></div></section>
     </div>
     <section class="dpanel"><div class="dpanel-title">同名多张 · 冲突</div><div id="roster-dups"></div></section>
+  </div>
+  </div>
+  <div id="pf-coll" class="pf-sub">
+  <div id="collwrap">
+    <div class="chain-bar">
+      <button id="coll-refresh" class="mini-btn primary" onclick="loadCollection(true)" title="重新聚合落盘的 roster.json (扫描完成后会自动刷新)">刷新统计</button>
+      <button id="coll-export" class="mini-btn" onclick="exportShowcase()" title="单文件炫耀页: 数据全部内嵌, 发给谁都能直接双击打开">导出炫耀页</button>
+      <span id="coll-status" class="chain-status"></span>
+    </div>
+    <section id="coll-score" class="dpanel" hidden>
+      <div id="coll-banner"></div>
+    </section>
+    <div id="coll-filters" class="coll-filters" hidden></div>
+    <div id="coll-meta" class="coll-meta" hidden></div>
+    <div id="coll-grid" class="coll-grid"></div>
   </div>
   </div>
 </main>

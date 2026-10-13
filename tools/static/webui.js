@@ -101,13 +101,14 @@ function switchTab(t) {
 }
 function switchPfSub(s) {
   pfSub = s;
-  for (const n of ['run','chart','chain','roster']) {
+  for (const n of ['run','chart','chain','roster','coll']) {
     document.getElementById('subtab-'+n).classList.toggle('on', n===s);
     document.getElementById('pf-'+n).classList.toggle('on', n===s);
   }
   if (s === 'chart') pollHistory();
   if (s === 'chain') loadChain();
   if (s === 'roster') pollRoster();
+  if (s === 'coll') loadCollection();
 }
 /* 目标 ETA: 速率来自 /api/summary (本场记分点, 相邻间隔>180s 的空闲段不计入),
    剩余时间在前端用最新 state 的 score 现算 —— 比记分点最后一点新鲜。
@@ -882,6 +883,136 @@ function renderRoster(d) {
     pane.textContent = lines.length ? lines.join('\n') : '（暂无进度）';
     pane.scrollTop = pane.scrollHeight;
   }
+  // 扫描刚完成 -> 收藏统计页签自动重算 (聚合数据源就是落盘的 roster.json)
+  if (renderRoster._prev === 'running' && d.state === 'done') loadCollection(true);
+  renderRoster._prev = d.state;
+}
+
+/* ===== 收藏统计 (2026-10-14) =====
+   数据 = 落盘 roster.json 经服务端聚合 (pf_collection): 同变体多张 = count,
+   介绍来自官方本地化表 (144/306 全覆盖老变体, 新变体给 SA 名 + 标注)。
+   ⚠️ 元素只显示整数 id —— 整数->元素名的口径未核实, 别在前端猜名字。 */
+const collState = { tier: -1, char: '', element: -1 };
+let collData = null;
+
+async function loadCollection(force) {
+  const st = document.getElementById('coll-status');
+  if (st && force) st.textContent = '聚合中…';
+  let d;
+  try { d = await (await uiFetch('/api/roster/collection')).json(); }
+  catch (e) { if (st) st.textContent = '读取失败'; return; }
+  if (!d.ok) {
+    collData = null;
+    document.getElementById('coll-score').hidden = true;
+    document.getElementById('coll-filters').hidden = true;
+    document.getElementById('coll-meta').hidden = true;
+    document.getElementById('coll-grid').innerHTML =
+      `<p class="pool-hint">🔒 ${esc(d.error || '还没有扫描结果')}</p>`;
+    if (st) st.textContent = '';
+    return;
+  }
+  collData = d;
+  if (st) st.textContent = '';
+  renderCollection();
+}
+
+const TIER_NAME = { 3: '钻石', 2: '黄金', 1: '白银', 0: '青铜' };
+const GRADE_COLOR = { S: 'var(--dia, #8fd4ff)', A: '#b08cff', B: 'var(--gold, #ffd54a)',
+                      C: '#9fd48a', D: '#d29b6a', E: 'var(--dim, #8b90a0)' };
+
+function collChip(label, on, onclick, title) {
+  const b = document.createElement('button');
+  b.className = 'coll-chip' + (on ? ' on' : '');
+  b.textContent = label;
+  if (title) b.title = title;
+  b.onclick = onclick;
+  return b;
+}
+
+function renderCollectionFilters(agg) {
+  const box = document.getElementById('coll-filters');
+  box.innerHTML = '';
+  const apply = () => { renderCollection(); };
+  box.appendChild(collChip('全部', collState.tier === -1 && collState.element === -1 && collState.char === '',
+    () => { collState.tier = -1; collState.element = -1; collState.char = ''; apply(); }));
+  for (const t of [3, 2, 1, 0]) {
+    if (!agg.by_tier[String(t)]) continue;      // 没有的稀有度不显示 (跟随收藏内容)
+    box.appendChild(collChip(TIER_NAME[t], collState.tier === t,
+      () => { collState.tier = collState.tier === t ? -1 : t; apply(); }));
+  }
+  const elems = Object.keys(agg.by_element).map(Number).sort((a, b) => a - b);
+  for (const e of elems) {
+    // 元素名口径未核实: chip 只标 id, hover 给一个代表卡名让用户自己对
+    const rep = agg.variants.find(v => v.element === e);
+    box.appendChild(collChip(`元${e}`, collState.element === e,
+      () => { collState.element = collState.element === e ? -1 : e; apply(); },
+      rep ? `如: ${rep.fandom} (${rep.char})` : ''));
+  }
+  const sel = document.createElement('select');
+  sel.className = 'coll-select';
+  sel.add(new Option('全部角色', ''));
+  for (const c of Object.keys(agg.by_char).sort()) sel.add(new Option(c, c));
+  sel.value = collState.char;
+  sel.onchange = () => { collState.char = sel.value; apply(); };
+  box.appendChild(sel);
+}
+
+function renderCollection() {
+  if (!collData) return;
+  const { agg, score: sc } = collData;
+  const banner = document.getElementById('coll-banner');
+  banner.innerHTML =
+    `<div class="coll-badge">` +
+    `<span class="coll-letter" style="color:${GRADE_COLOR[sc.grade] || ''}">${esc(sc.grade)}</span>` +
+    `<span class="coll-words"><b>${esc(sc.grade_title)}</b><i>收藏评分</i></span>` +
+    `<span class="coll-total">${esc(sc.total)}</span></div>` +
+    `<div class="coll-bars">` +
+    [['完成度', sc.completeness], ['稀有度', sc.rarity], ['角色覆盖', sc.coverage]]
+      .map(([k, v]) => `<div class="coll-bar"><label>${esc(k)} <i>${v}%</i></label>` +
+        `<progress value="${v}" max="100"></progress></div>`).join('') +
+    `</div>`;
+  document.getElementById('coll-score').hidden = false;
+
+  renderCollectionFilters(agg);
+
+  const vs = agg.variants.filter(v =>
+    (collState.tier < 0 || v.tier === collState.tier) &&
+    (collState.element < 0 || v.element === collState.element) &&
+    (!collState.char || v.char === collState.char));
+  const nCards = vs.reduce((s, v) => s + v.count, 0);
+  const meta = document.getElementById('coll-meta');
+  meta.hidden = false;
+  meta.innerHTML =
+    `<b>${agg.total_cards}</b> 张卡 · <b>${agg.variant_kinds}</b> 个变体 · ` +
+    `<b>${sc.chars_covered}</b>/18 角色` +
+    `<span class="coll-meta-sep">|</span>当前筛选: <b>${vs.length}</b> 变体 · <b>${nCards}</b> 张` +
+    `<span class="coll-meta-sep">|</span>` +
+    ['3','2','1','0'].map(t => agg.by_tier[t]
+      ? `<span class="coll-tier t${t}">${TIER_NAME[t]} ${agg.by_tier[t]}</span>` : '').join(' ');
+
+  const grid = document.getElementById('coll-grid');
+  grid.innerHTML = vs.length ? '' : '<p class="pool-hint">该筛选下没有卡片。</p>';
+  for (const v of vs) {
+    const q = v.quote_zh || v.quote_en || v.sa_desc || '';
+    const card = document.createElement('div');
+    card.className = `coll-card t${v.tier}`;
+    const tip = (v.sa_desc ? `${v.sa_title}\n${v.sa_desc}` : v.sa_title) +
+      (v.quote_en ? `\n— ${v.quote_en}` : '');
+    card.innerHTML =
+      `<span class="coll-cnt">×${v.count}</span>` +
+      `<b>${esc(v.fandom)}</b><span class="coll-rk">${TIER_NAME[v.tier]}</span>` +
+      `<div class="coll-sub">${esc(v.char || '?')} · 元素${v.element ?? '?'}` +
+      (v.attack ? ` · 攻${v.attack} 血${v.life}` : '') + `</div>` +
+      `<div class="coll-sa">SA: ${esc(v.sa_title)}${v.sa_official ? '' : ' <i title="官方文案表缺这条, 能力名从数据键推导">(推导)</i>'}</div>` +
+      (q ? `<div class="coll-q">“${esc(q)}”</div>` : '');
+    card.title = tip;
+    grid.appendChild(card);
+  }
+}
+
+function exportShowcase() {
+  if (!collData) { showNotice('还没有扫描结果 —— 先去「仓库扫描」页签扫一遍'); return; }
+  window.open(UI_BASE + 'api/roster/export', '_blank');
 }
 document.getElementById('arena-pool').addEventListener('click', e => {
   const blk = e.target.closest('.arena-block');
