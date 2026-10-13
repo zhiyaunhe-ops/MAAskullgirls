@@ -95,6 +95,8 @@ public final class SettleLoop {
     private volatile long fxGateUntil = 0;
     /** 连点次数 (观察线程日志里报) */
     private volatile int fxTaps = 0;
+    /** 落点体检是否**拦车** (config.fast.tap_check, 默认 false = 只提示); 见 ③b */
+    private volatile boolean fxTapCheck = false;
     /** 本线程跑的是不是 fast 分支 — 状态快照里区分 mode */
     private volatile boolean fastOn = false;
 
@@ -438,6 +440,10 @@ public final class SettleLoop {
         final int maxMinutes = sub(c, "run").optInt("max_minutes", 0);
         final JSONArray fxy = fx.optJSONArray("xy");
         parseFightCfg(c);                     // FIGHT 追踪判据 (观察线程用)
+        /* 落点体检开关 — **默认关** (2026-10-14): fast 的契约是盲点, 用户要的只有
+         * "弹窗 + 大保底"。开着时"落点那格没匹配到结算按钮"会立刻停车; K70 实测它误杀
+         * (带 FAVORITE 的三按钮结算页, 落点那格其实是 REMATCH 只是模板对不上)。 */
+        fxTapCheck = fx.optBoolean("tap_check", false);
 
         SgmLog.i("快", "快速连点模式 — 连点 " + tapMs + "ms / 观察 " + obsMs + "ms / 落点 "
                 + (fxy != null && fxy.length() >= 2
@@ -448,6 +454,7 @@ public final class SettleLoop {
                 + " / 剥弹窗后找 FIGHT "
                 + (fightWaitMs > 0 ? (fightWaitMs / 1000) + "s (tpl=" + fightTpl + " th=" + fightTh + ")"
                                    : "关")
+                + " / 落点体检 " + (fxTapCheck ? "开 (不匹配即停车)" : "关 (只提示)")
                 + " — 关掉改 config.fast.enable=false");
 
         Thread obs = new Thread(
@@ -485,6 +492,10 @@ public final class SettleLoop {
      *      显示 VICTORY! 好几秒); 时间下限 round_gap_s 再兜一层, 防换页闪断被采样到;
      *   ③ 停车: 每日上限 (countRound 内)、单次最长、以及**无进展** (idle_stop_s 内一场没计到,
      *      说明连点没把流程推下去 —— 多半已经脱离战斗界面)。
+     *
+     * ⚠️ 用户口径 (2026-10-14): **fast 只负责"剥弹窗 + 大保底"** —— 连点本身是盲点,
+     * 不该因为"落点那格没匹配到结算按钮"就停车 (K70 上它误杀了带 FAVORITE 的三按钮
+     * 结算页)。所以落点体检默认只记日志, 要它拦车得显式开 fast.tap_check。
      */
     private void observeFast(AtomicBoolean run, JSONObject c, int cap, int obsMs, int gapS,
                              int idleS, int pauseMs, int maxMinutes) {
@@ -499,6 +510,7 @@ public final class SettleLoop {
         long lastBig = System.currentTimeMillis();     // 上次计场时刻 (无进展停车看它)
         boolean bigLatch = false;                      // 大字 latch: 中间见过"无大字"才允许再计
         long lastLog = 0;
+        long lastWarn = 0;                             // 落点体检"只提示"模式的节流 (免得每帧刷屏)
         String lastSeen = "";
         int frames = 0, pops = 0;
         int homeSlot = -1;                             // 落点落在第几格 (体检用); -1 = 不在任何槽里
@@ -611,26 +623,40 @@ public final class SettleLoop {
                         + " 已连点 " + fxTaps + " 次 / 剥弹窗 " + pops + " 次 / 本轮 " + rounds + " 场");
             }
 
-            /* ③b 落点体检 —— 这条是**真的会拦车**的, 判据精确到"落点那一格"。
+            /* ③b 落点体检 —— **默认只提示, 不拦车** (config.fast.tap_check, 默认 false)。
              *
              * 快速连点唯一的假设是「落点那格正是 CONTINUE 或 REMATCH」。一旦观察到
-             * **结算按钮过阈了、但不在落点那一格**, 说明中间那颗是别的按钮
-             * (有 SELL ALL / HIDE STATS 的那版奖励页中间就是 SELL ALL —— 盲点它 = 卖道具),
-             * 此时继续盲点有害无益 ⇒ 立刻停车。
+             * **结算按钮过阈了、但不在落点那一格**, 那颗可能是别的按钮
+             * (有 SELL ALL / HIDE STATS 的那版奖励页中间就是 SELL ALL —— 盲点它 = 卖道具)。
              *
-             * 战斗中/过场帧一个都不过阈 ⇒ 不触发, 不会误停。 */
+             * ⚠️ 2026-10-14 K70 实测: 这条**误杀**。结算页有两版布局 —— 带 FAVORITE 的那版
+             *   是三按钮 (FAVORITE/REMATCH/CONTINUE), CONTINUE 被挤到第 3 格 (峰值 0.95),
+             *   而落点那格其实是 REMATCH、只因按钮变窄模板对不上 (0.39 < 0.72) ⇒ 被判
+             *   "落点不是结算按钮" ⇒ 半分钟内连停 5 次。可**盲点 REMATCH 就是再打一场**,
+             *   是完全正常的推进 —— 停车才是错的那个。
+             *
+             * 所以默认改成只记日志: 落点那格没匹配到, 不等于点在有害的东西上。
+             * 真想让它在"落点那格不是结算按钮"时立刻停车 ⇒ 开 fast.tap_check=true。 */
             if (homeSlot >= 0) {
                 boolean here = rp[homeSlot] >= minSim || cp[homeSlot] >= minSim;
                 int other = -1;
                 for (int i = 0; i < rp.length; i++)
                     if (i != homeSlot && (rp[i] >= minSim || cp[i] >= minSim)) { other = i; break; }
                 if (!here && other >= 0) {
-                    Graph.cursor("fxidle");
-                    SgmLog.i("!!", "落点体检不通过 → 停车: 落点(第 " + (homeSlot + 1) + " 格)不是结算按钮, "
-                            + "而第 " + (other + 1) + " 格有。盲点它会点到别的按钮 (SELL ALL 之类)。"
-                            + " | rematch" + fmt(rp) + " continue" + fmt(cp));
-                    run.set(false);
-                    break;
+                    if (fxTapCheck) {
+                        Graph.cursor("fxchk");
+                        SgmLog.i("!!", "落点体检不通过 → 停车: 落点(第 " + (homeSlot + 1) + " 格)不是结算按钮, "
+                                + "而第 " + (other + 1) + " 格有。盲点它会点到别的按钮 (SELL ALL 之类)。"
+                                + " | rematch" + fmt(rp) + " continue" + fmt(cp));
+                        run.set(false);
+                        break;
+                    }
+                    if (t0 - lastWarn > 60000) {
+                        lastWarn = t0;
+                        SgmLog.i("观", "落点(第 " + (homeSlot + 1) + " 格)没匹配到结算按钮, 第 "
+                                + (other + 1) + " 格有 — 只提示不拦车 (fast.tap_check=false)"
+                                + " | rematch" + fmt(rp) + " continue" + fmt(cp));
+                    }
                 }
             }
 

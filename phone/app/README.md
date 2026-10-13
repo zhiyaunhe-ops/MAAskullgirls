@@ -128,6 +128,6 @@ python3 tools/GraphLayoutProbe.py   # 判定图几何 (纯 java, 无需 Android 
 python3 tools/OverlayProbe.py       # 悬浮条生命周期 + 暂停/继续键名
 python3 tools/UpdateProbe.py        # 更新链路 + APK 两条安装路 (含源码级接线断言)
 python3 tools/PathsProbe.py         # 外部根与授权状态 (6 场景各起一个 JVM)
-python3 tools/MapFightProbe.py      # fast FIGHT 追踪窗口 + map_check 大保底 (源码级)
+python3 tools/MapFightProbe.py      # FIGHT 追踪窗口 + map_check 大保底 + 落点体检默认不拦车 (源码级)
 # tools/StoreProbe.java 手动跑 (纯 JVM + 真 org.json, 见 docs/phone-app.md)
 ```

@@ -104,6 +104,11 @@ public class ConfigActivity extends Activity {
         hint("剥弹窗后常正落在战斗准备界面 (右上角 FIGHT!) — 窗口内持续找 vs_fight: "
                 + "命中就点它进战斗并立刻恢复连点; 到点没见到也恢复连点, 不停车。"
                 + "判据 th/roi 缺省继承 escape 链里 vs_fight 那条。");
+        boolEdit("fast.tap_check", "落点体检不通过就停车 (默认关)", bool("fast", "tap_check", false));
+        hint("关 (默认) = 落点那格没匹配到结算按钮时**只记一条提示, 继续连点**。\n"
+                + "开着会在那种情况立刻停车 — 但实测会误杀: 带 FAVORITE 的三按钮结算页里 "
+                + "CONTINUE 被挤到第 3 格, 落点那格其实是 REMATCH (按钮变窄模板对不上), "
+                + "盲点它一样是再打一场。除非你确认落点是 SELL ALL 那类有害按钮, 别开。");
 
         /* ---- 大保底 ---- */
         section("大保底 (map_check) — 防止已退到大地图还在傻点");

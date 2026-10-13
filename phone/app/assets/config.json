@@ -100,6 +100,8 @@
   "popup_pause_ms": 2000,
   "fight_wait_s": 15,
   "fight_scan_ms": 500,
+  "tap_check": false,
+  "_tap_check": "落点体检是否拦车: false=只记一条提示日志 (默认, fast 的契约是盲点, 只管弹窗+大保底); true=落点那格没匹配到结算按钮而别格有就立刻停车",
   "fight": {
    "tpl": "vs_fight",
    "note": "剥弹窗后 fight_wait_s 内持续找这个模板; th/roi 缺省继承 escape.items 同名项 (vs_fight: th=0.75, roi=[1020,0,260,130]) — 要覆盖就在这里显式写 th/roi"
@@ -447,6 +449,15 @@
        "cond": "idle_stop_s 内一次都没计到场 → 停车 (多半已脱离战斗流程)",
        "cfg": "fast.idle_stop_s",
        "note": "0 = 关"
+     },
+     {
+      "id": "fxchk",
+      "label": "落点体检 (默认关)",
+      "kind": "heal",
+      "lane": 7,
+      "cond": "落点那格没匹配到结算按钮、而别格有 → **默认只记一条提示**; fast.tap_check=true 才停车",
+      "cfg": "fast.tap_check",
+      "note": "2026-10-14 改为默认只提示: 带 FAVORITE 的三按钮结算页里 CONTINUE 被挤到第 3 格, 落点那格其实是 REMATCH (按钮变窄 ⇒ 模板只有 0.39), 盲点它一样是再打一场 —— 停车才是误杀。要拦车得确认落点是 SELL ALL 那类有害按钮"
      }
    ],
    "edges": [
@@ -506,7 +517,12 @@
     },
      {
        "from": "fxbig",
-       "to": "fxidle"
+       "to": "fxchk"
+     },
+     {
+       "from": "fxchk",
+       "to": "fxidle",
+       "on": "默认只提示, 继续"
      },
      {
        "from": "fxidle",

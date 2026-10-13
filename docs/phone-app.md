@@ -119,6 +119,7 @@ curl http://127.0.0.1:8791/log         # app.log
 | `fast` | `fight_wait_s` | 15 | 剥弹窗后**找 FIGHT** 的窗口时长（0=关，见「快速连点模式」） |
 | `fast` | `fight_scan_ms` | 500 | 窗口内的检测间隔（比 observe_ms 密，怕错过 FIGHT） |
 | `fast` | `fight.tpl/th/roi` | vs_fight / 继承 escape 链 | 追踪判据。th/roi 缺省**继承 escape.items 里同名项**（同一素材只标定一次） |
+| `fast` | `tap_check` | **false** | 落点体检是否**拦车**。false = 只记一条提示、继续连点（默认，fast 的契约是盲点，只管弹窗+大保底） |
 | `map_check` | `on` / `every_s` | true / 300 | **大保底**：每 5min 检测一次是否已退到大地图（两个模式都挂） |
 | `map_check` | `tpl` / `th` / `roi` | home / 0.85 / `[0,0,180,70]` | 判据 = 左上角出现 home 房子图标。每次检测都记峰值日志：误停调高 th、漏报调低 |
 
@@ -368,18 +369,24 @@ HUD，而它在 K70 真机上的位置**正好压住中槽中心**（都在 x=64
 - **超时未命中也恢复连点** —— 弹窗后的下一站可能不是战斗页，不干等，绝不因"没等到
   FIGHT"停车。
 
-三条兜底（都在观察线程里，任一条触发就停车）：
+两条兜底（都在观察线程里，任一条触发就停车）：
 
 - **大字去抖**：`latch`（同一屏的大字只算一次 —— 结算页会持续显示 `VICTORY!` 好几秒）
   ＋ 时间下限 `round_gap_s`（1s 采样下换页闪断一般采不到，这条再兜一层）。
 - **无进展停车**：`idle_stop_s` 内一场都没计到 ⇒ 连点没把流程推下去，多半已脱离战斗界面。
-- **落点体检**：观察到「结算按钮过阈了、但**不在落点那一格**」⇒ 中间那颗是别的按钮
-  （典型就是 `SELL ALL`）⇒ 立刻停车。战斗中一个都不过阈，不会误停。
+
+> ⚠️ **2026-10-14 用户口径：fast 只管「弹窗 + 大保底」。** 落点体检（观察到「结算按钮
+> 过阈了、但不在落点那一格」就停车）**默认关**（`fast.tap_check=false`，只记一条提示日志）。
+> 原因：结算页有两版布局，带 `FAVORITE` 的那版是三按钮（FAVORITE / REMATCH / CONTINUE），
+> CONTINUE 被挤到第 3 格（峰值 0.95），而落点那格其实是 **REMATCH** —— 按钮变窄导致老模板
+> 只匹配到 0.39 ⇒ 被判「落点不是结算按钮」⇒ K70 上半分钟内连停 5 次。而**盲点 REMATCH
+> 就是再打一场，完全正常的推进**，停车才是错的那个。除非你确认落点真的是 `SELL ALL`
+> 那类有害按钮，别开这个开关。
 
 ```jsonc
 "fast": { "enable": true, "tap_ms": 300, "observe_ms": 1000,
           "round_gap_s": 5, "idle_stop_s": 300, "popup_pause_ms": 2000,
-          "fight_wait_s": 15, "fight_scan_ms": 500,
+          "fight_wait_s": 15, "fight_scan_ms": 500, "tap_check": false,
           "avoid": [[604, 446, 72, 76]], "avoid_gap": 24 }
 ```
 
@@ -732,18 +739,20 @@ python3 phone/app/tools/PathsProbe.py       # 6/6 场景
 `updateDir()` 跟着 `root` 走。**这条是 2026-10-11「早就授权了却装不了」的根因所在**
 （`Paths.init` 提前返回 ⇒ `legacy()` 恒 false，见该文件头注释）。
 
-`tools/MapFightProbe.py`（纯源码级 + config 一致性）管 **FIGHT 追踪窗口**与**大保底**：
+`tools/MapFightProbe.py`（纯源码级 + config 一致性）管 **FIGHT 追踪窗口**、**大保底**
+与**落点体检默认不拦车**：
 
 ```bash
-python3 phone/app/tools/MapFightProbe.py    # 38 项断言
+python3 phone/app/tools/MapFightProbe.py    # 48 项断言
 ```
 
 它不跑 JVM（SettleLoop 依赖 Shizuku 截屏，桩不出来），改成在**剥了注释的源码**上钉
 运行期测不到的行为：fight 窗口必须在剥弹窗后开启、命中即点并**清两个闸门**立刻恢复
 连点、超时/缺模板只恢复**绝不停车**、th/roi 必须继承 escape 链同名项；map_check 必须
 两个模式都挂、命中先复检一帧、`run.set(false)` 恰好一次且在复检之后、**只停不点**
-（重进等 NavChain）、每次检测记峰值日志；config 侧钉 `map_check.roi` 与 `home_roi`
-同源、素材存在、判定图节点与边不悬空。
+（重进等 NavChain）、每次检测记峰值日志；落点体检必须**默认只提示**（`fast.tap_check`
+读自 config、`run.set(false)` 恰好一次且在 `fxTapCheck` 分支里、提示带节流）；
+config 侧钉 `map_check.roi` 与 `home_roi` 同源、素材存在、判定图节点与边不悬空。
 
 > 2026-10-11 首次跑就抓到一个真 NPE（`sec()` 返回 null）。**探针的价值就在这**: 
 > 这三条缺陷在真机上的表现全是"点了没反应", 不看日志根本分不出是哪一条。

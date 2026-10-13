@@ -144,6 +144,29 @@ def main():
     ck('snapshot 带新状态字段',
        '"fast_fight"' in sl and '"map_checks"' in sl)
 
+    print('== ④ 落点体检默认不拦车 (2026-10-14) ==')
+    ck('fast.tap_check 存在且默认 false',
+       'tap_check' in fx and fx.get('tap_check') is False, 'got=%r' % fx.get('tap_check'))
+    ck('判定图有 fxchk 节点', 'fxchk' in ids)
+    ck('边 fxbig→fxchk 与 fxchk→fxidle 存在',
+       ('fxbig', 'fxchk') in pair and ('fxchk', 'fxidle') in pair)
+    ck('fxTapCheck 从 config 读 (不是写死)',
+       'fxTapCheck = fx.optBoolean("tap_check", false);' in sl)
+    # 体检块: 从 "if (homeSlot >= 0) {" 到下一个 12 空格缩进的 "}"
+    i = sl.find('if (homeSlot >= 0) {')
+    j = sl.find('\n            }', i)
+    blk = sl[i:j] if i >= 0 and j > 0 else ''
+    ck('体检块存在', blk != '')
+    nst = blk.count('run.set(false)')
+    ck('体检块里 run.set(false) 恰好一次 (默认关 ⇒ 只有显式开才停)', nst == 1, 'count=%d' % nst)
+    if nst == 1:
+        ck('那次停车在 fxTapCheck 分支里 (默认关时不执行)',
+           blk.find('run.set(false)') > blk.find('if (fxTapCheck) {'))
+    ck('默认走"只提示"分支 (记日志, 不停车)',
+       '只提示不拦车' in blk and blk.count('SgmLog.i("观"') >= 1)
+    ck('提示有节流 (lastWarn, 免得每帧刷屏)', 'lastWarn' in blk)
+    ck('Graph.cursor 用 fxchk (判定图与实现一致)', 'Graph.cursor("fxchk")' in blk)
+
     print('== %d passed, %d failed ==' % (passed, failed))
     sys.exit(1 if failed else 0)
 
