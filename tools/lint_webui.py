@@ -75,10 +75,14 @@ def main():
     parser.feed((static / "webui.html").read_text(encoding="utf-8"))
     errors = parser.errors
     for reference in parser.references:
-        if not reference.startswith("/static/"):
+        # 前缀两种都收 (2026-10-14): 页面为「托管预览」改造过 UI_BASE (见 webui.js 首行
+        # `const UI_BASE = new URL('.', window.location.href).pathname;`), 资源引用从
+        # `/static/x` 改成了**相对** `static/x` —— 而这里只认前导斜杠, 于是 lint 从那时起
+        # 一直红。红着的 lint 没人跑, 等于这个文件的 id 唯一/顶层重名/语法检查全部失效。
+        if not reference.startswith(("/static/", "static/")):
             errors.append(f"unexpected external asset: {reference}")
             continue
-        target = static / reference.removeprefix("/static/")
+        target = static / reference.removeprefix("/static/").removeprefix("static/")
         if not target.is_file():
             errors.append(f"missing referenced asset: {reference}")
     scripts = sorted(static.glob("*.js"))
