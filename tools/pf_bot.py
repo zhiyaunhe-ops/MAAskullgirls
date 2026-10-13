@@ -160,6 +160,30 @@ LOCK_BANDS = [(390, y, 895, y + 50) for y in range(170, 490, 50)]
 LOCK_PROBES = ("LOCKEDINTO", "OTHERDIFFICULT")
 LOCK_CONTINUE_BTN = (748, 576)
 
+# ---- 「Save changes to your Team?」队伍存档确认弹窗 (无 X, NO/YES, 2026-10-13) ----
+# 正文: "Save changes to your Team?"  按钮 NO(紫蓝) / YES(绿), **无 X**。
+# 触发场景: 带着未保存的改动离开防守队编辑器 (防守设置失败后主循环按返回键那一步)。
+# 取证帧: debug/pf/stuck_1013.png (1280x720, 2026-10-13 01:4x 实测卡死帧)。该帧现场:
+#   弹窗压住防守队编辑器, 编辑器右上 CONFIRM 仍可见 —— 三条逃逸链只认 X 类关闭钮 +
+#   房子/返回, 谁都不认这个无 X 模态 → wait_hall 150s「未回到大厅」, 人工点 YES 才脱困
+#   (用户 2026-10-13 口径: 做成 scene 判据, 出现才做)。
+# 正文分带 OCR 实测 (同 find_defense_popup 思路): band (400,305,870,375) 读出
+#   'Save changes to your Team?'。交叉验证用**离线复刻的 MAA rec-only OCR**
+#   (onnxruntime + assets/resource/base/model/ocr 的 det/rec/keys, 不连设备);
+#   同帧地面真值: YES/NO 按钮读出 'YES'/'NO', 标题行 y300~380 各段均稳定读出;
+#   另 **180 张历史帧 (大厅/hub/编队/结算/扫描) 零误报** (有效帧统计口径: 图高>=400px,
+#   46 张裁切小图按高度过滤)。
+# 按钮面心取该帧按钮行 HSV 绿掩码 (H40-85, S/V>=90) bbox x[671,832] y[414,468]
+#   → 几何中心 (751,441)。中心像素压在 'YES' 字形上属正常 (16x16 绿占比 0.06,
+#   纯绿在字形两侧: (700,441)/(800,441) 实测 1.00) —— 字形在按钮命中区内, 点它等于点按钮;
+#   2026-10-13 现场人工点 (775,432) 生效即同一块按钮。
+# 点 YES = **保存**改动 (现场人工点的就是它, 保住左1 已拖入的合规角色);
+#   NO = 丢弃改动, 面心 (527,441) 留档不用 —— 弹窗由本 bot 自己的编队改动触发,
+#   而那份改动 (左1 放合规角色) 正是要保住的目标配置。
+SAVE_TEAM_BANDS = [(400, 305, 870, 375)]
+SAVE_TEAM_PROBES = ("SAVECHANGES", "YOURTEAM")
+SAVE_TEAM_YES_BTN = (751, 441)
+
 
 class LinkDead(RuntimeError):
     """自愈后仍拿不到截图 —— MAA 内部作业已僵死 (kill-server 死等), 只能换进程重生。"""
@@ -219,6 +243,8 @@ class PfBot(SceneNav):
         self._filter_cleared = False  # 本次开始运行以来是否已归位过筛选 (首次编队)
         self._battle_auto_checked = False  # 首场战斗已做过自动战斗/速度检查
         self._defense_done = False         # 本场次已处理过「先设防守队」弹窗 (每 PF 一次)
+        self._save_team_tries = 0          # 队伍存档确认弹窗连点数 (见 confirm_save_team_popup)
+        self._save_team_give_up = False    # 连点 3 次不消失 -> 本场次不再处理该弹窗
         self.fights_since_rest = 0    # 距上次休息的已结算场数
         self._goal_closed = False     # 本次运行是否已因达标关过模拟器 (只做一次)
         self._stuck_shot = None       # 卡住未完成的截图作业 (见 _screencap_bounded)
@@ -397,6 +423,49 @@ class PfBot(SceneNav):
         parts = [self.ocr_text(img, roi) for roi in LOCK_BANDS]
         norm = "".join(ch for ch in " ".join(parts).upper() if ch.isalpha())
         return any(p in norm for p in LOCK_PROBES)
+
+    def find_save_team_popup(self, img) -> bool:
+        """「Save changes to your Team?」队伍存档确认弹窗是否在前台 (正文文字判定)。
+
+        与 find_defense_popup / find_lock_popup 同款: 该弹窗**无 X**, 逃逸链的三路
+        关闭钮全都不认它, 只能认正文。它压住防守队编辑器 (右上 CONFIRM 仍可见),
+        所以判据必须排在 CONFIRM/REFRESH 等页面判据**之前**。
+        """
+        parts = [self.ocr_text(img, roi) for roi in SAVE_TEAM_BANDS]
+        norm = "".join(ch for ch in " ".join(parts).upper() if ch.isalpha())
+        return any(p in norm for p in SAVE_TEAM_PROBES)
+
+    def confirm_save_team_popup(self, img=None) -> bool:
+        """scene 判据命中才动作: 点 YES 保存改动并返回 True; 未命中零副作用返回 False。
+
+        判据 + 动作**收口在同一个方法**, 四条链共用 (2026-10-13 立):
+          pf_scene.wait_hall / pf_scene.dismiss_popup_once /
+          pf_nav.goto_pf_hub / pf_bot.step
+        各调用点只写 `if self.confirm_save_team_popup(img): continue`, 不再各写一份
+        「认弹窗」+「点按钮」—— step 与 goto_pf_hub 两张判据表不同步是本仓库的
+        老病 (见 find_popup_x 2026-10-08 注), 收口是唯一可持续写法。
+
+        防呆: 连点 3 次 YES 弹窗仍在 → 判为点击没生效/判据误报, 置 _save_team_give_up
+        后返回 False, 交回各链自身的逃逸 (返回键/房子/未知界面), 不原地无限点。
+        该标志在换场次时复位 (见 run() 的 _defense_done 同处)。
+        """
+        if self._save_team_give_up:
+            return False
+        img = self.snap("队伍存档确认") if img is None else img
+        if not self.find_save_team_popup(img):
+            self._save_team_tries = 0
+            return False
+        self._save_team_tries += 1
+        if self._save_team_tries > 3:
+            STATE.log("队伍存档确认弹窗 (Save changes to your Team?) 连点 3 次 YES 仍在, "
+                      "停止处理, 交回逃逸链 (看 run/ 最新帧确认)", "err")
+            self._save_team_give_up = True
+            return False
+        STATE.log(f"队伍存档确认弹窗 (Save changes to your Team?, 无 X): 点 YES 保存改动 "
+                  f"@ {SAVE_TEAM_YES_BTN} (第 {self._save_team_tries} 次)", "warn")
+        self._tap(*SAVE_TEAM_YES_BTN)  # 驻留式点击: 模态面板吃掉零时长 post_click
+        time.sleep(2.0)
+        return True
 
     def setup_defense_team(self) -> bool:
         """防守队弹窗/编辑器: (弹窗时) 点 OK → 左1 放合规角色 → CONFIRM 确认。
@@ -1411,6 +1480,8 @@ class PfBot(SceneNav):
                 STATE.status = "RUNNING"
                 self._filter_cleared = False   # 每次(重)开始: 首次编队重新按设置归位筛选
                 self._defense_done = False     # 换场次: 防守队弹窗重新允许触发 (每 PF 一次)
+                self._save_team_give_up = False  # 换场次: 队伍存档弹窗处理权重开 (见该方法注)
+                self._save_team_tries = 0
                 # 自动战斗/速度检查随每次「开始」复位 (2026-10-02 用户口径: 旧版每进程
                 # 只查首场, 开始之间手动关过 auto 或重开过游戏就查不到了)。
                 self._battle_auto_checked = False
@@ -1490,6 +1561,13 @@ class PfBot(SceneNav):
             STATE.log("弹窗 (能量/streak/OPTIONS), 关闭", "warn")
             self.controller.post_click(*x).wait()
             time.sleep(1.5)
+        elif self.confirm_save_team_popup(img):
+            # 队伍存档确认弹窗「Save changes to your Team?」(无 X, NO/YES):
+            # 它压住防守队编辑器, 而编辑器右上 CONFIRM 在遮罩下**仍能命中** ——
+            # 必须排在 CONFIRM/REFRESH 等页面判据之前, 否则会对着被遮住的 CONFIRM
+            # 空点 (2026-10-13 卡死帧 debug/pf/stuck_1013.png 取证)。
+            # 无 X 模态不在 find_popup_x 的覆盖表内, 只能靠正文判据认 (同锁定弹窗)。
+            self.unknown_tries = 0
         elif self.find_server_error(img):
             ok = self.find_server_error(img)
             self.unknown_tries = 0

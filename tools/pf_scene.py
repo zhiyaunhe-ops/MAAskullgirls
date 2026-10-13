@@ -223,8 +223,8 @@ class PfScene:
     def wait_hall(self) -> tuple[int, int]:
         """等大厅 (PRIZE FIGHTS 菱形可见), 返回菱形中心。
 
-        优先级: 弹窗通用X → 促销弹窗X → 结算CONTINUE → 大厅菱形 → 房子回家。
-        吸附位不固定 → 全屏搜。
+        优先级: 队伍存档确认(无X) → 弹窗通用X → 促销弹窗X → 结算CONTINUE →
+        大厅菱形 → 房子回家。吸附位不固定 → 全屏搜。
 
         通用 X 放最前: 冷启动时会连着弹一串模态弹窗, 实测 2026-09-16 是
         DAILY LOGIN BONUS (X@832,30) 关掉后紧跟 HEADLINER DAILY PASS
@@ -240,6 +240,13 @@ class PfScene:
         while time.time() - t0 < HALL_TIMEOUT:
             n += 1
             img = self.snap()
+            # 队伍存档确认弹窗「Save changes to your Team?」(无 X, NO/YES) 先单独判掉:
+            # 该模态压住大厅菱形, 而 find_any_popup_x 的三路关闭钮全不认它 ——
+            # 2026-10-13 实测 (debug/pf/stuck_1013.png): 逃逸链对着它点了 150s 房子
+            # 才超时。判据+动作收口在 PfBot.confirm_save_team_popup, 四条链共用。
+            if self.bot.confirm_save_team_popup(img):
+                last_modal, modal_streak = None, 0
+                continue
             # 统一走 find_any_popup_x: 之前只认 find_modal_x_cv + TPL_SCENE_X,
             # KEEP STREAK 的 X (960,211) 那两路都认不出 → 漏检 150s 超时。
             hit = self.find_any_popup_x(img)
@@ -344,6 +351,8 @@ class PfScene:
           - 模态 X     (ROI_MODAL_X, cv2 直算, 方/圆两种样式)
           - 通用弹窗 X  (pf_bot.find_popup_x: 能量/streak/OPTIONS)  ← 09-19 补接
           - 促销弹窗 X  (ROI_SCENE_X)
+        另有**无 X** 的「Save changes to your Team?」存档确认弹窗 (2026-10-13):
+        正文判据 + 点 YES, 走 PfBot.confirm_save_team_popup (四链共用), 排在通用 X 之前。
         这是 wait_hall 逃逸链的**可复用内核** —— goto_pf 也要用它, 否则会出现
         「wait_hall 报了大厅就绪, 紧接着弹窗压上来, goto_pf 只认 PLAY/菱形
         两个模板, 对弹窗视而不见 → 30s 空转超时」。
@@ -351,6 +360,10 @@ class PfScene:
          goto_pf 连续 30s 找不到 PLAY, 报「30s 未进入 PF hub」。)
         """
         img = self.snap() if img is None else img
+        # 无 X 的队伍存档确认弹窗同属「可关掉的模态」语义 (按钮是 YES 不是 X),
+        # 先剥它再看通用 X —— goto_pf 每轮都调本方法。
+        if self.bot.confirm_save_team_popup(img):
+            return True
         hit = self.find_any_popup_x(img)
         if hit:
             (x, y), src = hit

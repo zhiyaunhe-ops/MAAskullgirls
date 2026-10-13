@@ -378,6 +378,8 @@ class SceneNav:
         游戏可能还没开; 已开时 monkey 只是把现有任务切到前台, 无副作用)。
         弹窗三路检测与 pf_scene.wait_hall 同源: 模态方形 X (cv2) / 通用 X /
         促销 X, 缺一路就会在促销弹窗上空转到超时。
+        无 X 的「Save changes to your Team?」存档确认弹窗另走 confirm_save_team_popup
+        正文判据 (2026-10-13), 三路 X 全不认它。
 
         ⚠️ 2026-10-02 补两态 (实测: 手动结束在战斗中途 → 游戏自己打完 → 停在
         VICTORY 结算页, 认路只认 hub/大厅, 对结算页按房子 240s 超时 → 用户看到
@@ -402,6 +404,12 @@ class SceneNav:
                     STATE.log(f"导航: 上一场战斗仍在进行 (结束残留), 等它打完 "
                               f"(已等 {int(now - t0)}s, 上限 {timeout:.0f}s)", "warn")
                 time.sleep(6)
+                continue
+            if self.confirm_save_team_popup(img):
+                # 队伍存档确认弹窗 (无 X 的 NO/YES 模态): 判据+动作收口在
+                # PfBot.confirm_save_team_popup, 与 wait_hall / dismiss_popup_once /
+                # step 共用同一份实现。排在 X 类检测**之前** —— 该弹窗无 X,
+                # 让装饰边框先去撞模板匹配只会白点一轮 (2026-10-13)。
                 continue
             x = (self.find_modal_x_cv(img)
                  or self.find_popup_x(img)
