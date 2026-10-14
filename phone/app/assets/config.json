@@ -45,7 +45,8 @@
    "cost": 200000000,
    "relax": 0.3,
    "floor": 0.5,
-   "top": 16
+   "top": 16,
+   "_scope": "⚠️ 本段只对 escape 链里 roi=null 的 srv_ok/srv_retry 有效（全屏搜大按钮 3.27e4ms → 33ms）。大字计场/FIGHT追踪/大保底/结算三槽一律走 SettleLoop.findExact() 强制全搜，不受本段影响 —— 真帧实测：victory/defeat 走金字塔峰值只剩 0.15~0.18（全搜 1.0000），btn_rematch 甚至 -0.04 且慢 3~4 倍，粗搜分还与真相反相（漏检帧 0.33~0.47 > 命中帧 0.07~0.18）。见 docs/phone-app.md「金字塔只对全屏搜大按钮成立」"
   }
  },
  "screen": {

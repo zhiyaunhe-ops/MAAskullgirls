@@ -256,9 +256,9 @@ public final class SettleLoop {
             if (phase == 0) {
                 /* —— 战斗阶段: 只查两个大字 —— */
                 Graph.cursor("battle");
-                double[] v = Vision.findScored(work, tVic, titleR, minSim);
+                double[] v = findExact(work, tVic, titleR, minSim);
                 boolean vic = v != null && v[2] >= minSim;
-                double[] d = vic ? null : Vision.findScored(work, tDef, titleR, minSim);
+                double[] d = vic ? null : findExact(work, tDef, titleR, minSim);
                 boolean def = d != null && d[2] >= minSim;
                 Trace.put("battle", "match", "victory", titleR, v == null ? -2 : v[2], vic,
                         vic ? "→大字判定" : "");
@@ -583,7 +583,7 @@ public final class SettleLoop {
             if (t0 < fxFightUntil) {
                 if (resolveFight(work)) {
                     Graph.cursor("fxfight");
-                    double[] f = Vision.findScored(work, tFight, fightR, fightTh);
+                    double[] f = findExact(work, tFight, fightR, fightTh);
                     boolean hitF = f != null && f[2] >= fightTh;
                     Trace.put("fxfight", "match", fightTpl, fightR,
                             f == null ? -2 : f[2], hitF, hitF ? "点 FIGHT → 恢复连点" : "");
@@ -609,9 +609,9 @@ public final class SettleLoop {
             if (mapGuard(work, run)) break;
 
             /* ② 大字 → 计场 */
-            double[] v = Vision.findScored(work, tVic, titleR, minSim);
+            double[] v = findExact(work, tVic, titleR, minSim);
             boolean vic = v != null && v[2] >= minSim;
-            double[] d = vic ? null : Vision.findScored(work, tDef, titleR, minSim);
+            double[] d = vic ? null : findExact(work, tDef, titleR, minSim);
             boolean def = !vic && d != null && d[2] >= minSim;
             if (vic || def) {
                 if (!bigLatch && t0 - lastBig >= gapS * 1000L) {
@@ -793,7 +793,7 @@ public final class SettleLoop {
         if (now - lastMapChk < mapEveryMs) return false;
         lastMapChk = now;
         if (!resolveHome(work)) return false;
-        double[] h1 = Vision.findScored(work, tHome, homeR, mapTh);
+        double[] h1 = findExact(work, tHome, homeR, mapTh);
         double s1 = h1 == null ? -2 : h1[2];
         mapChecks++;
         boolean hit1 = s1 >= mapTh;
@@ -808,7 +808,7 @@ public final class SettleLoop {
             return false;
         }
         Vision.Frame w2 = Vision.toWork(b2);
-        double[] h2 = Vision.findScored(w2, tHome, homeR, mapTh);
+        double[] h2 = findExact(w2, tHome, homeR, mapTh);
         double s2 = h2 == null ? -2 : h2[2];
         b2.recycle();
         if (s2 < mapTh) {
@@ -984,6 +984,9 @@ public final class SettleLoop {
                 if (t == null) continue;                   // 缺该模板: 跳过这一条
                 int[] roi = it.has("roi")
                         ? Roi.resolve(c, ia(it.optJSONArray("roi")), work.w, work.h) : null;
+                /* ⚠️ 这里**故意**不调 findExact: escape 链是"逐条试、命中即点、全不中还有三槽兜底"
+                 * 的结构, 单条漏检只影响下一次重试; 而 roi=null 的 srv_ok/srv_retry 是**全屏搜**,
+                 * 只有金字塔能救 (3.27e4 ms → 33 ms)。所以这一处保留 config.matcher.pyramid 的口径。 */
                 double[] hit = Vision.findScored(work, t, roi, thv);
                 if (hit == null || hit[2] < thv) {
                     Trace.put("escape", "match", name, roi, hit == null ? -2 : hit[2], false, "");
@@ -1025,6 +1028,26 @@ public final class SettleLoop {
     }
 
     /* ---- 原语 ---- */
+
+    /* ---- 匹配口径: 召回关键判定强制全搜 ----
+     * ⚠️ 大字计场 / FIGHT 追踪 / 大保底 / 结算按钮 / 三槽 —— 这几处一律**不受
+     *    config.matcher.pyramid 影响**。依据 (tools/VisionBench, 真机结算页素材, 2026-10-14):
+     *      · 模板真在画面里时, 走金字塔 (0.5x / 0.25x) 峰值只剩 **0.15 / 0.18**
+     *        (btn_rematch 甚至是 **-0.04**), 而全搜是 1.0000 ⇒ 直接丢检。
+     *      · 更狠的是**粗搜分与真相反相**: 漏检帧粗分 0.33~0.47 反而**高于**命中帧的
+     *        0.07~0.18 ⇒ 连"粗搜当门、不确定就回退全搜"这条退路也不成立。
+     *      · 而且对"大模板 + 紧 ROI"它还是**负收益**: 粗搜省下的被精修
+     *        (PYR_TOP x (2*rad+1)^2 x 模板面积) 吃掉, btn_rematch 反而慢 3~4 倍。
+     *    ⇒ 金字塔的用武之地只有**全屏搜大按钮** (srv_ok 32700ms → 33ms), 即 escape 链里
+     *      roi=null 的那两条。别处一律全搜 —— 这几个判定错一次就是漏计场次 / 漏点按钮。
+     */
+    private static final double FULL_COST = 1e12;   // 成本门槛抬到够不着
+    private static final int FULL_LEVEL = 0;        // 层数 0 = 关 (与上面双保险)
+
+    /** 强制全搜的 findScored —— 召回关键判定的唯一入口, 别直接调 Vision.findScored */
+    private static double[] findExact(Vision.Frame work, Vision.Frame tpl, int[] roi, double th) {
+        return Vision.findScored(work, tpl, roi, th, FULL_COST, FULL_LEVEL);
+    }
 
     private void tap(Bitmap bmp, float wx, float wy) {
         sh.tapWork(bmp, wx, wy);
@@ -1091,7 +1114,7 @@ public final class SettleLoop {
         if (tpl == null) return null;
         double best = -2, bx = 0, by = 0;
         for (int[] r : rois) {
-            double[] p = Vision.findScored(work, tpl, r, th);
+            double[] p = findExact(work, tpl, r, th);
             if (p == null) continue;
             if (p[2] > best) { best = p[2]; bx = p[0] + tpl.w / 2f; by = p[1] + tpl.h / 2f; }
             if (p[2] >= th) return new double[]{bx, by, best};

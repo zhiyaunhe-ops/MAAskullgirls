@@ -102,7 +102,9 @@ def main():
     ck('缺模板 / fight_wait_s=0 时不窗口 (fightOk 判据)',
        'fightWaitMs > 0 && resolveFight(work)' in sl)
     body = method_body(sl, 'if (t0 < fxFightUntil)')
-    ck('窗口内做 vs_fight 匹配', 'Vision.findScored(work, tFight, fightR, fightTh)' in body)
+    # ⚠️ 2026-10-14: 召回关键匹配统一改走 findExact (强制全搜, 免被 pyramid 丢检),
+    #    vs_fight 这条是其调用点之一 —— 锚点跟着改成 findExact。
+    ck('窗口内做 vs_fight 匹配', 'findExact(work, tFight, fightR, fightTh)' in body)
     ck('命中即点 (tap 在 fight 分支里)', 'tap(bmp,' in body and 'fightTaps++' in body)
     ck('命中后立刻恢复连点 (清两个闸门)',
        'fxFightUntil = 0;' in body and 'fxGateUntil = 0;' in body,

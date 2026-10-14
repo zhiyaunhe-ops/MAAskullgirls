@@ -96,6 +96,36 @@ public final class Vision {
      * @return {x, y, best}; 未命中时 best < th (越界/尺寸不足返回 null)
      */
     public static double[] findScored(Frame frame, Frame tpl, int[] roi, double th) {
+        return findScored(frame, tpl, roi, th, -1);
+    }
+
+    /**
+     * 同 findScored, 但**本次调用**用指定的金字塔成本门槛 (pyrCost &lt; 0 = 用全局
+     * matcher.pyramid.cost)。
+     *
+     * 为什么需要它: 全局门槛只能一刀切。实测 (tools/VisionBench, 2026-10-14)
+     * "模板大面积 x ROI 只比模板大一点"的组合**走金字塔是负收益** —— 粗搜省下的
+     * 被精修 (PYR_TOP x (2*rad+1)^2 x 模板面积) 吃掉, 反而更慢。而
+     * "ROI 是模板 2 倍以上"的组合 (ok_btn/scene_x/srv_ok) 走金字塔快 2~40 倍。
+     * ⇒ 门槛必须能按调用点给, 不能只靠全局值。
+     */
+    public static double[] findScored(Frame frame, Frame tpl, int[] roi, double th, double pyrCost) {
+        return findScored(frame, tpl, roi, th, pyrCost, -1);
+    }
+
+    /**
+     * 再加一层覆盖: 本次调用的金字塔**层数** (pyrLevel &lt; 0 = 用全局 matcher.pyramid.level)。
+     * 0 = 关 (强制全搜)。
+     *
+     * ⚠️ 层数是**召回的主开关**, 比 cost 危险得多 —— 降采样把装饰字体的笔画糊掉,
+     *    粗搜分数会掉到粗阈值以下 ⇒ 直接**丢检** (tools/VisionBench 实测: 0.25x 下
+     *    模板真在画面里, 峰值也只有 0.17, 全搜是 1.0000)。所以调用点要哪一层,
+     *    必须拿真帧量过命中分再定, 不能拍脑袋。
+     */
+    public static double[] findScored(Frame frame, Frame tpl, int[] roi, double th,
+                                      double pyrCost, int pyrLevel) {
+        double cost = pyrCost < 0 ? PYR_COST : pyrCost;
+        int lvl = pyrLevel < 0 ? PYR_LEVEL : pyrLevel;
         int rx = 0, ry = 0, rw = frame.w, rh = frame.h;
         if (roi != null && roi.length == 4) {
             rx = Math.max(0, roi[0]); ry = Math.max(0, roi[1]);
@@ -104,10 +134,10 @@ public final class Vision {
         if (rw < tpl.w || rh < tpl.h) return null;
 
         /* 成本够高才走金字塔 —— 有 ROI 的小图全搜本来就 100~300ms, 不必绕一圈 */
-        if (PYR_LEVEL > 0) {
+        if (lvl > 0) {
             long nx = (rw - tpl.w) / STEP + 1, ny = (rh - tpl.h) / STEP + 1;
-            if (nx * ny * (double) tpl.w * tpl.h > PYR_COST) {
-                double[] r = pyrSearch(frame, tpl, rx, ry, rw, rh, th);
+            if (nx * ny * (double) tpl.w * tpl.h > cost) {
+                double[] r = pyrSearch(frame, tpl, rx, ry, rw, rh, th, lvl);
                 if (r != null) return r;            // null = 模板太小不适用 → 回退全搜
             }
         }
@@ -116,8 +146,8 @@ public final class Vision {
 
     /** 金字塔粗搜 → 原分辨率精修。返回 null 表示"不适用"(模板降采样后太小), 调用方回退全搜。 */
     private static double[] pyrSearch(Frame frame, Frame tpl, int rx, int ry, int rw, int rh,
-                                      double th) {
-        double s = 1.0 / (1 << PYR_LEVEL);                    // 0.25
+                                      double th, int lvl) {
+        double s = 1.0 / (1 << lvl);                          // 0.25 (lvl=2) / 0.5 (lvl=1)
         Frame t2 = tpl.scale(s);
         if (t2.w < 4 || t2.h < 4) return null;
         Frame f2 = frame.scaleXY(s, s);                       // 整帧降采样 (面积平均)
@@ -127,28 +157,31 @@ public final class Vision {
         if (rw2 < t2.w || rh2 < t2.h) return null;            // 降采样后 ROI 装不下 → 不适用
 
         double inv2 = 1.0 / (t2.w * t2.h);
-        double m2 = 0;
-        for (int i = 0; i < t2.px.length; i++) m2 += t2.val(i);
-        m2 *= inv2;
+        double sum2 = 0;
+        for (int i = 0; i < t2.px.length; i++) sum2 += t2.val(i);
+        double m2 = sum2 * inv2;
         double v2 = 0;
         for (int i = 0; i < t2.px.length; i++) { double d = t2.val(i) - m2; v2 += d * d; }
         if (v2 < 1e-6) return null;
         double sd2 = Math.sqrt(v2);
 
         /* 粗搜: 不放宽到 th 以上就提前退出, 要收齐候选; 阈值放宽 (降采样必然掉分) */
+        Sat S2 = f2.sat();
         double th2 = Math.max(PYR_FLOOR, th - PYR_RELAX);
         java.util.List<double[]> cands = new java.util.ArrayList<>();
         double best2 = -2, bx2 = rx2, by2 = ry2;
         for (int oy = ry2; oy <= ry2 + rh2 - t2.h; oy += STEP)
             for (int ox = rx2; ox <= rx2 + rw2 - t2.w; ox += STEP) {
-                double ncc = nccAt(f2, ox, oy, t2, m2, sd2, inv2);
+                double ncc = nccAt(S2, f2, ox, oy, t2, sum2, sd2, inv2);
                 if (ncc > best2) { best2 = ncc; bx2 = ox; by2 = oy; }
                 if (ncc >= th2) cands.add(new double[]{ox, oy, ncc});
             }
 
         /* 候选按分数降序, 只精修前 PYR_TOP 个 */
         cands.sort((a, b) -> Double.compare(b[2], a[2]));
-        double tm = mean(tpl), tsd = sd(tpl), inv = 1.0 / (tpl.w * tpl.h);
+        double inv = 1.0 / (tpl.w * tpl.h);
+        double tSum = sum(tpl), tsd = sd(tpl);
+        Sat S = frame.sat();                     // ⚠️ 精修用原帧, 与粗搜的 f2 是两张图
         int rad = Math.max(REFINE, (int) Math.ceil(1.0 / s) + 1);   // 粗搜定位误差 ±1/s 像素
         double best = -2; int bx = rx, by = ry;
         int n = Math.min(cands.size(), PYR_TOP);
@@ -156,7 +189,7 @@ public final class Vision {
             double[] c = cands.get(i);
             int ox = clamp(rx + (int) Math.round(c[0] / s), rx, rx + rw - tpl.w);
             int oy = clamp(ry + (int) Math.round(c[1] / s), ry, ry + rh - tpl.h);
-            double[] r = refineBest(frame, tpl, ox, oy, tm, tsd, inv, rad);
+            double[] r = refineBest(S, frame, tpl, ox, oy, tSum, tsd, inv, rad);
             if (r != null && r[2] > best) { best = r[2]; bx = (int) r[0]; by = (int) r[1]; }
         }
         if (n == 0) {                                          // 无候选: 带回粗搜峰值 (判定图看"差多少")
@@ -171,9 +204,8 @@ public final class Vision {
     private static double[] fullSearch(Frame frame, Frame tpl, int rx, int ry, int rw, int rh,
                                        double th) {
         double inv = 1.0 / (tpl.w * tpl.h);
-        double tMean = 0;
-        for (int i = 0; i < tpl.px.length; i++) tMean += tpl.val(i);
-        tMean *= inv;
+        double tSum = sum(tpl);
+        double tMean = tSum * inv;
         double tVar = 0;
         for (int i = 0; i < tpl.px.length; i++) {
             double d = tpl.val(i) - tMean;
@@ -181,16 +213,17 @@ public final class Vision {
         }
         if (tVar < 1e-6) return null;
         double tSd = Math.sqrt(tVar);
+        Sat S = frame.sat();                                    // 均值/方差 O(1) 的来源
 
         double best = -2, bx = rx, by = ry;
         for (int oy = ry; oy <= ry + rh - tpl.h; oy += STEP) {   // 步距 STEP, 命中后细化
             for (int ox = rx; ox <= rx + rw - tpl.w; ox += STEP) {
-                double ncc = nccAt(frame, ox, oy, tpl, tMean, tSd, inv);
+                double ncc = nccAt(S, frame, ox, oy, tpl, tSum, tSd, inv);
                 if (ncc > best) { best = ncc; bx = ox; by = oy; }
                 if (ncc >= th) {
-                    int[] rf = refine(frame, tpl, th, ox, oy);
+                    int[] rf = refine(S, frame, tpl, th, ox, oy, tSum, tSd);
                     if (rf != null) {
-                        double s = nccAt(frame, rf[0], rf[1], tpl, tMean, tSd, inv);
+                        double s = nccAt(S, frame, rf[0], rf[1], tpl, tSum, tSd, inv);
                         return new double[]{rf[0], rf[1], Math.max(s, ncc)};
                     }
                     return new double[]{ox, oy, ncc};
@@ -201,7 +234,7 @@ public final class Vision {
            离线实测 (2026-10-11): srv_retry.png 原样贴进帧, 1x 全搜只有 0.642 < 0.75,
            因为真位置落在奇数格, 而旧实现**只在 ncc>=th 时**才精定位 ⇒ 这种高频模板
            永远进不了阈值门 (死锁: 差一点 → 不精修 → 够不着阈值)。精定位后回到 1.000。 */
-        double[] rf = refineBest(frame, tpl, (int) bx, (int) by, tMean, tSd, inv, REFINE);
+        double[] rf = refineBest(S, frame, tpl, (int) bx, (int) by, tSum, tSd, inv, REFINE);
         if (rf != null && rf[2] > best) { best = rf[2]; bx = (int) rf[0]; by = (int) rf[1]; }
         return new double[]{bx, by, best};      // 未过阈值: 把峰值带回去
     }
@@ -210,14 +243,15 @@ public final class Vision {
     public static double scoreAt(Frame f, Frame t, int ox, int oy) {
         if (ox < 0 || oy < 0 || ox + t.w > f.w || oy + t.h > f.h) return -2;
         double inv = 1.0 / (t.w * t.h);
-        double tm = mean(t), tsd = sd(t);
+        double ts = sum(t), tsd = sd(t);
         if (tsd < 1e-6) return 0;
-        return nccAt(f, ox, oy, t, tm, tsd, inv);
+        return nccAt(f.sat(), f, ox, oy, t, ts, tsd, inv);
     }
 
     /** 步距 STEP 粗命中后, 在 ±REFINE 邻域步距 1 精定位 (过阈值才返回) */
-    private static int[] refine(Frame f, Frame t, double th, int ox, int oy) {
-        double[] b = refineBest(f, t, ox, oy, mean(t), sd(t), 1.0 / (t.w * t.h), REFINE);
+    private static int[] refine(Sat S, Frame f, Frame t, double th, int ox, int oy,
+                                double tSum, double tSd) {
+        double[] b = refineBest(S, f, t, ox, oy, tSum, tSd, 1.0 / (t.w * t.h), REFINE);
         return b != null && b[2] >= th ? new int[]{(int) b[0], (int) b[1]} : null;
     }
 
@@ -230,8 +264,8 @@ public final class Vision {
      *
      * @return {x, y, score}; 帧比模板小(无合法位置)返回 null
      */
-    private static double[] refineBest(Frame f, Frame t, int ox, int oy,
-                                       double tMean, double tSd, double inv, int rad) {
+    private static double[] refineBest(Sat S, Frame f, Frame t, int ox, int oy,
+                                       double tSum, double tSd, double inv, int rad) {
         if (f.w < t.w || f.h < t.h) return null;
         int x0 = Math.max(0, ox - rad), x1 = Math.min(f.w - t.w, ox + rad);
         int y0 = Math.max(0, oy - rad), y1 = Math.min(f.h - t.h, oy + rad);
@@ -239,38 +273,85 @@ public final class Vision {
         double bs = -2; int bx = ox, by = oy;
         for (int y = y0; y <= y1; y++)
             for (int x = x0; x <= x1; x++) {
-                double s = nccAt(f, x, y, t, tMean, tSd, inv);
+                double s = nccAt(S, f, x, y, t, tSum, tSd, inv);
                 if (s > bs) { bs = s; bx = x; by = y; }
             }
         return new double[]{bx, by, bs};
     }
 
-    private static double nccAt(Frame f, int ox, int oy, Frame t,
-                                double tMean, double tSd, double inv) {
-        double fMean = 0;
-        for (int y = 0; y < t.h; y++) {
-            int row = (oy + y) * f.w + ox;
-            for (int x = 0; x < t.w; x++) fMean += f.val(row + x);
-        }
-        fMean *= inv;
-        double num = 0, fVar = 0;
-        for (int y = 0; y < t.h; y++) {
-            int row = (oy + y) * f.w + ox;
-            int trow = y * t.w;
-            for (int x = 0; x < t.w; x++) {
-                double d = f.val(row + x) - fMean;
-                fVar += d * d;
-                num += d * (t.val(trow + x) - tMean);
+    /**
+     * 帧的积分图 (SAT) — nccAt 靠它把"窗口均值/方差"降成 **O(1)**。
+     *
+     * 旧实现每个候选位置要把模板面积**遍历两趟**: ①Σf 求 μ ②同时算 Σ(f-μ)² 与
+     * Σ(f-μ)(t-μt)。而
+     *     Σ(f-μ)²      ≡ Σf² - (Σf)²/n
+     *     Σ(f-μ)(t-μt) ≡ Σf·t - μ·Σt
+     * 于是预计算 Σf / Σf² 的积分图后, 前两件变 O(1), 只剩 Σf·t 一趟 ——
+     * **数学上完全等价 (不是近似), 只快不变分** (等价性由 tools/VisionBench 逐点断言)。
+     *
+     * ⚠️ 按帧持有、口径 (EPOCH) 变了自动重建, **不做全局/跨帧复用**: 常规结算循环与
+     *    fast 观察线程可能并发调 Vision, 共享可变缓冲会串数据 (旧实现全用局部变量,
+     *    所以是线程安全的 —— 别把这条性质破坏掉)。
+     * 内存: int[(w+1)(h+1)] + long[(w+1)(h+1)] ≈ 8.9 MB @1280x576, 每帧一份;
+     *    帧至少 1 秒一张 ⇒ 可接受。
+     */
+    private static final class Sat {
+        final int[] s;        // Σf  (最大 1280*576*255 = 1.88e8 < 2^31 ⇒ int 够, 省一半内存)
+        final long[] s2;      // Σf²
+        final int stride;     // = w + 1
+
+        Sat(Frame f) {
+            stride = f.w + 1;
+            int n = stride * (f.h + 1);
+            s = new int[n];
+            s2 = new long[n];
+            for (int y = 0; y < f.h; y++) {
+                long rowSum = 0, rowSq = 0;                  // 本行前缀
+                int cur = (y + 1) * stride, pre = y * stride, base = y * f.w;
+                for (int x = 0; x < f.w; x++) {
+                    int v = f.val(base + x);
+                    rowSum += v;
+                    rowSq += (long) v * v;
+                    s[cur + x + 1] = s[pre + x + 1] + (int) rowSum;
+                    s2[cur + x + 1] = s2[pre + x + 1] + rowSq;
+                }
             }
         }
+    }
+
+    /**
+     * 单点 NCC。μ 与 fVar 走积分图 O(1), 只剩一趟 Σf·t ⇒ 与旧"两趟"实现数学等价。
+     * @param tSum 模板像素和 Σt (调用方算一次即可, 别每点重算)
+     */
+    private static double nccAt(Sat S, Frame f, int ox, int oy, Frame t,
+                                double tSum, double tSd, double inv) {
+        int W = S.stride, x1 = ox + t.w, y1 = oy + t.h;
+        long sum = (long) S.s[y1 * W + x1] - S.s[oy * W + x1]
+                 - S.s[y1 * W + ox] + S.s[oy * W + ox];
+        long sq = S.s2[y1 * W + x1] - S.s2[oy * W + x1]
+                - S.s2[y1 * W + ox] + S.s2[oy * W + ox];
+        double fMean = sum * inv;
+        double fVar = sq - sum * fMean;                  // ≡ Σf² - (Σf)²/n
+        if (fVar < 0) fVar = 0;                          // 平坦块上 Σf² 的舍入可能微负 → 夹住, 避免 sqrt(NaN)
+        double num = 0;
+        int ti = 0;
+        for (int y = oy; y < y1; y++) {
+            int row = y * f.w + ox;
+            for (int x = 0; x < t.w; x++) num += f.val(row + x) * t.val(ti++);
+        }
+        num -= fMean * tSum;                             // Σ(f-μf)(t-μt) = Σf·t - μf·Σt
         double den = Math.sqrt(fVar) * tSd;
         return den < 1e-6 ? 0 : num / den;
     }
 
-    static double mean(Frame t) {
+    static double sum(Frame t) {
         double m = 0;
         for (int i = 0; i < t.px.length; i++) m += t.val(i);
-        return m / (t.w * t.h);
+        return m;
+    }
+
+    static double mean(Frame t) {
+        return sum(t) / (t.w * t.h);
     }
 
     static double sd(Frame t) {
@@ -296,8 +377,17 @@ public final class Vision {
         public final int[] px; public final int w, h;
         private int[] ch;
         private int chEpoch = -1;
+        private Sat sat;
+        private int satEpoch = -1;
 
         public Frame(int[] px, int w, int h) { this.px = px; this.w = w; this.h = h; }
+
+        /** 本帧的积分图 (lazy; 通道口径 EPOCH 变了自动重建) */
+        private Sat sat() {
+            Sat s = sat;
+            if (s == null || satEpoch != EPOCH) { s = new Sat(this); sat = s; satEpoch = EPOCH; }
+            return s;
+        }
 
         /**
          * 按 s 倍缩放 (最近邻) — rel/fit 模式下 ROI 里的元素尺寸变了, 模板必须同比例缩

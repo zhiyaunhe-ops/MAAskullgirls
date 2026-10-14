@@ -111,11 +111,19 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
 
 - 纯 Java NCC 性能：1280×576 全帧 + 小模板实测 ~50-150ms/次（复用 autojs 版的小 ROI
   策略后够用）；不够再引入 OpenCV Android AAR（vendor 目录加 ~12MB）。
+  **2026-10-14 已把匹配内核换成积分图 SAT**（μ/fVar 变 O(1)，只剩 `Σf·t` 一趟）：
+  11 个真实调用点合计 **1.64x**，逐点等价（最大差 1.8e-13）、自贴图精确 1.000。
 - ⚠️ **观察线程 CPU 被钉死在 1 核**（2026-10-14 K70 Pro 实测）：周期 = max(每帧耗时,
-  `observe_ms`)，而每帧 ~2.5 核秒 > observe_ms ⇒ CPU/秒 恒为 1 核。已把每帧降到 ~0.9 核秒
-  （escape 重试节流 + 诊断峰值节流 + 截屏改裸 RGBA），并把默认 `observe_ms` 由 1000 抬到
-  **3000** —— 预计脚本从 ~1.1 核落到 ~0.3 核。见
-  [../docs/phone-app.md](../docs/phone-app.md)「每帧成本与恒定 1 核」「截屏口径：裸 RGBA」。
+  `observe_ms`)，而每帧 ~2.5 核秒 > observe_ms ⇒ CPU/秒 恒为 1 核。已把每帧降到 ~0.6 核秒
+  （escape 重试节流 + 诊断峰值节流 + 截屏改裸 RGBA + 匹配内核换 SAT），并把默认
+  `observe_ms` 由 1000 抬到 **3000** —— 预计脚本从 ~1.1 核落到 ~0.3 核。见
+  [../docs/phone-app.md](../docs/phone-app.md)「每帧成本与恒定 1 核」「截屏口径：裸 RGBA」
+  「匹配内核：积分图 SAT」。
+- ⚠️ **金字塔粗搜不能推广到文字类模板**（2026-10-14 真帧实测）：`victory`/`defeat` 走
+  0.5x/0.25x 粗搜峰值只剩 0.15~0.18（全搜 1.0000）；`btn_rematch` 甚至变 **−0.04** 且
+  **慢 3~4 倍**；粗搜分还与真相反相（漏检帧 0.33~0.47 > 命中帧 0.07~0.18）。
+  ⇒ 召回关键的匹配一律走 `SettleLoop.findExact()`（强制全搜）。见
+  [../docs/phone-app.md](../docs/phone-app.md)「金字塔只对全屏搜大按钮成立」。
 - Shizuku 仍是权限源头（无线调试激活），App 内做「Shizuku 未连接」引导页。
 - HyperOS 杀后台：前台服务 + 省电白名单 + 自启动（用户侧一次性设置，App 内引导）。
 - APK 第二条路（系统安装器）需要一次「安装未知应用」授权；另外 Android 10+ 禁止
@@ -134,5 +142,11 @@ python3 tools/OverlayProbe.py       # 悬浮条生命周期 + 暂停/继续键�
 python3 tools/UpdateProbe.py        # 更新链路 + APK 两条安装路 (含源码级接线断言)
 python3 tools/PathsProbe.py         # 外部根与授权状态 (6 场景各起一个 JVM)
 python3 tools/MapFightProbe.py      # FIGHT 追踪窗口 + map_check 大保底 + 落点体检默认不拦车 (源码级)
-# tools/StoreProbe.java 手动跑 (纯 JVM + 真 org.json, 见 docs/phone-app.md)
+# Java 探针手动跑 (纯 JVM, 需要真 org.json 在 classpath 最前):
+#   javac -cp "<android.jar>" -d <out> src/com/zhiyaunhe/sgmbot/Vision.java \
+#         src/com/zhiyaunhe/sgmbot/Roi.java tools/VisionProbe.java
+#   java  -cp "<out>:<android.jar>" VisionProbe          # 通道口径 + 多分辨率映射
+#   java  -cp "<out>:<org.json.jar>:<android.jar>" PyramidProbe   # 金字塔降采样保分
+#   java  -cp "<out>:<org.json.jar>:<android.jar>" VisionBench    # SAT 等价性 + 计时 A/B + 金字塔判定
+#   (StoreProbe/SlotProbe 需完整 app classes, 见 docs/phone-app.md)
 ```
