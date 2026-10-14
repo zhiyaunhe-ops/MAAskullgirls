@@ -520,6 +520,12 @@ public final class SettleLoop {
         long lastDiag = 0;
         double[] lastRp = new double[0], lastCp = new double[0];
 
+        /* 分段墙钟累计 (诊断) —— 帧周期到底花在哪, 只有这条能回答。
+         * ⚠️ 2026-10-14 上机实测已证明"screencap 写盘再读回"**不是**瓶颈: 不落盘也要
+         *    298ms, 而读回 10.4MB 只 43ms、删 31ms (挂载是 /dev/fuse, 换非 FUSE 的
+         *    /data/local/tmp 反而更慢 346ms) ⇒ 剩下的时间必须量出来, 不能猜。 */
+        long sumCap = 0, sumWork = 0, sumMatch = 0, sumAll = 0;
+        int nStat = 0;
         long lastBig = System.currentTimeMillis();     // 上次计场时刻 (无进展停车看它)
         boolean bigLatch = false;                      // 大字 latch: 中间见过"无大字"才允许再计
         long lastLog = 0;
@@ -537,8 +543,10 @@ public final class SettleLoop {
                 break;
             }
             Bitmap bmp = sh.capture();
+            long t1 = System.currentTimeMillis();          // 截屏+解码结束 (分段诊断)
             if (bmp == null) { SgmLog.i("快", "观察线程截屏失败 — 下帧重试"); sleep_(obsMs); continue; }
             Vision.Frame work = Vision.toWork(bmp);
+            long t2 = System.currentTimeMillis();          // 缩放+取像素结束
             syncRoi(work, titleRoi, btnRois);
             if (!fxReady) {
                 resolveFastPoint(fxy);
@@ -639,13 +647,27 @@ public final class SettleLoop {
             /* 低频日志: **状态变化**或满 10s 才记一条 (连点 300ms/轮, 每帧刷屏没意义)。
              * 带两个模板 × 三个槽的峰值 —— 现场只用这一条就能回答
              * 「落点 (640,512) 这格到底是什么按钮」这个唯一悬而未决的问题。 */
+            /* 分段墙钟: 到这里为止本帧的**全部匹配**都跑完了 (escape / 大保底 / 大字 / 诊断峰值
+             * 都在上面), 所以 now-t2 就是"匹配"那段。累加后打均值 —— 单帧会被
+             * "恰好这帧重算了三槽峰值"带偏, 均值才不会。 */
+            long now = System.currentTimeMillis();
+            sumCap += t1 - t0;
+            sumWork += t2 - t1;
+            sumMatch += now - t2;
+            sumAll += now - t0;
+            nStat++;
+
             if (!seen.equals(lastSeen) || t0 - lastLog > 10000) {
                 lastSeen = seen;
                 lastLog = t0;
                 SgmLog.i("观", "第 " + frames + " 帧 → " + seen
                         + " | rematch" + fmt(rp) + " continue" + fmt(cp)
                         + " | 落点(" + (int) fxX + "," + (int) fxY + ")"
-                        + " 已连点 " + fxTaps + " 次 / 剥弹窗 " + pops + " 次 / 本轮 " + rounds + " 场");
+                        + " 已连点 " + fxTaps + " 次 / 剥弹窗 " + pops + " 次 / 本轮 " + rounds + " 场"
+                        + " | 帧用时均值 " + avg(sumAll, nStat) + "ms (截屏 " + avg(sumCap, nStat)
+                        + " / 缩放 " + avg(sumWork, nStat) + " / 匹配 " + avg(sumMatch, nStat) + ")");
+                sumCap = sumWork = sumMatch = sumAll = 0;
+                nStat = 0;
             }
 
             /* ③b 落点体检 —— **默认只提示, 不拦车** (config.fast.tap_check, 默认 false)。
@@ -1081,6 +1103,9 @@ public final class SettleLoop {
         }
         return out;
     }
+
+    /** 分段墙钟均值 (n=0 返回 0, 别让日志出现 NaN) */
+    private static long avg(long sum, int n) { return n <= 0 ? 0 : sum / n; }
 
     private static String fmt(double[] v) {
         StringBuilder sb = new StringBuilder("(");
