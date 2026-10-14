@@ -1008,8 +1008,15 @@ public final class SettleLoop {
                         ? Roi.resolve(c, ia(it.optJSONArray("roi")), work.w, work.h) : null;
                 /* ⚠️ 这里**故意**不调 findExact: escape 链是"逐条试、命中即点、全不中还有三槽兜底"
                  * 的结构, 单条漏检只影响下一次重试; 而 roi=null 的 srv_ok/srv_retry 是**全屏搜**,
-                 * 只有金字塔能救 (3.27e4 ms → 33 ms)。所以这一处保留 config.matcher.pyramid 的口径。 */
-                double[] hit = Vision.findScored(work, t, roi, thv);
+                 * 只有金字塔能救 (3.27e4 ms → 33 ms)。所以这一处保留 config.matcher.pyramid 的口径。
+                 *
+                 * step 按条目可覆盖 (缺省 -1 = 全局 matcher.step): 全局 step 已升到 3
+                 * (search 位置数 ∝ 1/step², 全站点实测 2.06x 且峰值分逐位相同), 但
+                 * **全屏搜 + 金字塔** 那两条是唯一例外 —— 粗网格变稀会缩小候选集, 实测
+                 * 峰值漂最大 0.1756, 而它们没有真弹窗素材可验召回 ⇒ 在 config 里钉回 2。
+                 * 依据与推导见 Vision.findScored(...,step) 的注释 + docs/phone-app.md。 */
+                int stp = it.optInt("step", -1);
+                double[] hit = Vision.findScored(work, t, roi, thv, -1, -1, stp);
                 if (hit == null || hit[2] < thv) {
                     Trace.put("escape", "match", name, roi, hit == null ? -2 : hit[2], false, "");
                     continue;

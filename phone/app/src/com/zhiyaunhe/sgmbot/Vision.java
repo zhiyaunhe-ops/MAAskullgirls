@@ -124,8 +124,30 @@ public final class Vision {
      */
     public static double[] findScored(Frame frame, Frame tpl, int[] roi, double th,
                                       double pyrCost, int pyrLevel) {
+        return findScored(frame, tpl, roi, th, pyrCost, pyrLevel, -1);
+    }
+
+    /**
+     * 再加一层覆盖: 本次调用的**粗搜步距** (step &lt; 0 = 用全局 matcher.step)。
+     *
+     * <p>为什么需要它: step 是搜索位置数的唯一旋钮 (位置数 ∝ 1/step²), 全局调大收益极大
+     * (真帧实测 step2→3 让全部调用点合计 **2.06x**, 见 tools/VisionBench E 段), 但有一条
+     * 明确不适用的路 —— **全屏搜 + 金字塔** 的 srv_ok/srv_retry。它们走"降采样粗搜收候选
+     * → 原分辨率精修", 粗网格变稀会缩小候选集 ⇒ 峰值会漂 (实测 step3 下最大漂 0.1756),
+     * 而这两条又没有可靠的召回证据 (手上没有真弹窗素材) ⇒ 钉回 step2。
+     *
+     * <p>其余调用点为什么能升到 3: 粗网格相对真峰值的最大偏移 = (step-1)/2 = 1.0 px, 而
+     * 收尾的 refineBest 邻域是 ±REFINE(=2) ⇒ **必然覆盖真峰值、精修回同一个 argmax**
+     * (「命中即精修」那条路同理, refine 也是 ±REFINE)。实测 (tools/VisionBench, 5 帧 x
+     * 11 个真实调用点): step3 下全搜站点的峰值分**逐位相同**、命中判定 **0 处变化**。
+     * ⚠️ 这条推导依赖 REFINE ≥ (step-1)/2 —— 若把 matcher.refine 调到 0/1, step≥3 立刻
+     * 变得不安全。别只调其中一个。
+     */
+    public static double[] findScored(Frame frame, Frame tpl, int[] roi, double th,
+                                      double pyrCost, int pyrLevel, int step) {
         double cost = pyrCost < 0 ? PYR_COST : pyrCost;
         int lvl = pyrLevel < 0 ? PYR_LEVEL : pyrLevel;
+        int st = step < 0 ? STEP : clamp(step, 1, 4);
         int rx = 0, ry = 0, rw = frame.w, rh = frame.h;
         if (roi != null && roi.length == 4) {
             rx = Math.max(0, roi[0]); ry = Math.max(0, roi[1]);
@@ -135,18 +157,18 @@ public final class Vision {
 
         /* 成本够高才走金字塔 —— 有 ROI 的小图全搜本来就 100~300ms, 不必绕一圈 */
         if (lvl > 0) {
-            long nx = (rw - tpl.w) / STEP + 1, ny = (rh - tpl.h) / STEP + 1;
+            long nx = (rw - tpl.w) / st + 1, ny = (rh - tpl.h) / st + 1;
             if (nx * ny * (double) tpl.w * tpl.h > cost) {
-                double[] r = pyrSearch(frame, tpl, rx, ry, rw, rh, th, lvl);
+                double[] r = pyrSearch(frame, tpl, rx, ry, rw, rh, th, lvl, st);
                 if (r != null) return r;            // null = 模板太小不适用 → 回退全搜
             }
         }
-        return fullSearch(frame, tpl, rx, ry, rw, rh, th);
+        return fullSearch(frame, tpl, rx, ry, rw, rh, th, st);
     }
 
     /** 金字塔粗搜 → 原分辨率精修。返回 null 表示"不适用"(模板降采样后太小), 调用方回退全搜。 */
     private static double[] pyrSearch(Frame frame, Frame tpl, int rx, int ry, int rw, int rh,
-                                      double th, int lvl) {
+                                      double th, int lvl, int st) {
         double s = 1.0 / (1 << lvl);                          // 0.25 (lvl=2) / 0.5 (lvl=1)
         Frame t2 = tpl.scale(s);
         if (t2.w < 4 || t2.h < 4) return null;
@@ -163,8 +185,8 @@ public final class Vision {
         double th2 = Math.max(PYR_FLOOR, th - PYR_RELAX);
         java.util.List<double[]> cands = new java.util.ArrayList<>();
         double best2 = -2, bx2 = rx2, by2 = ry2;
-        for (int oy = ry2; oy <= ry2 + rh2 - t2.h; oy += STEP)
-            for (int ox = rx2; ox <= rx2 + rw2 - t2.w; ox += STEP) {
+        for (int oy = ry2; oy <= ry2 + rh2 - t2.h; oy += st)
+            for (int ox = rx2; ox <= rx2 + rw2 - t2.w; ox += st) {
                 double ncc = nccAt(m2, ox, oy);
                 if (ncc > best2) { best2 = ncc; bx2 = ox; by2 = oy; }
                 if (ncc >= th2) cands.add(new double[]{ox, oy, ncc});
@@ -191,15 +213,15 @@ public final class Vision {
         return new double[]{bx, by, best};
     }
 
-    /** 原分辨率全搜 (STEP 粗搜 + 峰值精定位) */
+    /** 原分辨率全搜 (st 粗搜 + 峰值精定位) */
     private static double[] fullSearch(Frame frame, Frame tpl, int rx, int ry, int rw, int rh,
-                                       double th) {
+                                       double th, int st) {
         Match m = new Match(frame, tpl);        // 模板统计 + 两侧通道缓存 + 帧积分图, 一次做好
         if (m.tVar < 1e-6) return null;
 
         double best = -2, bx = rx, by = ry;
-        for (int oy = ry; oy <= ry + rh - tpl.h; oy += STEP) {   // 步距 STEP, 命中后细化
-            for (int ox = rx; ox <= rx + rw - tpl.w; ox += STEP) {
+        for (int oy = ry; oy <= ry + rh - tpl.h; oy += st) {     // 步距 st, 命中后细化
+            for (int ox = rx; ox <= rx + rw - tpl.w; ox += st) {
                 double ncc = nccAt(m, ox, oy);
                 if (ncc > best) { best = ncc; bx = ox; by = oy; }
                 if (ncc >= th) {
@@ -212,7 +234,7 @@ public final class Vision {
                 }
             }
         }
-        /* ⚠️ 未过阈值也要对峰值做一次精定位 —— 粗搜步距 STEP 与真实峰值可能差 1~2 像素。
+        /* ⚠️ 未过阈值也要对峰值做一次精定位 —— 粗搜步距 st 与真实峰值可能差 (st-1)/2 像素。
            离线实测 (2026-10-11): srv_retry.png 原样贴进帧, 1x 全搜只有 0.642 < 0.75,
            因为真位置落在奇数格, 而旧实现**只在 ncc>=th 时**才精定位 ⇒ 这种高频模板
            永远进不了阈值门 (死锁: 差一点 → 不精修 → 够不着阈值)。精定位后回到 1.000。 */

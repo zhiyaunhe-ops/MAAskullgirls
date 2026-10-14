@@ -94,7 +94,7 @@ curl http://127.0.0.1:8791/log         # app.log
 | `scan` | `stall_ms` | 1000 | 卡住时的扫描间隔 |
 | `scan.adaptive` | `on/min_ms/max_ms/hit_ms/miss_ms` | true/250/2000/350/900 | 命中后加快、久无命中放缓 |
 | `matcher` | `chan` | `blue` | 匹配通道：`blue`/`green`/`red`/`gray`。**默认 blue 是标定过的**，改 gray 会漏识别（见 VisionProbe） |
-| `matcher` | `step` / `refine` | 2 / 2 | 粗搜步距 / 精定位邻域；卡就调大 step |
+| `matcher` | `step` / `refine` | **3** / 2 | 粗搜步距 / 精定位邻域。step 是位置数唯一旋钮（∝1/step²），2026-10-14 由 2 升到 3（全匹配 2x、判定零变化）。⚠️ 必须 `refine ≥ (step-1)/2`。escape 链可按条目写 `step` 覆盖（`srv_*` 钉回 2，见「`matcher.step` 2→3」） |
 | `matcher` | `work_h` | 576 | 帧缩放基准高 |
 | `matcher.pyramid` | `level/cost/relax/floor/top` | 2 / 2e8 / 0.3 / 0.5 / 16 | 全屏大模板的金字塔粗搜（见「匹配性能」） |
 | `screen` | `roi_mode` | `abs` | 无 profile 命中时的 ROI 映射模式 |
@@ -108,7 +108,7 @@ curl http://127.0.0.1:8791/log         # app.log
 | `shizuku` | `download_url/release_api/homepage/play_url` | 见文件 | 使用指引页的 Shizuku 链接（换版本不必发 APK） |
 | `stats` | `weeks` / `levels` | 26 / `[1,3,6,11]` | 热力图默认周数 / 颜色分档上界 |
 | `store` | `keep_days` | 400 | 战绩归档保留天数（≈13 个月），超期丢最旧 |
-| `popup` | `guard` / `after_sec` / `every_sec` | true / 5 / 5 | 弹窗守卫：无动作超 5s 后每 5s 剥一次（见「弹窗处理」） |
+| `popup` | `guard` / `after_sec` / `every_sec` | true / 5 / **15** | 弹窗守卫：无动作超 `after_sec` 后每 `every_sec` 剥一次（见「弹窗处理」）。2026-10-14 `every_sec` 由 5 抬到 15 —— escape 链是每帧匹配最大的一块（约 60%），而触发条件本身就是 5s 尺度的启发式，重试更密没有额外信息量 |
 | `fast` | `enable` | false | **快速连点模式**总开关（见「快速连点模式」）。默认关 |
 | `fast` | `xy` | null | 盲点落点（work 坐标）。null = `btn_rois` 中槽中心**再绕开 `avoid` 挡块** |
 | `fast` | `avoid` / `avoid_gap` | 速度泡 / 24 | 落点要绕开的 HUD 挡块（work `[x,y,w,h]` 列表）+ 安全间距。改这两项见「落点为什么要绕开」 |
@@ -416,7 +416,7 @@ CPU/秒 仍是 `每帧耗时/周期` —— 想真降温必须**同时**把 `obs
 尺寸/格式/帧头任一对不上就置 `rawUnsupported` **永久回退 PNG** 并留一行
 "裸 RGBA 截屏不适用"。**确认口径**看首帧那条 `[快] 落点就绪 … | 截屏 raw|png` 日志。
 
-### `matcher.step` 2→3：全匹配 **~2x、判定零变化**（2026-10-14 五帧实测，**已测待定，默认仍是 2**）
+### `matcher.step` 2→3：全匹配 **~2x、判定零变化**（2026-10-14 五帧实测，**已落地**）
 
 `step` 是搜索位置数的唯一全局旋钮：位置数 ∝ 1/step²，所以 2→3 理论上少算约 2.25 倍。
 `tools/VisionBench.java` 新增 **E 段**扫 step 1/2/3/4，跨 **5 帧 × 11 个真实调用点**（每点
@@ -436,8 +436,15 @@ CPU/秒 仍是 `每帧耗时/周期` —— 想真降温必须**同时**把 `obs
   本批最大 **0.1756**。机制不同 —— 金字塔是"粗搜收候选 + 原分辨率精修"，粗网格变稀会让
   候选集变小。本批 5 帧里它们都远低于阈值所以判定没变，但**真弹窗帧的召回没有被验证过**
   （手上没有真弹窗素材）。
-- ⇒ 要落地就 **"全局 step=3，但把 `srv_ok`/`srv_retry` 按调用点钉回 step=2"**：吃到约 95%
-  的收益，把全部未验证风险隔离在那两个模板上（它们只占 11.2 / 405 ms）。
+- ✅ **落地方式：全局 `matcher.step=3`，`srv_ok`/`srv_retry` 在 `escape.items` 里按条目
+  写 `"step": 2` 钉回去** —— 吃到约 95% 的收益，把全部未验证风险隔离在那两个模板上
+  （它们只占 11.2 / 405 ms）。
+  - 机制：`Vision.findScored(..., int step)`（第 7 个参数，`<0` = 用全局）—— 与
+    `pyramid.cost`/`level` 的按调用覆盖是同一套思路（**全局旋钮一刀切会切到不该切的地方**，
+    这个教训在金字塔那边已经付过一次学费）。
+  - `SettleLoop.escape()` 从每个 item 读 `step`（缺省 `-1` = 全局），代码里**不硬编码模板名**。
+  - ⚠️ 这条推导**依赖 `refine ≥ (step-1)/2`**：step=3 要求 `refine≥1`，默认 2 安全。
+    别只调其中一个（把 `refine` 调到 0/1 会让 step≥3 立刻变得不安全）。编辑页提示已写明。
 - ⚠️ **位置数变少会改变金字塔判据**（`cost = 位置数×面积`）⇒ 有的调用点可能从"走金字塔"
   翻成"全搜"，反而更慢。本批没翻（step=4 时 `srv_retry` 仍有 2.4e8 > 2e8 门槛），
   但**改 `step` 或 `pyramid.cost` 都要重跑这一列**。
@@ -675,8 +682,14 @@ Java 版**没有导航链**（`BotService` 里 `MODE_NAV` 退化为直接跑结�
 ① ② 无处安放。补偿办法是把"每帧剥"这条语义挂到结算循环上：
 
 - **弹窗守卫**（`popup.guard`）：**任何相位**都跑。判据 = 距上次有效动作超过
-  `popup.after_sec`（默认 5s），之后每 `popup.every_sec`（默认 5s）剥一次。
+  `popup.after_sec`（默认 5s），之后每 `popup.every_sec`（默认 **15s**）剥一次。
   用"无动作"当判据，是因为**弹窗必然挡住按钮 ⇒ 必然无动作**。
+  ⚠️ **`every_sec` 2026-10-14 由 5 抬到 15**：fast 模式下这条链是每帧匹配里最大的一块
+  （约 60%），而它的触发条件本身（"超 5s 无动作"）就是 5 秒尺度的启发式 ——
+  **重试得比触发条件更密没有任何额外信息量，只是把同一条链重复跑**（失败不更新 `lastAct`，
+  所以 guard 一过期就每帧重跑）。抬到 15 即 escape 成本 ÷3；最坏情况是弹窗多留 10s，
+  而它本身有 `popup_pause_ms` 与三槽兜底，正确性不受影响。
+  **想再省就把 escape 链本身做便宜**（给"有没有弹窗"加廉价门卫模板），那是另一个改动了。
 - **stall 逃生**：原有逻辑保留（`timing.stall_sec`，默认 30s），作兜底告警。
 
 两条路**复用同一条 `escape.items` 链** —— 加/删/改一项两边同时生效。

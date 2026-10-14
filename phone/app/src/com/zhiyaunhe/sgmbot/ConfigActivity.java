@@ -74,8 +74,11 @@ public class ConfigActivity extends Activity {
         hint("⚠️ blue 是标定过的 (灰色会漏识别 REMATCH)。改通道等于改整套阈值, "
                 + "除非重新标定过, 否则别动。");
         textEdit("matcher.chan", "通道 (blue/green/red/gray)", str("matcher", "chan", "blue"));
-        hint("step=粗搜步距, refine=命中后精定位邻域。卡顿就调大 step。");
-        intEdit("matcher.step", "step", sec("matcher", "step", 2), 1, 4);
+        hint("step=粗搜步距 (位置数 ∝ 1/step², step3 实测比 2 快 2x 且峰值分不变), "
+                + "refine=命中后精定位邻域。\n"
+                + "⚠️ refine 必须 ≥ (step-1)/2 —— 否则粗网格跳过的真峰值精定位追不回来。"
+                + "step=3 就要求 refine≥1 (默认 2 安全), 别只调其中一个。");
+        intEdit("matcher.step", "step", sec("matcher", "step", 3), 1, 4);
         intEdit("matcher.refine", "refine", sec("matcher", "refine", 2), 0, 4);
 
         /* ---- 运行 ---- */

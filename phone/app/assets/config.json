@@ -37,7 +37,8 @@
  },
  "matcher": {
   "chan": "blue",
-  "step": 2,
+  "step": 3,
+  "_step_note": "⚠️ 粗搜步距 (搜索位置数 ∝ 1/step², 影响**所有**匹配)。2026-10-14 升 2→3: tools/VisionBench 跨 5 帧 x 11 个真实调用点实测合计 **2.06x**, 且全搜站点的峰值分**逐位相同**、命中判定 **0 处变化** —— 推导: 粗网格相对真峰值最大偏移 (step-1)/2 = 1.0px, 而收尾 refineBest 邻域 ±refine(=2) 必然覆盖真峰值。⚠️ 这条推导**依赖 refine ≥ (step-1)/2**, 别把 refine 调到 0/1。别用 4: defeat@title 0.3758→0.3682、continue@slot0 0.5224→0.4600 峰值开始掉。唯一例外是全屏搜+金字塔的 srv_ok/srv_retry —— 它们在 escape.items 里被按条目钉回 step=2",
   "refine": 2,
   "work_h": 576,
   "pyramid": {
@@ -81,7 +82,8 @@
  "popup": {
   "guard": true,
   "after_sec": 5,
-  "every_sec": 5
+  "every_sec": 15,
+  "_every_sec_note": "剥弹窗**重试**间隔 (fast 观察线程; 常规模式=周期性剥弹窗间隔)。2026-10-14 由 5 抬到 15: escape 链是每帧匹配里最大的一块 (约 60%), 而触发条件本身 (距上次有效动作 > after_sec=5s) 就是 5 秒尺度的启发式 —— 比它更密地重试没有额外信息量, 只是把同一条链重复跑。抬到 15 即 escape 成本 ÷3; 代价是最坏情况下弹窗多留 10s (它本身有 2s 的 popup_pause 与三槽兜底, 不影响正确性)"
  },
  "map_check": {
   "on": true,
@@ -714,7 +716,8 @@
   "items": [
    {
     "tpl": "srv_ok",
-    "th": 0.75
+    "th": 0.75,
+    "step": 2
    },
    {
     "tpl": "ok_btn",
@@ -728,7 +731,8 @@
    },
    {
     "tpl": "srv_retry",
-    "th": 0.75
+    "th": 0.75,
+    "step": 2
    },
    {
     "tpl": "scene_x",
