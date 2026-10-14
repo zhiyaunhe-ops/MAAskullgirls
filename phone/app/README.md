@@ -111,6 +111,11 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
 
 - 纯 Java NCC 性能：1280×576 全帧 + 小模板实测 ~50-150ms/次（复用 autojs 版的小 ROI
   策略后够用）；不够再引入 OpenCV Android AAR（vendor 目录加 ~12MB）。
+- ⚠️ **观察线程 CPU 被钉死在 1 核**（2026-10-14 K70 Pro 实测）：周期 = max(每帧耗时,
+  `observe_ms`)，而每帧 ~2.5 核秒 > observe_ms ⇒ CPU/秒 恒为 1 核。已把每帧降到 ~0.9 核秒
+  （escape 重试节流 + 诊断峰值节流 + 截屏改裸 RGBA），并把默认 `observe_ms` 由 1000 抬到
+  **3000** —— 预计脚本从 ~1.1 核落到 ~0.3 核。见
+  [../docs/phone-app.md](../docs/phone-app.md)「每帧成本与恒定 1 核」「截屏口径：裸 RGBA」。
 - Shizuku 仍是权限源头（无线调试激活），App 内做「Shizuku 未连接」引导页。
 - HyperOS 杀后台：前台服务 + 省电白名单 + 自启动（用户侧一次性设置，App 内引导）。
 - APK 第二条路（系统安装器）需要一次「安装未知应用」授权；另外 Android 10+ 禁止

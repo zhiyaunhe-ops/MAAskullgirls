@@ -94,7 +94,7 @@
   "enable": false,
   "xy": null,
   "tap_ms": 300,
-  "observe_ms": 1000,
+  "observe_ms": 3000,
   "round_gap_s": 5,
   "idle_stop_s": 300,
   "popup_pause_ms": 2000,
@@ -102,6 +102,10 @@
   "fight_scan_ms": 500,
   "tap_check": false,
   "_tap_check": "落点体检是否拦车: false=只记一条提示日志 (默认, fast 的契约是盲点, 只管弹窗+大保底); true=落点那格没匹配到结算按钮而别格有就立刻停车",
+  "diag_ms": 2000,
+  "_diag_ms": "三槽峰值 (纯诊断: 只喂 [观] 日志 + 上面的 tap_check) 的计算间隔 ms, 0=每帧; tap_check=true 时强制每帧 (它是停车判据, 不吃陈旧值)",
+  "_cost_note": "⚠️ 观察线程周期 = max(每帧耗时, observe_ms) (SettleLoop.observeFast 尾部)。CPU/秒 = 每帧耗时/周期 ⇒ 每帧耗时 > observe_ms 时 CPU 被钉死在 1 核 (只调本值无效), 反之时才 = 每帧耗时/observe_ms。2026-10-14 K70 Pro 实测: 每帧 ~2.5 核秒 ⇒ 恒定 ~1 核; 已把每帧降到 ~0.9 核秒 + 本值 1000→3000 ⇒ 约 0.3 核。⚠️ 抬本值前先核对计场数有没有掉 (3s 采样可能漏掉一闪而过的大字; fight_scan_ms=500 那条独立窗口不受影响)",
+  "_popup_note": "popup.every_sec 两个模式都用: 常规模式=周期性剥弹窗间隔; fast 观察线程=剥弹窗**重试**间隔 (原来 guard 一过期就每帧重跑整条 escape 链, 失败不更新 lastAct ⇒ 稳态每帧白跑)",
   "fight": {
    "tpl": "vs_fight",
    "note": "剥弹窗后 fight_wait_s 内持续找这个模板; th/roi 缺省继承 escape.items 同名项 (vs_fight: th=0.75, roi=[1020,0,260,130]) — 要覆盖就在这里显式写 th/roi"

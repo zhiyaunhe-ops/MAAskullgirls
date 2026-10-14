@@ -94,7 +94,7 @@ public class ConfigActivity extends Activity {
                 + "⚠️ 战斗中点到那里无害, 但**开着的时候别让游戏停在不认识的页面上**。");
         boolEdit("fast.enable", "开启快速连点 (默认关)", bool("fast", "enable", false));
         intEdit("fast.tap_ms", "连点间隔 (ms)", sec("fast", "tap_ms", 300), 60, 2000);
-        intEdit("fast.observe_ms", "观察线程周期 (ms)", sec("fast", "observe_ms", 1000), 200, 5000);
+        intEdit("fast.observe_ms", "观察线程周期 (ms)", sec("fast", "observe_ms", 3000), 200, 5000);
         intEdit("fast.round_gap_s", "计场最小间隔 (s)", sec("fast", "round_gap_s", 5), 1, 60);
         intEdit("fast.idle_stop_s", "无进展停车 (s, 0=关)", sec("fast", "idle_stop_s", 300), 0, 3600);
         intEdit("fast.popup_pause_ms", "剥弹窗后暂停连点 (ms)",

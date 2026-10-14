@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   所以"一直点它"就能做到 页A 前进 / 页B 重开 —— 不必逐帧做模板匹配。
  *   前提是「一直胜利 + 该页没有额外奖励按钮 (SELL ALL / HIDE STATS)」, 故默认关。
  *   弹窗检测保留, 但搬出热路径: 连点器只点不截屏, 截屏/弹窗/计场交给**独立的观察线程**
- *   (每 observe_ms 一帧, 默认 1s)。
+ *   (每 observe_ms 一帧, 默认 3s —— 见「每帧成本」: 周期 = max(每帧耗时, observe_ms))。
  *   剥弹窗后进 **FIGHT 追踪窗口** (fast.fight_wait_s, 默认 15s): 弹窗剥完常常正落在
  *   战斗准备界面 (右上角 FIGHT!), 连点器不知道此刻该按谁 ⇒ 窗口内持续找 vs_fight,
  *   命中即点并立刻恢复连点; 超时未命中也恢复 (下一站可能不是战斗页, 不干等)。
@@ -421,7 +421,7 @@ public final class SettleLoop {
      *   <li><b>主线程 = 连点器</b>：只 {@code input tap} 固定点，**不截屏不匹配**。
      *       截屏（`screencap` 一趟几百毫秒）是整条链最贵的一步，省掉它 + tap_delay
      *       从 1200ms 降到 tap_ms（默认 300）⇒ 一个结算周期从 ~3s 掉到 ~0.6s。</li>
-     *   <li><b>观察线程 = 安全网</b>（独立线程, 每 observe_ms 截一帧, 默认 1s）：
+     *   <li><b>观察线程 = 安全网</b>（独立线程, 每 observe_ms 截一帧, 默认 3s）：
      *       剥弹窗（复用同一条 escape 链）/ 大字计场 / 每日上限 / 无进展停车 / 状态快照。
      *       只让**一个**线程截屏，避免两路 screencap 互相拖慢。</li>
      * </ul>
@@ -433,7 +433,7 @@ public final class SettleLoop {
     private void runFast(AtomicBoolean run, JSONObject c, int cap) {
         JSONObject fx = sub(c, "fast");
         final int tapMs = Math.max(60, fx.optInt("tap_ms", 300));
-        final int obsMs = Math.max(200, fx.optInt("observe_ms", 1000));
+        final int obsMs = Math.max(200, fx.optInt("observe_ms", 3000));
         final int gapS = Math.max(1, fx.optInt("round_gap_s", 5));
         final int idleS = Math.max(0, fx.optInt("idle_stop_s", 300));
         final int pauseMs = Math.max(0, fx.optInt("popup_pause_ms", 2000));
@@ -506,6 +506,19 @@ public final class SettleLoop {
         JSONObject pu = sub(c, "popup");
         final boolean guard = pu == null || pu.optBoolean("guard", true);
         final long afterMs = Math.max(1, pu == null ? 5 : pu.optInt("after_sec", 5)) * 1000L;
+        /* ⚠️ 剥弹窗重试间隔 (2026-10-14 瘦身): 原来 guard 一过期就**每帧**跑整条 escape 链
+         * (6 条模板, 其中 srv_ok / srv_retry 是 roi=null 的全帧搜 ⇒ 一次失败尝试 ≈ 2 次
+         * 全帧金字塔搜 + 4 次 ROI 搜 + 6 次槽搜), 而**失败不更新 lastAct** ⇒ 稳态下每帧
+         * 白跑一遍。触发条件本身就是 after_sec=5 这个时间尺度, 比它更密地重试没有意义。
+         * 默认取 popup.every_sec (5s)。 */
+        final long escMs = Math.max(500, (pu == null ? 5 : pu.optInt("every_sec", 5)) * 1000L);
+        /* ⚠️ 三槽峰值 (peakArr, th=2.0 ⇒ 不可能"过阈值提前退出", 必然穷举整个 ROI) 是
+         * **纯诊断**: 只喂 [观] 日志与默认关闭的 tap_check。按 diag_ms 节流 (默认 2s);
+         * 一旦 tap_check=true 必须每帧算 —— 它是停车判据, 不能吃陈旧值。 */
+        final int diagMs = Math.max(0, sub(c, "fast").optInt("diag_ms", 2000));
+        long lastEscTry = 0;
+        long lastDiag = 0;
+        double[] lastRp = new double[0], lastCp = new double[0];
 
         long lastBig = System.currentTimeMillis();     // 上次计场时刻 (无进展停车看它)
         boolean bigLatch = false;                      // 大字 latch: 中间见过"无大字"才允许再计
@@ -534,15 +547,20 @@ public final class SettleLoop {
                 homeSlot = slotOfPoint();
                 SgmLog.i("快", "落点就绪 work(" + work.w + "x" + work.h + ") → 点 " + fxPointText()
                         + (homeSlot >= 0 ? " = 第 " + (homeSlot + 1) + " 格" : " (不在任何按钮槽里)")
-                        + " | 挡块 " + avoidText());
+                        + " | 挡块 " + avoidText()
+                        + " | 截屏 " + ShizukuCtl.modeText()
+                        + " / 观察 " + obsMs + "ms / 诊断 " + (diagMs > 0 ? diagMs + "ms" : "每帧")
+                        + " / 剥弹窗重试 " + (escMs / 1000) + "s");
                 if (fxState == 3)
                     SgmLog.i("!!", "落点仍落在挡块 " + avoidText() + " 里且槽内无处可挪 — "
                             + "会点到 HUD (战斗界面就是 1x/3x 速度泡)。请手改 fast.xy 挑一个干净坐标。");
             }
             frames++;
 
-            /* ① 弹窗 (任何时刻: 判据是"距上次有效动作太久" ⇒ 一定有个东西挡着) */
-            if (guard && t0 - lastAct >= afterMs) {
+            /* ① 弹窗 (任何时刻: 判据是"距上次有效动作太久" ⇒ 一定有个东西挡着)
+             * 重试间隔 escMs = popup.every_sec —— 见 observeFast 声明处的注释 */
+            if (guard && t0 - lastAct >= afterMs && t0 - lastEscTry >= escMs) {
+                lastEscTry = t0;
                 Graph.cursor("popup");
                 if (escape(work, bmp, c)) {
                     pops++;
@@ -607,9 +625,16 @@ public final class SettleLoop {
                 bigLatch = false;
             }
 
-            /* ③ 顺手判"这是哪个页"—— 只喂日志/状态, 不参与点击 (点击是连点器的事) */
-            double[] rp = peakArr(work, tRm, btnR);
-            double[] cp = peakArr(work, tCt, btnR);
+            /* ③ 顺手判"这是哪个页"—— 只喂日志/状态, 不参与点击 (点击是连点器的事)。
+             * ⚠️ 按 diagMs 节流 (2026-10-14): 这 6 次匹配是 th=2.0 的**穷举** (不提前退出),
+             * 占了每帧 NCC 的大头, 而 tap_check 关闭时它只值一条 10s 一次的日志。 */
+            boolean diagDue = diagMs <= 0 || fxTapCheck || t0 - lastDiag >= diagMs;
+            if (diagDue) {
+                lastRp = peakArr(work, tRm, btnR);
+                lastCp = peakArr(work, tCt, btnR);
+                lastDiag = t0;
+            }
+            double[] rp = lastRp, cp = lastCp;
             String seen = seenOf(rp, cp, minSim, vic || def);
             /* 低频日志: **状态变化**或满 10s 才记一条 (连点 300ms/轮, 每帧刷屏没意义)。
              * 带两个模板 × 三个槽的峰值 —— 现场只用这一条就能回答
@@ -637,7 +662,7 @@ public final class SettleLoop {
              *
              * 所以默认改成只记日志: 落点那格没匹配到, 不等于点在有害的东西上。
              * 真想让它在"落点那格不是结算按钮"时立刻停车 ⇒ 开 fast.tap_check=true。 */
-            if (homeSlot >= 0) {
+            if (homeSlot >= 0 && homeSlot < rp.length && homeSlot < cp.length) {
                 boolean here = rp[homeSlot] >= minSim || cp[homeSlot] >= minSim;
                 int other = -1;
                 for (int i = 0; i < rp.length; i++)

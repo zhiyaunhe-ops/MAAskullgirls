@@ -152,8 +152,11 @@ def main():
        ('fxbig', 'fxchk') in pair and ('fxchk', 'fxidle') in pair)
     ck('fxTapCheck 从 config 读 (不是写死)',
        'fxTapCheck = fx.optBoolean("tap_check", false);' in sl)
-    # 体检块: 从 "if (homeSlot >= 0) {" 到下一个 12 空格缩进的 "}"
-    i = sl.find('if (homeSlot >= 0) {')
+    # 体检块: 从 "if (homeSlot >= 0" 到下一个 12 空格缩进的 "}"
+    # ⚠️ 锚点只到条件开头 —— 2026-10-14 给该 if 加了 `&& homeSlot < rp.length`
+    #    (三槽峰值改成节流计算后 rp 可能是上一帧的数组), 锚到 `{` 就会找不到块。
+    #    下游 5 条断言 (只提示/run.set 一次/节流/fxchk) 一字未改。
+    i = sl.find('if (homeSlot >= 0')
     j = sl.find('\n            }', i)
     blk = sl[i:j] if i >= 0 and j > 0 else ''
     ck('体检块存在', blk != '')
