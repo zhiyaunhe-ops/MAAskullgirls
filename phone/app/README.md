@@ -148,6 +148,7 @@ python3 tools/MapFightProbe.py      # FIGHT 追踪窗口 + map_check 大保底 +
 #   java  -cp "<out>:<android.jar>" VisionProbe          # 通道口径 + 多分辨率映射
 #   java  -cp "<out>:<org.json.jar>:<android.jar>" PyramidProbe   # 金字塔降采样保分
 #   java  -cp "<out>:<org.json.jar>:<android.jar>" VisionBench    # SAT 等价性 + 计时 A/B + 金字塔判定
+#                                                                  #   + E 段 matcher.step 扫描 (2→3 约 2x, 判定零变化)
 #   java  -cp "<out>:<android.jar>" ZbpcProbe   # ZBPC 跳过率/收益实测 —— 已是"否决"证据, 别再实现
 #                                               #   结论: 生产口径 1.02x, 稳态 1.00x; 阈值剪枝 3.19x
 #                                               #   但未命中时峰值 0.341→-2.000。见 docs/phone-app.md

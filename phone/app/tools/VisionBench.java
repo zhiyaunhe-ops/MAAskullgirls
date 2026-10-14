@@ -129,6 +129,27 @@ public class VisionBench {
         return b;
     }
 
+    /**
+     * 改全局 `matcher.step` —— 走 `Vision.configure()`，与生产同一条路。
+     * ⚠️ 每改一次 EPOCH 前进 ⇒ 各 Frame 的通道缓存/积分图在**下一次用到时**重建，
+     *    所以必须靠 `best()` 取最快一次把这笔一次性开销滤掉。
+     * 需要 org.json 在 classpath 上（`configure` 的参数类型）。
+     */
+    static void setStep(int s) {
+        try {
+            org.json.JSONObject p = new org.json.JSONObject();
+            p.put("level", 2).put("cost", 2.0e8).put("relax", 0.30)
+             .put("floor", 0.50).put("top", 16);
+            org.json.JSONObject m = new org.json.JSONObject();
+            m.put("chan", "blue").put("step", s).put("refine", 2).put("pyramid", p);
+            org.json.JSONObject c = new org.json.JSONObject();
+            c.put("matcher", m);
+            Vision.configure(c);
+        } catch (Exception e) {
+            throw new RuntimeException("setStep(" + s + ") 失败: " + e, e);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         String src = args.length > 0 ? args[0] : "D:/Downloads/Telegram Desktop/";
         String tplDir = args.length > 1 ? args[1] : "phone/app/assets/templates/";
@@ -137,8 +158,13 @@ public class VisionBench {
 
         int bad = 0;
         Vision.Frame fWin = null, fLose = null;
+        Vision.Frame f39 = null, f00 = null, f08 = null;
         try { fWin = load(src + "photo_2026-09-05_17-34-56.jpg"); } catch (Exception e) { }
         try { fLose = load(src + "photo_2026-09-05_17-34-49.jpg"); } catch (Exception e) { }
+        /* 供 E 段的多帧复核：四张结算页 + 一张非结算页（17-35-08 只有 39KB，多半是别种画面） */
+        try { f39 = load(src + "photo_2026-09-05_17-34-39.jpg"); } catch (Exception e) { }
+        try { f00 = load(src + "photo_2026-09-05_17-35-00.jpg"); } catch (Exception e) { }
+        try { f08 = load(src + "photo_2026-09-05_17-35-08.jpg"); } catch (Exception e) { }
         if (fWin == null) { System.out.println("[跳过] 缺素材 win 帧"); }
         else System.out.println("win 帧 = " + fWin.w + "x" + fWin.h);
         for (String n : new String[]{"victory", "defeat", "btn_rematch", "btn_continue", "srv_ok",
@@ -280,6 +306,97 @@ public class VisionBench {
         }
 
         System.out.println(bad == 0 ? "\n[ok] 等价性/自贴图全部通过" : "\n[!!] " + bad + " 项不符");
+
+        /* ===== E. matcher.step 扫描 (2026-10-14) =====
+         * step 是**唯一还没量过的全局旋钮**：搜索位置数 ∝ 1/step² ⇒ 2→3 少算约 2.2 倍，
+         * 而它只改"粗搜网格疏密"，不改任何判定口径。两个风险必须同批量：
+         *   ① 粗网格变稀 ⇒ 粗峰值可能掉到阈值之下（`srv_retry` 那种"差一点"的模板最危险，
+         *      代码里那段"未过阈值也精修峰值"的注释就是为它写的）；
+         *   ② 位置数变少会**改变金字塔判据**（cost = 位置数×面积）⇒ 有的调用点可能从
+         *      "走金字塔"翻成"全搜"，反而更慢。
+         * ⚠️ 大字计场 / FIGHT 追踪 / 大保底 / 结算三槽走 `SettleLoop.findExact()`（FULL_COST
+         *    + FULL_LEVEL=0）**钉死全搜**，不受 ② 影响；只有 escape 链里 roi=null 的
+         *    `srv_ok`/`srv_retry` 受全局 `pyramid.cost` 管。本段用的是 win 帧。
+         */
+        System.out.println("\n== E. matcher.step 扫描：峰值分 / 耗时（★n = 命中判定与 step2 不同）==");
+        int[] titleR0 = {400, 20, 480, 100};
+        int[] btn0 = {265, 478, 220, 68};
+        int[] okR0 = {480, 300, 320, 180};
+        int[] sceneR0 = {600, 0, 560, 180};
+        int[] modalR0 = {480, 0, 480, 280};
+        int[] vsR0 = {1020, 0, 260, 130};
+        int[] homeR0 = {0, 0, 180, 70};
+        Object[][] sweep = {
+                {"victory@title", "victory", titleR0, 0.72},
+                {"defeat@title", "defeat", titleR0, 0.72},
+                {"rematch@slot0", "btn_rematch", btn0, 0.72},
+                {"continue@slot0", "btn_continue", btn0, 0.72},
+                {"ok_btn", "ok_btn", okR0, 0.80},
+                {"scene_x", "scene_x", sceneR0, 0.80},
+                {"modal_x", "modal_x", modalR0, 0.90},
+                {"vs_fight@roi", "vs_fight", vsR0, 0.75},
+                {"home@map_check", "home", homeR0, 0.85},
+                {"srv_ok@full", "srv_ok", null, 0.75},
+                {"srv_retry@full", "srv_retry", null, 0.75},
+        };
+        final int[] stepList = {1, 2, 3, 4};
+        double[] tot = new double[stepList.length];
+        int stepBad = 0;
+        double dev3 = 0, dev4 = 0;
+        int nSites = 0;
+        Vision.Frame[] swFrames = {fWin, fLose, f39, f00, f08};
+        for (int fi = 0; fi < swFrames.length; fi++) {
+            final Vision.Frame fSw = swFrames[fi];
+            if (fSw == null) continue;
+            boolean detail = fi == 0;
+            if (detail) {
+                System.out.printf("%-17s", "用例");
+                for (int s : stepList) System.out.printf(" %12s", "step" + s);
+                System.out.println();
+            }
+            for (Object[] cs : sweep) {
+                final Vision.Frame t = tpl.get((String) cs[1]);
+                if (t == null) continue;
+                final int[] roi = (int[]) cs[2];
+                final double th = (Double) cs[3];
+                StringBuilder line = new StringBuilder();
+                Boolean hitRef = null;
+                boolean rowChanged = false;
+                double pkRef = -2;
+                for (int i = 0; i < stepList.length; i++) {
+                    final int s = stepList[i];
+                    setStep(s);
+                    final double[] r = new double[3];
+                    double m = best(3, () -> {
+                        double[] x = Vision.findScored(fSw, t, roi, th);
+                        r[0] = x == null ? -2 : x[2];
+                    });
+                    tot[i] += m;
+                    boolean hit = r[0] >= th;
+                    if (hitRef == null) hitRef = hit;
+                    if (s == 2) pkRef = r[0];
+                    if (s == 3 && Math.abs(r[0] - pkRef) > dev3) dev3 = Math.abs(r[0] - pkRef);
+                    if (s == 4 && Math.abs(r[0] - pkRef) > dev4) dev4 = Math.abs(r[0] - pkRef);
+                    if (s >= 3 && hit != hitRef) { stepBad++; rowChanged = true; }
+                    if (detail) line.append(String.format(" %6.4f/%5.1f", r[0], m));
+                }
+                nSites++;
+                if (detail) System.out.printf("%-17s%s   %s%n", cs[0], line,
+                        rowChanged ? "★判定变了" : "");
+            }
+        }
+        System.out.printf("%-17s", "耗时合计 ms");
+        for (double v : tot) System.out.printf(" %12.1f", v);
+        System.out.println();
+        System.out.printf("%-17s", "相对 step2");
+        for (double v : tot) System.out.printf(" %11.2fx", tot[1] / v);
+        System.out.println();
+        System.out.printf("  跨 %d 帧 x %d 调用点：step3 峰值最大偏移 %.4f，step4 %.4f，判定变化 %d 处%n",
+                swFrames.length, nSites / Math.max(1, swFrames.length), dev3, dev4, stepBad);
+        System.out.println(stepBad == 0
+                ? "  → step 3/4 的命中判定与 step2 **完全一致**"
+                : "  → **有 " + stepBad + " 处判定在 step≥3 变了** —— 那些调用点不能升 step");
+
         System.exit(bad == 0 ? 0 : 1);
     }
 }
