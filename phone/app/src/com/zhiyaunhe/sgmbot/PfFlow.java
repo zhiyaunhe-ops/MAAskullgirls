@@ -70,10 +70,14 @@ public final class PfFlow {
     /** 结构性停止原因 (null = 继续跑)。 */
     private String fatal;
 
+    /** 界面快速识别器 (见 {@link PfScene} 的类注释: 快路径靠它, 认不出才回退串行链)。 */
+    private final PfScene scene;
+
     public PfFlow(ShizukuCtl sh, TplStore tpls, OverlayBar bar) {
         this.sh = sh;
         this.tpls = tpls;
         this.bar = bar;
+        this.scene = new PfScene(tpls);
         this.team = new PfTeam(sh, tpls, this);
     }
 
@@ -169,7 +173,73 @@ public final class PfFlow {
      */
     private void step(Vision.Frame work, Bitmap bmp, AtomicBoolean run, JSONObject c) {
         if (justFoughtTicks > 0) justFoughtTicks--;   // "刚点完 FIGHT"的时效窗 (见 ⑨)
-        // ① QUIT GAME? 确认框 (我们按返回键按出来的, 无 X, 必须最先点掉否则永久死锁)。
+
+        /* ---- 快路径: 界面识别 (PfScene) ----
+         * ⚠️ 原来下面是一条**串行的全帧匹配链**, 每一步依次对十几个模板做 ROI_FULL 全搜,
+         * 真机实测一轮循环慢到 14 秒 —— 识别比操作还贵。
+         * 现在先花一顿便宜的代价认出"这是哪一页"(小 ROI 模板 + 像素特征), 认出来就
+         * **直接跳到对应分支**, 不再逐个试。认不出才回退原链 (宁可慢也别误判)。
+         * 弹窗类 (①/①b/②/③) 因为压在别的界面之上, 必须比页面分支先处理。 */
+        PfScene.S sc = scene.classify(work);
+        if (sc != PfScene.S.UNKNOWN) {
+            switch (sc) {
+                case QUIT_DIALOG:            // 我们按返回键按出来的, 无 X, 必须先点掉否则死锁
+                    tap(bmp, PfScene.quitCancelAt(work));
+                    unknownTries = 0;
+                    sleep_(1500);
+                    return;
+                case FILTER_PANEL:           // 筛选面板还开着 ⇒ 直接关掉再继续
+                    log("筛选面板仍开着, 点 ✕ 关闭");
+                    tap(bmp, Pf.FILTER_CLOSE);
+                    unknownTries = 0;
+                    sleep_(1200);
+                    return;
+                case HUB:
+                    unknownTries = 0;
+                    setStep("PF hub");
+                    log("PF hub 就绪 — 点 PLAY! 进场");
+                    {
+                        double[] hub2 = match(work, Pf.T_HUB_PLAY, Pf.ROI_HUB_PLAY, Pf.TH_HUB_PLAY);
+                        if (hub2 != null) tapCenter(bmp, work, hub2, Pf.T_HUB_PLAY);
+                        else tap(bmp, Pf.ROI_HUB_PLAY[0] + Pf.ROI_HUB_PLAY[2] / 2,
+                                 Pf.ROI_HUB_PLAY[1] + Pf.ROI_HUB_PLAY[3] / 2);
+                    }
+                    sleep_(3000);
+                    return;
+                case HALL:
+                    unknownTries = 0;
+                    setStep("主大厅");
+                    log("在主大厅 — 点 PRIZE FIGHTS 进入 PF");
+                    tap(bmp, Pf.HALL_PRIZE_TAP);
+                    sleep_(2500);
+                    return;
+                case OPPONENT:
+                    unknownTries = 0;
+                    justFoughtTicks = 0;
+                    sessionFightNo++;
+                    fightNo++;
+                    setStep("选对手");
+                    team.pickOpponent(work, bmp);
+                    lastActMs = System.currentTimeMillis();
+                    return;
+                case TEAM_EDITOR:
+                case TEAM_PREVIEW:
+                    unknownTries = 0;
+                    fightFlow(work, bmp, run);
+                    lastActMs = System.currentTimeMillis();
+                    return;
+                case RESULTS:
+                    unknownTries = 0;
+                    setStep("战斗结算");
+                    handleResults(bmp, run, c);
+                    lastActMs = System.currentTimeMillis();
+                    return;
+                default:
+                    break;               // BATTLE / NOT_IN_GAME / BOOT: 交给下面的原链
+            }
+        }
+
+        // ① QUIT GAME? 确认框 (快路径没认出时的兜底: 模板判据)。
         if (handleQuitDialog(work, bmp)) {
             unknownTries = 0;
             return;
@@ -198,8 +268,8 @@ public final class PfFlow {
             sleep_(2500);
             return;
         }
-        // ④ 误入角色详情页: 返回。
-        double[] det = match(work, Pf.T_DETAIL, Pf.ROI_FULL, Pf.TH_FIGHT);
+        // ④ 误入角色详情页: 返回。(全搜 —— 同 findServerError 那条教训: 金字塔会造伪峰)
+        double[] det = matchFull(work, Pf.T_DETAIL, Pf.ROI_FULL, Pf.TH_FIGHT);
         if (det != null) {
             log("误入角色详情页, 返回");
             tap(bmp, Pf.BACK_BTN);
@@ -776,9 +846,14 @@ public final class PfFlow {
 
     /** 服务器错误弹窗按钮 (srv_ok / srv_retry)。 */
     private int[] findServerError(Vision.Frame work) {
-        double[] r = match(work, Pf.T_SRV_OK, Pf.ROI_FULL, 0.75);
+        /* ⚠️⚠️ 2026-10-16 实栽: 这里原来是 `match()` (走金字塔) + 阈值 0.75, 而 **普通界面
+         * 上 srv_ok 就能过线** ⇒ 每 4 秒点一次"OK", 点在一个根本不存在的按钮上, 无限空转
+         * (日志刷了几百行"服务器错误弹窗, 点 OK"却什么都没发生)。
+         * 两条修正: ① **全搜** —— 金字塔的粗搜会在无关区域撞出伪峰 (实测普通帧全搜只有
+         * 0.45~0.65, 金字塔却能顶到 0.75+); ② 阈值抬到 0.85, 与实测误报上限 0.65 拉开余量。 */
+        double[] r = matchFull(work, Pf.T_SRV_OK, Pf.ROI_FULL, 0.85);
         if (r != null) return centerOf(work, r, Pf.T_SRV_OK);
-        r = match(work, Pf.T_SRV_RETRY, Pf.ROI_FULL, 0.75);
+        r = matchFull(work, Pf.T_SRV_RETRY, Pf.ROI_FULL, 0.85);
         if (r != null) return centerOf(work, r, Pf.T_SRV_RETRY);
         return null;
     }
