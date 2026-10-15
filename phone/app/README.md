@@ -26,7 +26,7 @@ apksigner + android-34 platform，**无 Gradle / 无 Android Studio**，`build.s
    ② ① 走不通就把 APK **交给系统安装器**(content:// + `ACTION_VIEW`), 用户点一下「安装」——
    不需要 Shizuku / adb。⚠️ 第二条路是异步的, 水位用**本包自己的 `lastUpdateTime`**
    认账 (同 "让执行方自己说" 那条规矩), 不猜。前提与判定口径见
-   [../docs/phone-app.md](../docs/phone-app.md)「APK 自更新」与「APK 第二条路」。
+   [../docs/phone-app.md](../../docs/phone-app.md)「APK 自更新」与「APK 第二条路」。
 4. **adb 可调试** — 三通道控制面:
    - 文件: 外部根 `logs/app.log` + `state.json` (当前状态机/计数) — 路径见上;
    - 广播: `adb shell am broadcast -a com.zhiyaunhe.sgmbot.CMD -e action start_nav|stop|reload`;
@@ -91,7 +91,7 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
 - **M2+ 快速连点模式**（2026-10-11，`config.fast`，默认关）：结算页第一个界面的 CONTINUE 与
   第二个界面的 REMATCH 落在**同一个点**（按钮行居中那颗），所以盲点它就能"前进/重开"，
   不必逐帧匹配；弹窗检测保留但搬到**独立观察线程**（1s 一帧）做弹窗/计场/停车。
-  前提、兜底与现场核对办法见 [../docs/phone-app.md](../docs/phone-app.md)「快速连点模式」。
+  前提、兜底与现场核对办法见 [../docs/phone-app.md](../../docs/phone-app.md)「快速连点模式」。
 - **M3 导航链**：NavChain 移植（目标卡 Pillow Talk、地图右移×2、绿✓锚点、FIGHT!、  开场脑子+速度判档）。到这步功能即与 autojs 版打平。
 - **M4 稳定性**：前台服务保活、开机自启、通知栏控制、store.json 兼容迁移。
 - **M5 角色资料**：`data/sgm/characters.json`（本仓库维护，名字/图标/属性/出处），
@@ -117,13 +117,13 @@ MIN_SIM .72、王关✓锚点 (0xFF7AC241, tol 50, offset -72,+2)、地图右移
   `observe_ms`)，而每帧 ~2.5 核秒 > observe_ms ⇒ CPU/秒 恒为 1 核。已把每帧降到 ~0.6 核秒
   （escape 重试节流 + 诊断峰值节流 + 截屏改裸 RGBA + 匹配内核换 SAT），并把默认
   `observe_ms` 由 1000 抬到 **3000** —— 预计脚本从 ~1.1 核落到 ~0.3 核。见
-  [../docs/phone-app.md](../docs/phone-app.md)「每帧成本与恒定 1 核」「截屏口径：裸 RGBA」
+  [../docs/phone-app.md](../../docs/phone-app.md)「每帧成本与恒定 1 核」「截屏口径：裸 RGBA」
   「匹配内核：积分图 SAT」。
 - ⚠️ **金字塔粗搜不能推广到文字类模板**（2026-10-14 真帧实测）：`victory`/`defeat` 走
   0.5x/0.25x 粗搜峰值只剩 0.15~0.18（全搜 1.0000）；`btn_rematch` 甚至变 **−0.04** 且
   **慢 3~4 倍**；粗搜分还与真相反相（漏检帧 0.33~0.47 > 命中帧 0.07~0.18）。
   ⇒ 召回关键的匹配一律走 `SettleLoop.findExact()`（强制全搜）。见
-  [../docs/phone-app.md](../docs/phone-app.md)「金字塔只对全屏搜大按钮成立」。
+  [../docs/phone-app.md](../../docs/phone-app.md)「金字塔只对全屏搜大按钮成立」。
 - Shizuku 仍是权限源头（无线调试激活），App 内做「Shizuku 未连接」引导页。
 - HyperOS 杀后台：前台服务 + 省电白名单 + 自启动（用户侧一次性设置，App 内引导）。
 - APK 第二条路（系统安装器）需要一次「安装未知应用」授权；另外 Android 10+ 禁止
