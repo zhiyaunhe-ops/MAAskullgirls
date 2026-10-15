@@ -32,6 +32,10 @@ public final class ShizukuCtl {
 
     private static volatile IShellService svc;
     private static volatile boolean bound;
+    /** 上次发出 bindUserService 的时刻 (给 {@link #ensureBound} 判超时重发用)。 */
+    private static volatile long bindAtMs;
+    /** bind 发出后多久还没拿到 UserService 就重发。 */
+    private static final long BIND_RETRY_MS = 6000;
     private static ServiceConnection conn;
 
     /* ---- 状态机 (MainActivity/BotService 轮询显示) ---- */
@@ -54,6 +58,7 @@ public final class ShizukuCtl {
     public static void tryBind(Context ctx) {
         if (bound || !serverUp() || !granted()) return;
         bound = true;
+        bindAtMs = System.currentTimeMillis();
         conn = new ServiceConnection() {
             @Override public void onServiceConnected(ComponentName n, IBinder b) {
                 svc = IShellService.Stub.asInterface(b);
@@ -90,6 +95,31 @@ public final class ShizukuCtl {
     }
 
     /**
+     * 绑定卡住时重发 —— 见 {@link #BIND_RETRY_MS} 的说明。
+     *
+     * <p>⚠️ 2026-10-15 实栽 (真机现场: 截屏连续 2 分钟全失败, 日志 `err=no-file | out=` 而
+     * `out` 为空 ⇒ `exec` 根本没执行 ⇒ `svc == null`, 但日志里明明有 "bindUserService...")。
+     *
+     * <p>{@link #tryBind} 在**回调之前**就把 {@code bound} 置 true —— 这是"一次只绑一次"的
+     * 幂等保护, 但它假设 bind 一定会回调。实测这个假设不成立: `install -r` 之后 version 变了,
+     * Shizuku 要**先销毁旧 UserService 进程、再起新的**, 这个窗口里发出的 bind 请求会被静默
+     * 丢弃 (无 onServiceConnected、也无 onServiceDisconnected)。于是 {@code bound} 永远 true、
+     * 永远不再绑 ⇒ 整个 App 功能全废 (截屏/点击全部静默失败), 只有重启 App 才能恢复。
+     *
+     * <p>这里做超时重发: 超过 {@link #BIND_RETRY_MS} 还没拿到 {@code svc} 就当作"没绑成功",
+     * 清掉 {@code bound} 重新发一次。调用点放在 {@link #exec} 的空手返回处 —— 那是唯一的
+     * 汇聚点, 任何"该干活却没绑上"的场景都会经过它。
+     */
+    public static void ensureBound() {
+        if (svc != null) return;
+        if (bound && System.currentTimeMillis() - bindAtMs < BIND_RETRY_MS) return;
+        if (App.inst == null || !serverUp() || !granted()) return;
+        SgmLog.i("shizuku", "UserService 超时未绑上, 重发 bind");
+        bound = false;
+        tryBind(App.inst);
+    }
+
+    /**
      * 发授权请求 (幂等; 已授权则直接 tryBind) — 主页/悬浮条/指引页共用。
      * 之前只有 MainActivity 里一份内联逻辑, 别的页面想补授权只能自己抄一遍。
      */
@@ -111,7 +141,7 @@ public final class ShizukuCtl {
     /** sh -c 执行, 返回 stdout (UserService 未绑定/异常返回 "") */
     public static String exec(String cmd) {
         IShellService s = svc;
-        if (s == null) return "";
+        if (s == null) { ensureBound(); return ""; }   // ⚠️ 空手返回前先试着重绑 (见 ensureBound)
         try { return s.exec(cmd); }
         catch (Throwable t) {
             SgmLog.i("shizuku", "exec err: " + t);
@@ -132,7 +162,8 @@ public final class ShizukuCtl {
         if (rawOK) {                                   // ① 裸 RGBA (省 PNG 编解码)
             for (String d : dirs) {
                 String p = d + "/frame.raw";
-                String out = exec("mkdir -p \"" + d + "\" && screencap \"" + p + "\"");
+                /* ⚠️⚠️ rm -f 必须先于 screencap —— 见 PNG 分支同处注释 (陈旧帧 bug)。 */
+                String out = exec("rm -f \"" + p + "\" && mkdir -p \"" + d + "\" && screencap \"" + p + "\"");
                 Bitmap b = decodeRaw(p);
                 if (b != null) { capFails = 0; capOk = d; lastScale = b.getHeight() / (float) WORK_H; return b; }
                 capOut = out;
@@ -145,8 +176,15 @@ public final class ShizukuCtl {
         }
         for (String d : dirs) {                        // ② PNG (回退路径, 逐字未改)
             String p = d + "/frame.png";
-            // mkdir -p: 目录不存在时 screencap 报 "Error opening file" 且不自建目录
-            String out = exec("mkdir -p \"" + d + "\" && screencap -p \"" + p + "\"");
+            /* ⚠️⚠️ 2026-10-15 修的**陈旧帧** bug (真机现场: 永远判"未知界面", 而屏幕早已回到大厅):
+             * 截屏落盘用**固定文件名**, 却**不先删旧文件** ⇒ 一旦 screencap 失败/超时/报错
+             * (如息屏被 SurfaceFlinger 挂住), 上一轮的 frame.png 还在盘上 ⇒ decode() 照旧
+             * 成功解出**上一帧**并当作新帧返回。后果: 状态机永远看着过期画面,
+             * 「未知界面 → 按返回键」无限空转, 而人在旁边看画面明明是正常的。
+             * 修法: 每次截屏前 `rm -f` 目标文件 —— 截屏真失败就 decode 不到东西, 老实返回 null
+             * (上层丢帧重试), 而不是悄悄喂陈旧帧。
+             * (mkdir -p 仍必要: 目录不存在时 screencap 报 "Error opening file" 且不自建目录。) */
+            String out = exec("rm -f \"" + p + "\" && mkdir -p \"" + d + "\" && screencap -p \"" + p + "\"");
             Bitmap b = decode(p);
             if (b != null) { capFails = 0; capOk = d; lastScale = b.getHeight() / (float) WORK_H; return b; }
             capOut = out;

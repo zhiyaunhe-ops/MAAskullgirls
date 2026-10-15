@@ -48,6 +48,9 @@ public final class OverlayBar {
     private Button btnStart;
     private TextView tvStat;
     private boolean folded;
+
+    /** 挂机开始**之前**用户的折叠状态 (null = 本次挂机还没动过), 停手时据此还原。 */
+    private Boolean preRunFold;
     /** 统计文案 (单独启动时由 OverlayCtl 周期刷新; 服务跑时由 SettleLoop 推) */
     private volatile String statText = "待机";
     /** 「开始 / 继续」当前文案 —— 记住它而不是回读 Button (回读要依赖 View.getText, 探针桩也得跟着长) */
@@ -270,8 +273,32 @@ public final class OverlayBar {
         OverlayCtl.rememberFold(on);
     }
 
-    public void destroy() {
-        if (root != null) {
+    /**
+     * 挂机期间自动折叠悬浮条, 停手时还原用户原来的样子。
+     *
+     * <p>⚠️ 2026-10-15 真机实栽 (这是最讽刺的一个坑): **bot 自己的悬浮条挡住 bot 自己的眼睛**。
+     * 面板被拖到画面左侧后覆盖 work y≈200~330, 正好压住大厅的 PRIZE FIGHTS 节点 ——
+     * 模板匹配从 **0.98 掉到 0.55** ⇒ 判不出大厅 ⇒ 按返回键 ⇒ 弹出 QUIT GAME? ⇒ 死锁。
+     * 折叠后只剩右上角那个 96x66 的小箭头 (work 约 13~79 x 48~98), 不再压任何关键 UI。
+     *
+     * <p>用户点小箭头仍可随时展开 (要按"结束"时), 展开的优先级高于自动折叠 ——
+     * 这里只在**状态切换的那一刻**动一次, 不跟用户抢。
+     */
+    public void foldForRun(final boolean running) {
+        SgmLog.i("overlay", "foldForRun(" + running + ") folded=" + folded + " pre=" + preRunFold);
+        post(() -> {
+            if (running) {
+                if (preRunFold == null) preRunFold = folded;
+                if (!folded) setFold(true);
+            } else {
+                if (preRunFold != null && !preRunFold) setFold(false);
+                preRunFold = null;
+            }
+            SgmLog.i("overlay", "foldForRun 应用后 folded=" + folded);
+        });
+    }
+
+    public void destroy() {        if (root != null) {
             try { wm.removeView(root); } catch (Exception ignored) { }
             root = null;
         }

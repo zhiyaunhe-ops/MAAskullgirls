@@ -217,6 +217,9 @@ public class BotService extends Service {
         RUN.set(true);
         everRan = true;
         mode = m;
+        /* 挂机期间折叠悬浮条 —— ⚠️ 这条广播路径**不经过 spawn()**, 折叠必须在这里也做一次,
+         * 否则用 adb/HTTP 触发时悬浮条照旧展开、继续挡着游戏 UI (2026-10-15 实栽)。 */
+        if (bar != null) bar.foldForRun(true);
         final String mm = m;
         new Thread(() -> runBot(mm), "bot-" + mm).start();
         return START_STICKY;
@@ -252,6 +255,9 @@ public class BotService extends Service {
         RUN.set(true);              // 与 onStartCommand 对齐: stop 会清 RUN, 这里必须重新置
         everRan = true;
         mode = m;
+        /* 挂机期间折叠悬浮条 —— 展开的面板会挡住游戏 UI, 实测把大厅 PRIZE FIGHTS 的模板
+         * 匹配从 0.98 压到 0.55 ⇒ bot 认不出大厅 ⇒ 自己把自己卡死。见 OverlayBar.foldForRun。 */
+        if (bar != null) bar.foldForRun(true);
         new Thread(() -> runBot(m), "bot-" + m).start();
     }
 
@@ -277,6 +283,7 @@ public class BotService extends Service {
         }
         running = false;
         RUN.set(false);
+        if (bar != null) bar.foldForRun(false);      // 还原用户挂机前的展开状态
         notify_("SGM挂机已暂停 (可在悬浮条上点「继续」)");
         SgmLog.i("svc", "已暂停 mode=" + m + " (服务/悬浮条保留)");
     }

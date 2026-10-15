@@ -133,10 +133,10 @@ final class PfTeam {
         return out;
     }
 
-    /** 六个可见候选位的黄钉数。 */
+    /** 可见候选位的黄钉数 (真机 8 张, 见 {@link Pf#ROSTER_CX})。 */
     int[] readRosterEnergy(Vision.Frame f) {
-        int[] out = new int[6];
-        for (int i = 0; i < 6; i++) {
+        int[] out = new int[Pf.ROSTER_CENTERS.length];
+        for (int i = 0; i < out.length; i++) {
             out[i] = countBolts(f, Pf.ROSTER_BAND, Pf.ROSTER_CENTERS[i][0], Pf.ROSTER_HALF);
         }
         return out;
@@ -420,7 +420,17 @@ final class PfTeam {
             int[] slots2 = readSlotEnergy(Vision.toWork(b2));
             if (slots2[slotI] < energyCost) {
                 slotFails[slotI] = fails + 1;
-                flow.log("槽位" + (slotI + 1) + " 拖拽未生效, 归零候选列重试");
+                /* ⚠️ 必须**有上限** (2026-10-15 用户当场看到的现象: "为什么一直在拉拽最底下那排"):
+                 * 旧实现只把偏移量封顶, 失败计数照涨、循环照转 ⇒ 拖不中就**永远拖下去**,
+                 * 日志每 3s 刷一行「拖拽 -> 槽位N / 拖拽未生效」刷到 83 行不停, 也不退还主循环。
+                 * 拖不中有两种可能 (坐标错 / 该卡不可拖), 两种都不该靠无限重试解决。 */
+                if (slotFails[slotI] >= DRAG_MAX_FAILS) {
+                    flow.log("槽位" + (slotI + 1) + " 连续 " + DRAG_MAX_FAILS
+                            + " 次拖拽未生效 — 放弃该槽 (坐标或卡面不可拖), 回主循环");
+                    return false;
+                }
+                flow.log("槽位" + (slotI + 1) + " 拖拽未生效 (" + slotFails[slotI] + "/"
+                        + DRAG_MAX_FAILS + "), 归零候选列重试");
                 for (int i = 0; i < 4; i++) {
                     flow.swipe(b2, Pf.X(420), Pf.Y(570), Pf.X(1150), Pf.Y(570), 400);
                     PfFlow.sleep_(400);
@@ -431,9 +441,13 @@ final class PfTeam {
         }
     }
 
+    /** 单个槽位拖拽连续失败多少次就放弃 (防止"一直拉拽最底下那排"的死循环)。 */
+    private static final int DRAG_MAX_FAILS = 4;
+
     /** 从当前 (可能已筛选) 候选区拖左一个能量达标的角色到指定槽位, 带校验重试。 */
     private boolean dragBestToSlot(int slotI) {
         int pages = 0;
+        int fails = 0;
         while (true) {
             Bitmap b = sh.capture();
             if (b == null) return false;
@@ -456,6 +470,11 @@ final class PfTeam {
             PfFlow.sleep_(1400);
             Bitmap b2 = sh.capture();
             if (b2 != null && readSlotEnergy(Vision.toWork(b2))[slotI] >= energyCost) return true;
+            /* 同上: 拖不中必须收敛, 不能无限重试 (用户 2026-10-15 看到的就是这个死循环)。 */
+            if (++fails >= DRAG_MAX_FAILS) {
+                flow.log("筛选槽拖拽连续 " + DRAG_MAX_FAILS + " 次未生效 — 放弃");
+                return false;
+            }
             for (int i = 0; i < 4; i++) {
                 flow.swipe(b, Pf.X(420), Pf.Y(570), Pf.X(1150), Pf.Y(570), 400);
                 PfFlow.sleep_(400);
@@ -512,25 +531,68 @@ final class PfTeam {
     void setFilter(List<int[]> chips) {
         Bitmap b = sh.capture();
         if (b == null) return;
-        tapResident(b, Pf.FILTER_BTN);
+        /* 漏斗位置**用模板找**, 不硬编码: 它锚在 20:9 屏幕右缘, PC 的换算给 work x=1100 而
+         * 实测 1240 (差 140px ⇒ 点下去什么都没发生)。找不到就退回实测坐标兜底。 */
+        int[] btn = flow.funnel(Vision.toWork(b));
+        if (btn == null) btn = Pf.FILTER_BTN;
+        tapResident(b, btn);
         PfFlow.sleep_(1200);
+        /* ⚠️ 必须**验证面板真的开了**再往下点 (2026-10-15 实栽): 漏斗坐标曾经是错的,
+         * 于是"清空/芯片/关闭"三下全打在游戏画面上 —— 面板从没打开过, 而函数**静默返回**,
+         * 上层以为筛选已生效 ⇒ 拖人完全没有筛选条件。这就是"选角色不加筛选条件"的真身。 */
+        if (!panelOpen()) {
+            tapResident(b, btn);
+            PfFlow.sleep_(1200);
+            if (!panelOpen()) {
+                /* 诊断: 记下漏斗/✕ 的**实际最分**再放弃 —— 只说"打不开"没法分辨三种情况:
+                 * ① 漏斗没找到(坐标错) ② 漏斗点了但游戏没响应 ③ 面板开了只是 ✕ 模板没匹配上。
+                 * 这三种的修法完全不同, 日志必须给出分数 (2026-10-15 教训)。 */
+                Bitmap bd = sh.capture();
+                flow.log("筛选面板打不开 — 本次放弃筛选 (别静默当成功) | 诊断: "
+                        + (bd == null ? "无帧" :
+                           "漏斗=" + best(Vision.toWork(bd), Pf.T_FILTER_BTN, Pf.ROI_FILTER_BTN)
+                           + " ✕=" + best(Vision.toWork(bd), Pf.T_FILTER_X, Pf.ROI_FILTER_X)
+                           + " 点过=(" + btn[0] + "," + btn[1] + ")"));
+                return;
+            }
+        }
         tapResident(b, Pf.FILTER_CLEAR);
         PfFlow.sleep_(400);
         for (int[] c : chips) {
             tapResident(b, c);
             PfFlow.sleep_(400);
         }
+        flow.log("筛选面板: 清空 + 点亮 " + chips.size() + " 个芯片");
         for (int attempt = 0; attempt < 3; attempt++) {
             tapResident(b, Pf.FILTER_CLOSE);
             PfFlow.sleep_(1000);
-            Bitmap b2 = sh.capture();
-            if (b2 != null && match(Vision.toWork(b2), Pf.T_FILTER_X, Pf.ROI_FILTER_X,
-                    Pf.TH_FILTER_X) == null) {
+            if (!panelOpen()) {
+                flow.log("筛选面板已关闭 (第 " + (attempt + 1) + " 次尝试)");
                 return;
             }
             flow.log("筛选面板未关闭, 重试 " + (attempt + 1) + "/2");
         }
         flow.log("筛选面板关闭失败, 带面板继续 (后续读数会异常)");
+    }
+
+    /**
+     * 筛选面板是否开着 —— 用面板右上那个 ✕ 当锚点。
+     *
+     * <p>比"看候选列变没变"可靠得多: 候选列本来就可能是筛选后的样子 (游戏内筛选跨运行持久),
+     * 而 ✕ 只在面板打开时存在。
+     */
+    /** 该模板在 ROI 内的最高分 (只报分数, 不看阈值 —— 用于诊断)。 */
+    private double best(Vision.Frame work, String tplName, int[] roi) {
+        Vision.Frame t = tpls.get(tplName);
+        if (t == null) return -9;                     // 模板缺失
+        double[] r = Vision.findScored(work, t, roi, 0.0, -1, 0);
+        return r == null ? -1 : r[2];
+    }
+
+    private boolean panelOpen() {
+        Bitmap b = sh.capture();
+        return b != null && matchFull(Vision.toWork(b), Pf.T_FILTER_X, Pf.ROI_FILTER_X,
+                Pf.TH_FILTER_X) != null;
     }
 
     /** 驻留式点击: 按下-停-抬起 (同 PC 的 _tap)。 */
@@ -760,6 +822,14 @@ final class PfTeam {
         Vision.Frame t = tpls.get(tplName);
         if (t == null) return null;
         double[] r = Vision.findScored(work, t, roi, th);
+        return r != null && r[2] >= th ? r : null;
+    }
+
+    /** 同 match, 但**强制全搜** (小模板/召回关键一律走这条, 理由见 PfFlow.funnel 注释)。 */
+    private double[] matchFull(Vision.Frame work, String tplName, int[] roi, double th) {
+        Vision.Frame t = tpls.get(tplName);
+        if (t == null) return null;
+        double[] r = Vision.findScored(work, t, roi, th, -1, 0);
         return r != null && r[2] >= th ? r : null;
     }
 

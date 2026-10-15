@@ -58,7 +58,9 @@ public final class Pf {
     // 全部由 assets/resource/base/image/pf/*.png 等比 ×0.8 生成, 见 TplStore 注释。
 
     public static final String T_FIGHT        = "pf/vs_fight_btn";      // VS/地图页右上 FIGHT!
-    public static final String T_FILTER_X     = "pf/pf_filter_x";       // 筛选面板关闭 X
+    public static final String T_FILTER_X     = "pf/pf_filter_x";       // 筛选面板关闭 X (蓝底金叉)
+    /** 编队编辑器右下角的筛选漏斗 —— 同时是"我在编辑器而不是编队预览页"的判据。 */
+    public static final String T_FILTER_BTN   = "pf/filter_btn";
     public static final String T_DRAGHINT     = "pf/drag_hint";         // 编队页 DRAG 提示
     public static final String T_DEF_CONFIRM  = "pf/defense_confirm";   // 防守队编辑器右上 CONFIRM
     public static final String T_ENERGY_X     = "pf/energy_x";          // 能量不足弹窗 X
@@ -73,6 +75,16 @@ public final class Pf {
     public static final String T_SPD_3X       = "pf/battle_spd_3x";
     public static final String T_HUB_PLAY     = "pf/hub_play";          // PF hub 居中卡 PLAY!
     public static final String T_HALL_PRIZE   = "pf/hall_prize_fights"; // 大厅 PRIZE FIGHTS 菱形
+
+    /**
+     * 大厅 EVENTS 菱形 —— 大厅的**第二判据**。
+     *
+     * <p>⚠️ 2026-10-15 真机实栽: 只用 {@code hall_prize_fights} 判大厅会翻车。
+     * 本 App 自己的悬浮条被拖到画面左侧后会**压住 PRIZE FIGHTS 节点**, 模板从 0.98 掉到 0.55
+     * ⇒ 判不出大厅 ⇒ 按返回键 ⇒ 弹出 QUIT GAME? ⇒ 死锁。
+     * EVENTS 在画面右半边, 悬浮条盖不到; 实测大厅 0.87~1.00、其它界面 ≤0.42, 分离度足够。
+     */
+    public static final String T_HALL_EVENTS  = "hall_events";
     public static final String T_SCENE_X      = "pf/scene_popup_x";     // 大厅促销弹窗 X
     public static final String T_MODAL_X      = "pf/popup_close_x";     // 弹窗通用方形 X
     public static final String T_CONTINUE     = "pf/pf_continue_btn";   // 结算 CONTINUE (残局脱离)
@@ -88,6 +100,20 @@ public final class Pf {
      * 实测互不混淆（本模板在右上区只有 0.295，vs_fight_btn 在中央 0.782）。
      */
     public static final String T_MOVES_FIGHT  = "pf/moves_fight";
+
+    /**
+     * 「QUIT GAME?」确认弹窗的橙色标题栏。
+     *
+     * <p>2026-10-15 真机实栽: bot 的**系统返回键**把已经到大堂的画面顶出了这个弹窗
+     * （"Are you sure you want to quit the game?" QUIT / CANCEL），画面随即被压暗 ⇒
+     * 大堂模板失配 ⇒ bot 判"未知界面" ⇒ 再按返回 ⇒ 自我死锁。
+     * 它**没有 X**，只能认正文/标题栏再点 CANCEL。裁自真机现场帧，
+     * 自匹配 1.0、其它画面 ≤0.26 ⇒ 阈值 0.85 很安全。
+     */
+    public static final String T_QUIT         = "pf/quit_title";
+
+    /** CANCEL 按钮相对标题栏中心的偏移 (work 像素; 由真机现场帧量出)。 */
+    public static final int[] QUIT_CANCEL_OFF = {90, 185};
 
     // ---------------- ROI (PC 基准, 经 R() 换算) ----------------
     // 用 [x0,y0,x1,y1] 写, 与实际调用处的 Vision 口径无关。
@@ -145,6 +171,19 @@ public final class Pf {
     public static final int[] ROI_TITLE_FB   = R(520, 255, 780, 310);
     /** 筛选面板关闭 X 搜索区。 */
     public static final int[] ROI_FILTER_X   = R(1150, 30, 1280, 140);
+
+    /**
+     * 筛选漏斗的搜索区。
+     *
+     * <p>⚠️ 漏斗**锚在 20:9 屏幕右缘**, 不适用居中换算 (PC 的 {@code PI(1215,395)} 给
+     * work x=1100, 实测 1240 —— 差 140px)。所以这里既不硬编码坐标也不用换算,
+     * 而是**模板定位**: 真机实测编辑器内 1.00 / 关掉筛选面板后 0.88 / 编队预览页 0.05。
+     *
+     * <p>⚠️ 且 ROI 必须给宽 —— 2026-10-15 实测**同一台机器不同场次漏斗的 y 不一样**
+     * (第一局在 work y≈315, 另一局在别的行), 窄 ROI 直接 0.15 分漏检。
+     * 漏斗是黄色漏斗形图标, 全右缘搜索 (x1120-1280) 不会误报, 代价只是 ~0.1s 全搜。
+     */
+    public static final int[] ROI_FILTER_BTN = {1120, 100, 160, 440};
     /** 战斗速度泡 (battle_speed_level)。 */
     public static final int[] ROI_SPD        = R(600, 565, 690, 645);
     /** 结算页 CONTINUE (handle_results / wait_battle_end)。 */
@@ -156,12 +195,16 @@ public final class Pf {
 
     public static final double TH_HUB_PLAY   = 0.70;
     public static final double TH_HALL_PRIZE = 0.72;
+    /** 大厅通用判据阈值 (EVENTS 等) —— 实测大厅 ≥0.87、其它界面 ≤0.42。 */
+    public static final double TH_HALL        = 0.72;
     public static final double TH_REFRESH    = 0.70;
     public static final double TH_DRAGHINT   = 0.60;
     public static final double TH_FIGHT      = 0.70;
     public static final double TH_RESULT_C   = 0.70;
     public static final double TH_CONTINUE   = 0.70;
     public static final double TH_FILTER_X   = 0.70;
+    /** 筛选漏斗 (编辑器 1.00 / 编队预览页 0.05, 分离极大)。 */
+    public static final double TH_FILTER_BTN = 0.70;
     public static final double TH_SPD        = 0.85;   // 同位实测 ≥0.95, 串扰 ≤0.76, 无泡 ≤0.14
     public static final double TH_BRAIN_V    = 75.0;   // 脑子图标亮 V 均值 (亮~101 / 灭~49)
     public static final double TH_RULE_LIT   = 0.15;   // FIGHT 按钮高饱和占比 (橙~55% / 灰~0%)
@@ -174,6 +217,15 @@ public final class Pf {
 
     /** 编队页入口 TEAM 菱形 (内容区, 可套换算)。 */
     public static final int[] TEAM_DIAMOND  = PI(637, 555);
+
+    /**
+     * 大厅 PRIZE FIGHTS 节点的点击点 (work 坐标) —— **固定值, 不靠模板定位**。
+     *
+     * <p>由 {@code hall_prize_fights} 模板的常驻命中位 (134,212) + 模板尺寸 (212x196) 取中心。
+     * 所有真机实测帧里该节点位置**完全一致**, 且这个坐标已由一次真实成功点击验证
+     * (点它确实进了 PF hub)。走固定坐标是为了绕开"悬浮条压住节点 ⇒ 模板失配 ⇒ 定位不到"。
+     */
+    public static final int[] HALL_PRIZE_TAP = {240, 310};
 
     /**
      * 未知界面的兜底返回 —— ⚠️ **真机上 (25,26) 是"设置齿轮"不是返回键**
@@ -190,14 +242,48 @@ public final class Pf {
     /** 自动战斗脑子开关。 */
     public static final int[] BRAIN_BTN     = PI(640, 690);
 
-    /** 筛选面板: 打开按钮 / 清空 / 关闭 / 喜爱(爱心)。 */
-    public static final int[] FILTER_BTN    = PI(1215, 395);
-    public static final int[] FILTER_CLEAR  = PI(272, 126);
-    public static final int[] FILTER_CLOSE  = PI(1228, 85);
-    public static final int[] FILTER_HEART  = PI(616, 237);
+    /**
+     * 筛选面板的四个固定点。
+     *
+     * <p>⚠️⚠️ 2026-10-15 真机逐项实测 (此前**整组是坏的**, 所以"选角色根本没加筛选" ——
+     * 面板压根没被打开过, setFilter 静默失败, 于是拖人完全无筛选):
+     * <ul>
+     *   <li>{@link #FILTER_BTN} —— 漏斗图标锚在 20:9 屏幕的**右缘**, 不适用居中换算:
+     *       PC {@code PI(1215,395)} 给 work(1100,316), 实测在 <b>work(1237,312)</b>, x 偏 137px
+     *       (早先的"点完 PLAY 判未知界面"同款坑)。</li>
+     *   <li>{@link #FILTER_CLEAR} —— ⊘ **只在已有筛选生效时才出现**, 实测 work(325,82)。</li>
+     *   <li>{@link #FILTER_CLOSE} / {@link #FILTER_HEART} —— 面板自身是**居中内容面板**,
+     *       PC 的 {@code PI()} 换算成立: 爱心实测果然在 work(621,190) 生效
+     *       (点它之后面板左上 ⊘ 出现 = 筛选被激活)。</li>
+     * </ul>
+     */
+    public static final int[] FILTER_BTN    = {1240, 315};   // 仅作模板未命中的兜底
+    public static final int[] FILTER_CLEAR  = {325, 82};
+    /** ✕ 是"蓝底金叉", 实测 work(1138,50); PC PI(1228,85) 给 (1110,68), 偏 28px 点不动。 */
+    public static final int[] FILTER_CLOSE  = {1138, 50};
 
-    /** 筛选面板列中心 x (6 列, PC 值)。 */
-    private static final int[] FILTER_COLS_PC = {197, 302, 407, 512, 616, 721};
+    /**
+     * 筛选面板的图标网格 —— 真机实测 (2026-10-15)。
+     *
+     * <p>⚠️ **不是** PC 的 {@code PI()} 换算: PC {@code FILTER_COLS=[197,302,…]} → work
+     * {286,370,454,…}, 而实测列心是 {263,345,427,509,591,673} (间距 82, 比 PC 小 2px/列,
+     * 首列整体偏左 23px)。行心 {178, 297, 415, 500}。
+     *
+     * <p>每行 6 格, 顺序 (真机目视 + 逐格点测核对):
+     * <ol>
+     *   <li>y=178 稀有度/属性: 铜牌·银牌·金牌·粉钻·**红心(喜爱)**·白星</li>
+     *   <li>y=297 元素: 火·水·风·光·暗·中性</li>
+     *   <li>y=415 角色 1~6</li>
+     *   <li>y=500 角色 7~12</li>
+     * </ol>
+     * ⚠️ 第 1 行**红心在第 5 格、白星在第 6 格** —— 差一格就会"想筛喜爱、结果按成了星星"。
+     * (2026-10-15 实栽: 就是这么点错的。)
+     */
+    public static final int[] FILTER_COL_X = {263, 345, 427, 509, 591, 673};
+    public static final int[] FILTER_ROW_Y = {178, 297, 415, 500};
+
+    /** 喜爱芯片 —— 第 1 行**第 5 格**的红色爱心 (第 6 格是白色星星, 别点错)。 */
+    public static final int[] FILTER_HEART  = {FILTER_COL_X[4], FILTER_ROW_Y[0]};
 
     /** 难度锁定弹窗 CONTINUE (无 X 的 CANCEL/CONTINUE)。 */
     public static final int[] LOCK_CONTINUE = PI(748, 576);
@@ -219,19 +305,40 @@ public final class Pf {
     /** 出战一场每个槽位角色需要的黄钉数。 */
     public static final int ENERGY_COST = 4;
 
-    /** 三个出战槽: 钉条中心 x / 钉条行带 / 窗口半宽。 */
-    public static final int[] SLOT_PIP_CX  = {X(132), X(324), X(516)};
+    /**
+     * 三个出战槽: 钉条中心 x / 钉条行带 / 窗口半宽。
+     *
+     * <p>⚠️⚠️ 2026-10-15 真机实测 (8.11.1 编辑器页)：**x 比 PC 换算整体小 68px**。
+     * 实测钉条簇心 = {165, 319, 472}；PC {@code X(132/324/516)} 给 {233, 387, 540}。
+     * 间距两者都是 154 (一致)，**只有整体偏移不同**。
+     * 后果 (用户当场看到的现象)：窗口错位 ⇒ 槽 2 的能量被读成 2，于是本来够能量的队伍
+     * 被反复判"需替换"、拖拽又拖不动，空转到"无可用能量角色"。
+     * 行带 y 反而对得上 (PC 换算 279~295，实测黄钉在 286~289)。
+     */
+    public static final int[] SLOT_PIP_CX  = {165, 319, 472};
     public static final int[] SLOT_BAND    = {Y(349), Y(369)};
     public static final int   SLOT_HALF    = S(75);
-    /** 拖拽落点 x (卡面铭牌中心)。 */
-    public static final int[] SLOT_DROP_X  = {X(130), X(355), X(557)};
+    /** 拖拽落点 x (与钉条同轴 —— 卡面铭牌中心)。 */
+    public static final int[] SLOT_DROP_X  = {165, 319, 472};
 
-    /** 六个候选位: 中心 (卡距 198, 首卡 x≈116, y=565) / 钉条行带 / 半宽。 */
+    /**
+     * 候选位: 钉条行带 / 半宽 / 卡中心。
+     *
+     * <p>⚠️ 真机是 **8 张卡** (PC 是 6)，间距 **162** (PC 158)，首卡 x=93。
+     * 实测钉条簇心 {93,255,417,579,741,903,1065,1227}；行带 y 与 PC 换算吻合
+     * (543~561，实测黄钉 550~553)。卡中心 y 取 452 —— 与 PC 的相对关系一致
+     * (PC 钉带心 690 → 拖点 565，高 125px；真机钉带心 551 → 452)。
+     */
     public static final int[] ROSTER_BAND  = {Y(679), Y(701)};
     public static final int   ROSTER_HALF  = S(66);
-    public static final int[][] ROSTER_CENTERS = new int[6][];
+    public static final int   ROSTER_CARD_Y = 452;
+    /** 真机可见候选卡 x 中心 (8 张)。 */
+    public static final int[] ROSTER_CX = {93, 255, 417, 579, 741, 903, 1065, 1227};
+    public static final int[][] ROSTER_CENTERS = new int[ROSTER_CX.length][];
     static {
-        for (int i = 0; i < 6; i++) ROSTER_CENTERS[i] = new int[]{X(116 + 198 * i), Y(565)};
+        for (int i = 0; i < ROSTER_CX.length; i++) {
+            ROSTER_CENTERS[i] = new int[]{ROSTER_CX[i], ROSTER_CARD_Y};
+        }
     }
 
     /** 对手三卡: click 点 / 战力 ROI / 火框固定 ROI / 火框动态搜索窗。 */
@@ -263,7 +370,7 @@ public final class Pf {
     public static int[] elementChip(String element) {
         String[] names = {"fire", "water", "wind", "light", "dark", "neutral"};
         for (int i = 0; i < names.length; i++) {
-            if (names[i].equals(element)) return PI(FILTER_COLS_PC[i], 370);
+            if (names[i].equals(element)) return new int[]{FILTER_COL_X[i], FILTER_ROW_Y[1]};
         }
         return null;
     }
@@ -280,7 +387,7 @@ public final class Pf {
                           "Painwheel"};
         for (int i = 0; i < names.length; i++) {
             if (names[i].equalsIgnoreCase(character)) {
-                return PI(FILTER_COLS_PC[i % 6], i < 6 ? 505 : 594);
+                return new int[]{FILTER_COL_X[i % 6], FILTER_ROW_Y[i < 6 ? 2 : 3]};
             }
         }
         return null;

@@ -62,6 +62,10 @@ public final class PfFlow {
     private String stepText = "-";
     private long lastActMs;
     private long lastUiMs;
+    /** 上一次「不在游戏里 ⇒ 补拉起」的时刻 (节流, 免 monkey 连发)。 */
+    private long lastLaunchMs;
+    /** 上一次「游戏加载中」提示的时刻 (节流, 免刷屏)。 */
+    private long lastNoteMs;
 
     /** 结构性停止原因 (null = 继续跑)。 */
     private String fatal;
@@ -120,6 +124,12 @@ public final class PfFlow {
         ruleRedo = 0;
         fightNo = 0;
         unknownTries = 0;
+        dumpSeq = 0;
+        lastLaunchMs = 0;
+        lastNoteMs = 0;
+        bootWaitStart = 0;
+        lastBackMs = 0;
+        justFoughtTicks = 0;
         roundsDone = 0;
         sessionFightNo = 0;
         lastActMs = System.currentTimeMillis();
@@ -158,7 +168,13 @@ public final class PfFlow {
      * 状态机单步: 截图一次并按优先级处理当前界面 —— PC {@code PfBot.step()} 的直译。
      */
     private void step(Vision.Frame work, Bitmap bmp, AtomicBoolean run, JSONObject c) {
-        // ① 弹窗 (能量/streak/OPTIONS): 遮罩会压暗底下按钮, 必须最先剥。
+        if (justFoughtTicks > 0) justFoughtTicks--;   // "刚点完 FIGHT"的时效窗 (见 ⑨)
+        // ① QUIT GAME? 确认框 (我们按返回键按出来的, 无 X, 必须最先点掉否则永久死锁)。
+        if (handleQuitDialog(work, bmp)) {
+            unknownTries = 0;
+            return;
+        }
+        // ①b 弹窗 (能量/streak/OPTIONS): 遮罩会压暗底下按钮, 必须最先剥。
         int[] x = findPopupX(work);
         if (x != null) {
             unknownTries = 0;
@@ -201,12 +217,11 @@ public final class PfFlow {
             return;
         }
         // ⑥ 游戏主大厅: 点 PRIZE FIGHTS 菱形进 PF hub。
-        double[] hall = match(work, Pf.T_HALL_PRIZE, Pf.ROI_FULL, Pf.TH_HALL_PRIZE);
-        if (hall != null) {
+        if (inHall(work)) {
             unknownTries = 0;
             setStep("主大厅");
             log("在主大厅 — 点 PRIZE FIGHTS 进入 PF");
-            tapCenter(bmp, work, hall, Pf.T_HALL_PRIZE);
+            tap(bmp, Pf.HALL_PRIZE_TAP);
             sleep_(2500);
             return;
         }
@@ -232,7 +247,12 @@ public final class PfFlow {
         }
         // ⑨ 难度锁定弹窗 (无 X, CANCEL/CONTINUE): 点 CONTINUE 锁定。
         //    必须排在 REFRESH/FIGHT 前 —— 弹窗背后的 FIGHT! 仍可见。
-        if (team.findLockPopup(work)) {
+        //    ⚠️⚠️ **只在刚点完 FIGHT 的几步内才认** (2026-10-15 实栽): 判据只是
+        //    "CONTINUE 位置有块绿" (手机端没 OCR 认不了正文 LOCKEDINTO), 而排行榜
+        //    (LEADERBOARDS) 页恰好也有一块绿 ⇒ 打完第 2 场晋级 SILVER 后一进排行榜就误报,
+        //    点 (726,461) 无效 → 判未知 → 返回键 → hub → PLAY → 又误报, **永远循环**。
+        //    这个弹窗本来就只在点完 FIGHT 之后出现, 用"刚点过 FIGHT"做闸即可根除误报。
+        if (justFoughtTicks > 0 && team.findLockPopup(work)) {
             unknownTries = 0;
             log("难度锁定弹窗: 点 CONTINUE 锁定");
             tap(bmp, Pf.LOCK_CONTINUE);
@@ -256,6 +276,7 @@ public final class PfFlow {
         double[] ref = match(work, Pf.T_REFRESH, Pf.ROI_REFRESH, Pf.TH_REFRESH);
         if (ref != null) {
             unknownTries = 0;
+            justFoughtTicks = 0;          // 上一场已彻底走完, 进入下一场的选对手
             sessionFightNo++;
             fightNo++;
             setStep("选对手");
@@ -305,8 +326,18 @@ public final class PfFlow {
                     || match(w2, Pf.T_CONTINUE, Pf.ROI_TOPRIGHT, Pf.TH_CONTINUE) != null
                     || matchFull(w2, Pf.T_RESULT_CONT, Pf.ROI_RESULT_C, Pf.TH_RESULT_C) != null
                     || match(w2, Pf.T_HUB_PLAY, Pf.ROI_HUB_PLAY, Pf.TH_HUB_PLAY) != null
-                    || match(w2, Pf.T_HALL_PRIZE, Pf.ROI_FULL, Pf.TH_HALL_PRIZE) != null;
+                    || inHall(w2);
             if (!known) {
+                /* ⚠️ 与 gotoHub 同一套判据 (2026-10-15 实栽): **不在游戏里 (竖屏帧)** 或
+                 * **游戏加载中 (单色帧)** 时绝不能按返回键 —— 那正是把游戏按退出、
+                 * 再按到桌面下拉通知栏的元凶。这两种情况一律交回导航 (它会补拉起/等待)。 */
+                if (bootFrame(w2)) {
+                    log("不在游戏/游戏启动中 — 交回导航处理");
+                    unknownTries = 0;
+                    if (!gotoHub(run, c)) fatal = "自愈失败";
+                    return;
+                }
+                dumpUnknown(b2, w2);
                 if (unknownTries % 2 == 1) {
                     /* ⚠️ 用**系统返回键**而不是点左上角: 真机上 work(25,26) 是"设置齿轮",
                      * 点它会打开 OPTIONS 菜单 —— 而 OPTIONS 又不在本方法的已知判据里,
@@ -353,7 +384,6 @@ public final class PfFlow {
         long t0 = System.currentTimeMillis();
         long limit = 300_000L;                       // NAV_TIMEOUT
         long battleLogAt = 0;
-        boolean launched = false;
         while (run.get() && System.currentTimeMillis() - t0 < limit) {
             Bitmap bmp = sh.capture();
             if (bmp == null) { sleep_(1000); continue; }
@@ -373,6 +403,8 @@ public final class PfFlow {
                 continue;
             }
             if (confirmSaveTeam(bmp)) continue;
+            // QUIT GAME? 确认框: 我们按返回键按出来的, 无 X, 只能点 CANCEL。
+            if (handleQuitDialog(work, bmp)) continue;
             // 「缺 Moves/Guest Star」无 X 弹窗: 挡路且无 X 可点, 只能点中央 FIGHT! 照打。
             double[] mf = match(work, Pf.T_MOVES_FIGHT, Pf.ROI_CENTER_FIGHT, Pf.TH_FIGHT);
             if (mf != null) {
@@ -404,27 +436,69 @@ public final class PfFlow {
                 sleep_(2500);
                 continue;
             }
-            double[] hall = match(work, Pf.T_HALL_PRIZE, Pf.ROI_FULL, Pf.TH_HALL_PRIZE);
-            if (hall != null) {
+            if (inHall(work)) {
                 log("导航: 在大厅, 点 PRIZE FIGHTS");
-                tapCenter(bmp, work, hall, Pf.T_HALL_PRIZE);
+                tap(bmp, Pf.HALL_PRIZE_TAP);
                 sleep_(2500);
                 continue;
             }
-            if (!launched) {
-                launched = true;
-                log("导航: 补拉起 Skullgirls (冷启动兜底)");
-                sh.exec("monkey -p com.autumn.skullgirls -c android.intent.category.LAUNCHER 1");
+            /* ---------- 认不出界面时的处置: 按「我在哪一层」分三种 ----------
+             * ⚠️⚠️ 2026-10-15 真机实栽并重写。旧实现是"一律按系统返回键", 在**游戏冷启动**
+             * 期间完全破坏性: 加载闪屏 (纯黑→纯白) 与开场 splash 都判不出 ⇒ 每 3.5s 按一次
+             * 返回 ⇒ 直接把游戏按退出、继续按又拉到桌面并下拉通知栏 (现场截图: 桌面 + 控制中心)。
+             * 而且 `launched` 只置位一次 ⇒ 游戏退出后**永不补拉起** ⇒ 300s 空转到超时。
+             */
+            // ① 竖屏帧 ⇒ 根本不在游戏里 (游戏恒为横屏 2400x1080) ⇒ 重新拉起, 绝不按返回
+            if (work.w < work.h) {
+                bootWaitStart = 0;
+                if (System.currentTimeMillis() - lastLaunchMs > 8000) {
+                    lastLaunchMs = System.currentTimeMillis();
+                    log("导航: 不在游戏里 (竖屏帧 " + work.w + "x" + work.h + "), 拉起 Skullgirls");
+                    sh.exec("monkey -p com.autumn.skullgirls -c android.intent.category.LAUNCHER 1");
+                }
+                sleep_(3000);
+                continue;
             }
-            /* 兜底脱离: 真机**大厅顶栏没有房子**(那个位置是齿轮, 点它会开 OPTIONS),
-             * 所以默认走**系统返回键** —— 实测对页面型弹窗有效 (PROFILE 0.19→0.98 回大厅),
-             * 只有 Unity 自己的 OPTIONS 菜单不吃返回键 (那款由 findPopupX 的 options_x 关)。
+            // ② 冷启动画面 (纯色闪屏 / 深色 logo splash) ⇒ **只等, 不发任何输入**
+            //    实测游戏冷启动要走 黑→白→splash(均值~42)→大厅 约 50~70s, 期间任何按键
+            //    都可能把它按退。这里给 BOOT_WAIT_MS 的静默等待窗口。
+            if (bootFrame(work)) {
+                if (bootWaitStart == 0) bootWaitStart = System.currentTimeMillis();
+                long waited = System.currentTimeMillis() - bootWaitStart;
+                if (waited < BOOT_WAIT_MS) {
+                    if (System.currentTimeMillis() - lastNoteMs > 10000) {
+                        lastNoteMs = System.currentTimeMillis();
+                        log("导航: 游戏启动中 (画面单色/深色), 静默等待 " + (waited / 1000) + "s");
+                    }
+                    sleep_(3000);
+                    continue;
+                }
+                if (System.currentTimeMillis() - lastNoteMs > 10000) {
+                    lastNoteMs = System.currentTimeMillis();
+                    log("导航: 启动等待 " + (BOOT_WAIT_MS / 1000) + "s 仍认不出, 转为通用脱困");
+                }
+            } else {
+                bootWaitStart = 0;
+            }
+            /* ③ 横屏 + 有内容: 通用脱困。真机**大厅顶栏没有房子**(那个位置是齿轮, 点它会开
+             * OPTIONS), 所以默认走**系统返回键** —— 实测对页面型弹窗有效 (PROFILE 0.19→0.98
+             * 回大厅), 只有 Unity 自己的 OPTIONS 菜单不吃返回键 (那款由 findPopupX 关)。
              * 房子模板仅在 PF 内部 (hub 等) 才命中, 命中就用它。 */
+            bootWaitStart = 0;
             double[] home = match(work, Pf.T_HOME, Pf.ROI_HOME, 0.70);
             if (home != null) {
                 tapCenter(bmp, work, home, Pf.T_HOME);
+            } else if (System.currentTimeMillis() - lastBackMs < BACK_MIN_GAP_MS) {
+                /* 返回键**限流**: 每 BACK_MIN_GAP_MS 最多一次。
+                 * 理由: 游戏开场 splash 只持续 3~6s 且含内容 (非纯色 ⇒ 过不了 bootFrame),
+                 * 会被判"未知"。若每 3.5s 就按一次返回, 很可能在 splash 期间连按几次 —— 而
+                 * 真机上返回键是会**退出游戏**的。限流后这类瞬态画面自己就过去了。 */
+                sleep_(2500);
+                continue;
             } else {
+                lastBackMs = System.currentTimeMillis();
                 log("导航: 未知界面, 按系统返回键尝试脱离");
+                dumpUnknown(bmp, work);
                 sh.exec("input keyevent 4");
             }
             sleep_(2500);
@@ -439,21 +513,58 @@ public final class PfFlow {
     // ==================================================================
 
     /**
-     * 是否在编队页。
+     * 是否在游戏主大厅 —— PRIZE FIGHTS 或 EVENTS 任一命中即算。
      *
-     * <p>⚠️ PC 用 {@code DRAGHINT} 单判据, 但**真机上该提示不出现** (2026-10-15 实测:
-     * 编队页截图里没有 DRAG 字样, 模板最佳只有 0.443)。而编队页右上一定有 FIGHT!
-     * ⇒ 改成"两者任一命中"。这也是 step() 用 FIGHT 分支兜住编队页的原因。
+     * <p>⚠️ 为什么需要**两个**判据 (2026-10-15 真机实栽): 只看 PRIZE FIGHTS 会翻车 ——
+     * 本 App 自己的浮条被拖到画面左侧后**压住 PRIZE FIGHTS 节点**, 模板从 0.98 掉到 0.55,
+     * 于是判不出大厅 → 按返回键 → 弹出 QUIT GAME? → 画面压暗 → 更判不出 → 死锁。
+     * EVENTS 节点在画面右半边, 浮条盖不到 (实测大厅 0.87~1.00、其它界面 ≤0.42)。
+     *
+     * <p>点击一律走**固定坐标** {@link Pf#HALL_PRIZE_TAP} —— 该节点位置在所有实测帧里恒为同一点,
+     * 这样"判据可以是被遮住的那个, 定位不依赖模板"。
      */
-    private boolean inTeamPage(Vision.Frame w) {
-        return match(w, Pf.T_DRAGHINT, Pf.ROI_DRAGHINT, Pf.TH_DRAGHINT) != null
-                || match(w, Pf.T_FIGHT, Pf.ROI_TOPRIGHT, Pf.TH_FIGHT) != null;
+    private boolean inHall(Vision.Frame work) {
+        return matchFull(work, Pf.T_HALL_PRIZE, Pf.ROI_FULL, Pf.TH_HALL_PRIZE) != null
+                || matchFull(work, Pf.T_HALL_EVENTS, Pf.ROI_FULL, Pf.TH_HALL) != null;
     }
 
-    /** 若已在编队页则直接修正; 否则先从 VS 界面点进编队。 */
+    /**
+     * 是否在**编队编辑器**(可拖人那一页)。
+     *
+     * <p>⚠️⚠️ 2026-10-15 真机实栽并改判据。真机上 PF 有**两页长得几乎一样**:
+     * ① 编队预览页 (只有大立绘 + 底部候选列 + TEAM 菱形);
+     * ② 编队编辑器 (点 TEAM 菱形进) —— 多了「DRAG DESIRED FIGHTER TO A SLOT」提示条
+     *    和右下角的**筛选漏斗**, 拖人/筛选都在这一页。
+     * 两页右上**都有 FIGHT!**, 所以旧的"DRAGHINT 或 FIGHT"判据恒为真 ⇒ 永远停在预览页,
+     * {@code fixTeam} 里的筛选漏斗点在预览页上 → 打不开面板 → **静默放弃筛选**
+     * (这就是"选角色不加筛选条件"的真身)。
+     *
+     * <p>现在的判据: 编辑器 = **DRAGHINT 或 筛选漏斗**。实测 (均为真机帧):
+     * DRAGHINT 编辑器 0.65~0.69 / 预览页 0.12; 漏斗 编辑器 0.88~1.00 / 预览页 0.05。
+     * 不用 FIGHT 是**故意**的 —— 它在两页都出现, 区分不了。
+     */
+    private boolean inTeamEditor(Vision.Frame w) {
+        return matchFull(w, Pf.T_DRAGHINT, Pf.ROI_DRAGHINT, Pf.TH_DRAGHINT) != null
+                || funnel(w) != null;
+    }
+
+    /**
+     * 筛选漏斗中心 (work 坐标), 未命中返回 null。
+     *
+     * <p>⚠️ **必须全搜**: 漏斗只有 60x50, 金字塔 (pyr4x) 把它降到 15x12 后基本认不出来 ——
+     * 项目里这条规则早就钉死了 ("金字塔只对全屏搜大按钮成立, 召回关键一律 findExact"),
+     * 这里踩的是同一个坑: 面板明明在, 模板却"没匹配上" ⇒ setFilter 判"打不开"放弃筛选。
+     */
+    int[] funnel(Vision.Frame w) {
+        double[] r = matchFull(w, Pf.T_FILTER_BTN, Pf.ROI_FILTER_BTN, Pf.TH_FILTER_BTN);
+        return r == null ? null : centerOf(w, r, Pf.T_FILTER_BTN);
+    }
+
+    /** 若已在编队编辑器则直接修正; 否则先点 TEAM 菱形进入。 */
     private void fightFlow(Vision.Frame work, Bitmap bmp, AtomicBoolean run) {
         setStep("进编队");
-        if (!inTeamPage(work)) {
+        if (!inTeamEditor(work)) {
+            log("不在编队编辑器 — 点 TEAM 菱形进入");
             tap(bmp, Pf.TEAM_DIAMOND);           // TEAM 菱形
             sleep_(1600);
             Bitmap b2 = sh.capture();
@@ -470,10 +581,11 @@ public final class PfFlow {
         Bitmap bi = sh.capture();
         if (bi == null) return;
         Vision.Frame wi = Vision.toWork(bi);
-        if (!inTeamPage(wi)) {
-            log("未进入编队页, 回主循环重试");
+        if (!inTeamEditor(wi)) {
+            log("未进入编队编辑器, 回主循环重试");
             return;
         }
+        log("已进入编队编辑器");
 
         int rotations = 0;
         while (run.get()) {
@@ -504,6 +616,7 @@ public final class PfFlow {
                 return;
             }
             tapCenter(bf, wf, fight, Pf.T_FIGHT);
+            justFoughtTicks = 12;   // 接下来 12 步内才允许认"难度锁定弹窗" (见 ⑨ 注释)
             sleep_(2500);
             Bitmap bp = sh.capture();
             if (bp == null) return;
@@ -555,6 +668,8 @@ public final class PfFlow {
                 continue;
             }
             if (confirmSaveTeam(bmp)) continue;
+            // QUIT GAME? 确认框: 我们按返回键按出来的, 无 X, 只能点 CANCEL。
+            if (handleQuitDialog(work, bmp)) continue;
             // 「缺 Moves/Guest Star」无 X 弹窗: 挡路且无 X 可点, 只能点中央 FIGHT! 照打。
             double[] mf = match(work, Pf.T_MOVES_FIGHT, Pf.ROI_CENTER_FIGHT, Pf.TH_FIGHT);
             if (mf != null) {
@@ -607,6 +722,28 @@ public final class PfFlow {
     // ==================================================================
     //  弹窗判据
     // ==================================================================
+
+    /**
+     * 「QUIT GAME?」确认弹窗: 认出标题栏就点 CANCEL。
+     *
+     * <p>⚠️ 这个弹窗是**我们自己按返回键按出来的** (2026-10-15 真机现场: 大堂上按返回 →
+     * 弹出它 → 画面压暗 → 大堂模板失配 → 判"未知" → 再按返回 → 死锁)。
+     * 它没有 X, findPopupX 抓不到, 必须单独认; 不处理就会永久卡在"未知界面"。
+     *
+     * @return 处理过返回 true
+     */
+    private boolean handleQuitDialog(Vision.Frame work, Bitmap bmp) {
+        double[] q = match(work, Pf.T_QUIT, Pf.ROI_FULL, 0.85);
+        if (q == null) return false;
+        Vision.Frame t = tpls.get(Pf.T_QUIT);
+        int cx = (int) q[0] + (t == null ? 0 : t.w / 2);
+        int cy = (int) q[1] + (t == null ? 0 : t.h / 2);
+        int[] p = {cx + Pf.QUIT_CANCEL_OFF[0], cy + Pf.QUIT_CANCEL_OFF[1]};
+        log("「QUIT GAME?」弹窗 — 点 CANCEL 取消 (帮我们自己按返回按出来的)");
+        tap(bmp, p);
+        sleep_(1500);
+        return true;
+    }
 
     /**
      * 通用弹窗 X: 三款模板 (能量不足 / 连胜 streak / OPTIONS)。
@@ -662,6 +799,116 @@ public final class PfFlow {
     // ==================================================================
     //  匹配与点击工具
     // ==================================================================
+
+    /** 诊断转储用的模板子集 (判不出界面时要看的那些)。 */
+    private static final String[] DIAG_TPL = {
+            Pf.T_HALL_PRIZE, Pf.T_HUB_PLAY, Pf.T_FIGHT, Pf.T_REFRESH, Pf.T_DRAGHINT,
+            Pf.T_RESULT_CONT, Pf.T_CONTINUE, Pf.T_HOME, Pf.T_OPTIONS_X, Pf.T_ENERGY_X,
+            Pf.T_STREAK_X, Pf.T_MOVES_FIGHT, Pf.T_SRV_OK, Pf.T_DEF_CONFIRM, Pf.T_SCENE_X,
+            Pf.T_MODAL_X, Pf.T_SPD_3X,
+    };
+
+    /**
+     * 诊断: 判不出界面时, 把**我所见的这一帧**存盘 + 记下全屏各模板最高分。
+     *
+     * <p>存在的理由 (2026-10-15): 真机排障最耗时的一环是"bot 说未知, 但人在旁边看画面
+     * 明明是已知界面"。没有这张落盘帧, 就只能靠猜 (抓 adb 截图的那几秒里画面往往已经变了,
+     * 而且无法证明 bot 的截屏通道本身是否正常)。有了它, 离线复盘的输入就是 bot 的**真实输入**。
+     *
+     * <p>只留前 {@link #DUMP_MAX} 次, 免得刷满盘; 全屏搜 17 个模板 ≈ 一次几百 ms,
+     * 只在判不出时付这个代价。
+     */
+    private void dumpUnknown(Bitmap bmp, Vision.Frame work) {
+        if (dumpSeq >= DUMP_MAX) return;
+        dumpSeq++;
+        try {
+            java.io.File dir = new java.io.File(Paths.root() + "/debug");
+            if (!dir.isDirectory() && !dir.mkdirs()) return;
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(
+                    new java.io.File(dir, "u" + String.format("%02d", dumpSeq) + ".png"));
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, fo);
+            fo.close();
+            StringBuilder sb = new StringBuilder();
+            for (String n : DIAG_TPL) {
+                Vision.Frame t = tpls.get(n);
+                if (t == null) continue;
+                double[] r = Vision.findScored(work, t, Pf.ROI_FULL, 0.0, -1, 0);
+                if (r != null) {
+                    sb.append(n).append('=')
+                      .append(Math.round(r[2] * 100) / 100.0).append(' ');
+                }
+            }
+            log("诊断帧 u" + dumpSeq + ".png (work " + work.w + "x" + work.h
+                    + ", 实机帧 " + bmp.getWidth() + "x" + bmp.getHeight()
+                    + ") | 全屏分: " + sb);
+        } catch (Throwable ignored) { }
+    }
+
+    /** 诊断帧最多保留几次 (u01..u03)。 */
+    private static final int DUMP_MAX = 3;
+
+    /** 冷启动静默等待窗口: 游戏 boot 期间 (单色闪屏 / 深色 splash) 一律不发输入。 */
+    private static final long BOOT_WAIT_MS = 75_000L;
+
+    /** 上次「疑似还在冷启动」的起始时刻 (0 = 不在冷启动期)。 */
+    private long bootWaitStart;
+
+    /** 上次按系统返回键的时刻 (限流用)。 */
+    private long lastBackMs;
+
+    /** 「刚点完 FIGHT」的剩余步数 (>0 才认难度锁定弹窗, 见 step() ⑨ 的注释)。 */
+    private int justFoughtTicks;
+
+    /** 返回键最小间隔 —— 瞬态过渡画面 (splash/过场) 靠它自然过去, 详见调用处注释。 */
+    private static final long BACK_MIN_GAP_MS = 10_000L;
+
+    /**
+     * 画面是否"游戏还在启动" —— 只认**纯色闪屏** (黑/白) 与**竖屏帧** (不在游戏里)。
+     *
+     * <p>⚠️⚠️ 阈值标定史 (2026-10-15, 真机逐帧实测, 教训比结论值钱):
+     * 一开始还写了"深色画面 = 启动中 (灰度均值 &lt; 80)", 想连开场 splash 一起兜住。
+     * 结果**把大厅也判成了启动画面** —— 实测亮度:
+     * 黑闪 **0.2** / splash **44.9** / **大厅 55.8** / 白闪 176.1。
+     * 大厅与 splash 的均值、中位数几乎一模一样, **亮度根本分不开这两者**。
+     * 症状: 游戏其实 12s 就到大厅了 (`hall_prize` 0.98), bot 却因为"深色 = 还在启动"
+     * 在那儿干等 75s 一轮, 循环空转。
+     * ⇒ 结论: **别用亮度判"是不是界面"**。是否已到大厅交给模板判据 (循环前面已经有);
+     * 这里只负责"这一帧根本不含界面信息"(纯色闪屏) 与"根本不在游戏里"(竖屏)。
+     */
+    static boolean bootFrame(Vision.Frame f) {
+        if (f == null || f.px == null) return true;
+        if (f.w < f.h) return true;              // 竖屏 ⇒ 不在游戏里
+        return blankFrame(f);                    // 纯色闪屏 (黑 0.2 / 白 176, 标准差都极小)
+    }
+
+    /**
+     * 画面是否近似单色 (游戏加载/闪屏: 纯黑 → 纯白)。
+     *
+     * <p>被 {@link #bootFrame} 用作其中一条判据 (纯色是 boot 的真子集)。
+     * 8px 网格采样估灰度标准差, 阈值 64 (=标准差 8 级) 足够区分纯色与任何真实界面。
+     */
+    static boolean blankFrame(Vision.Frame f) {
+        if (f == null || f.px == null) return true;
+        long s = 0, s2 = 0;
+        int n = 0;
+        for (int y = 0; y < f.h; y += 8) {
+            int row = y * f.w;
+            for (int x = 0; x < f.w; x += 8) {
+                int p = f.px[row + x];
+                int v = (((p >> 16) & 0xff) + ((p >> 8) & 0xff) + (p & 0xff)) / 3;
+                s += v;
+                s2 += (long) v * v;
+                n++;
+            }
+        }
+        if (n == 0) return true;
+        double m = s / (double) n;
+        double var = s2 / (double) n - m * m;
+        return var < 64;
+    }
+
+    /** 诊断帧序号 (跨 step/gotoHub 共用一个上限)。 */
+    private int dumpSeq = 0;
 
     /** 命中返回 {x, y(左上), best}; 未命中/缺模板返回 null。 */
     private double[] match(Vision.Frame work, String tplName, int[] roi, double th) {
