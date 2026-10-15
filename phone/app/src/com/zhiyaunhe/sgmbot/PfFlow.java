@@ -239,6 +239,19 @@ public final class PfFlow {
             sleep_(2500);
             return;
         }
+        // ⑨b 「缺 Moves / Guest Star」无 X 弹窗 (2026-10-15 真机首次遇到, PC 代码无此判据):
+        //     正文问 "FIGHT anyway or EQUIP ... first?", 两按钮在**画面中央**。
+        //     ⚠️ 它挡在编队页之上, 而编队页**右上**也有 FIGHT! ⇒ 必须排在 ⑫ 之前,
+        //     否则会去点被遮罩吃掉的右上 FIGHT 而原地踏步 (实测现场: gotoHub 反复点顶栏
+        //     房子无效, 游戏停在编队页). 点 FIGHT! = 照打, 缺 Moves 不影响开战。
+        double[] mf = match(work, Pf.T_MOVES_FIGHT, Pf.ROI_CENTER_FIGHT, Pf.TH_FIGHT);
+        if (mf != null) {
+            unknownTries = 0;
+            log("「缺 Moves/Guest Star」弹窗: 点 FIGHT! 照打");
+            tapCenter(bmp, work, mf, Pf.T_MOVES_FIGHT);
+            sleep_(2000);
+            return;
+        }
         // ⑩ 选对手页 (REFRESH): 读分 + 场号 +1 + 选对手 (每场都重选)。
         double[] ref = match(work, Pf.T_REFRESH, Pf.ROI_REFRESH, Pf.TH_REFRESH);
         if (ref != null) {
@@ -295,11 +308,21 @@ public final class PfFlow {
                     || match(w2, Pf.T_HALL_PRIZE, Pf.ROI_FULL, Pf.TH_HALL_PRIZE) != null;
             if (!known) {
                 if (unknownTries % 2 == 1) {
-                    log("仍未知, 按返回键");
-                    tap(b2, Pf.BACK_BTN);
+                    /* ⚠️ 用**系统返回键**而不是点左上角: 真机上 work(25,26) 是"设置齿轮",
+                     * 点它会打开 OPTIONS 菜单 —— 而 OPTIONS 又不在本方法的已知判据里,
+                     * 于是永远出不去 (2026-10-15 实栽: gotoHub 空转到 300s 超时)。
+                     * PC 用点击是因为它只有 MAA 的点击通道; 手机端有 input keyevent。 */
+                    log("仍未知, 按系统返回键");
+                    sh.exec("input keyevent 4");
                 } else {
-                    log("仍未知, 按右上角关闭 X");
-                    tap(b2, Pf.CLOSE_X);
+                    int[] px = findPopupX(w2);      // ROI 已覆盖真机右上 ⇒ 能命中 OPTIONS 等的 X
+                    if (px != null) {
+                        log("仍未知, 点弹窗 X @ " + px[0] + "," + px[1]);
+                        tap(b2, px);
+                    } else {
+                        log("仍未知, 点右上角 X");
+                        tap(b2, Pf.CLOSE_X);
+                    }
                 }
                 sleep_(3500);
             }
@@ -350,6 +373,14 @@ public final class PfFlow {
                 continue;
             }
             if (confirmSaveTeam(bmp)) continue;
+            // 「缺 Moves/Guest Star」无 X 弹窗: 挡路且无 X 可点, 只能点中央 FIGHT! 照打。
+            double[] mf = match(work, Pf.T_MOVES_FIGHT, Pf.ROI_CENTER_FIGHT, Pf.TH_FIGHT);
+            if (mf != null) {
+                log("「缺 Moves/Guest Star」弹窗, 点 FIGHT! 照打");
+                tapCenter(bmp, work, mf, Pf.T_MOVES_FIGHT);
+                sleep_(2000);
+                continue;
+            }
             int[] px = findPopupX(work);
             if (px == null) {
                 double[] sc = match(work, Pf.T_SCENE_X, Pf.ROI_SCENE_X, 0.8);
@@ -385,12 +416,16 @@ public final class PfFlow {
                 log("导航: 补拉起 Skullgirls (冷启动兜底)");
                 sh.exec("monkey -p com.autumn.skullgirls -c android.intent.category.LAUNCHER 1");
             }
-            // 顶栏房子: HUD 铺满 20:9 整宽, 不适用居中换算 ⇒ 走模板定位, 兜底用 PC 坐标。
-            double[] home = match(work, Pf.T_HOME, Pf.ROI_FULL, 0.70);
+            /* 兜底脱离: 真机**大厅顶栏没有房子**(那个位置是齿轮, 点它会开 OPTIONS),
+             * 所以默认走**系统返回键** —— 实测对页面型弹窗有效 (PROFILE 0.19→0.98 回大厅),
+             * 只有 Unity 自己的 OPTIONS 菜单不吃返回键 (那款由 findPopupX 的 options_x 关)。
+             * 房子模板仅在 PF 内部 (hub 等) 才命中, 命中就用它。 */
+            double[] home = match(work, Pf.T_HOME, Pf.ROI_HOME, 0.70);
             if (home != null) {
                 tapCenter(bmp, work, home, Pf.T_HOME);
             } else {
-                tap(bmp, Pf.HOME_BTN);
+                log("导航: 未知界面, 按系统返回键尝试脱离");
+                sh.exec("input keyevent 4");
             }
             sleep_(2500);
         }
@@ -520,6 +555,14 @@ public final class PfFlow {
                 continue;
             }
             if (confirmSaveTeam(bmp)) continue;
+            // 「缺 Moves/Guest Star」无 X 弹窗: 挡路且无 X 可点, 只能点中央 FIGHT! 照打。
+            double[] mf = match(work, Pf.T_MOVES_FIGHT, Pf.ROI_CENTER_FIGHT, Pf.TH_FIGHT);
+            if (mf != null) {
+                log("「缺 Moves/Guest Star」弹窗, 点 FIGHT! 照打");
+                tapCenter(bmp, work, mf, Pf.T_MOVES_FIGHT);
+                sleep_(2000);
+                continue;
+            }
             int[] px = findPopupX(work);             // 弹窗优先于"结束"判据
             if (px != null) {
                 log("战斗等待中出现弹窗 (能量/连胜等), 点 X 关闭");
@@ -567,16 +610,31 @@ public final class PfFlow {
 
     /**
      * 通用弹窗 X: 三款模板 (能量不足 / 连胜 streak / OPTIONS)。
-     * 返回被点位置 (work) 或 null。PC 的 find_popup_x 还含第四个 scene_x, 在导航里单独接。
+     * 返回被点位置 (work) 或 null。
+     *
+     * <p>⚠️ 取**分数最高**的那一款, 不是"第一个过阈值的" —— 三款都是圆形 X、形状相似,
+     * 在同一张弹窗上往往**同时**过阈值, 只差几个像素。按固定顺序返回第一个会让点击落到
+     * 偏掉的位置上 (2026-10-15 实栽: 在 OPTIONS 菜单上反复点 X 却关不掉, 最后才发现
+     * 点的不是 OPTIONS 那个 X)。
      */
     private int[] findPopupX(Vision.Frame work) {
         String[] names = {Pf.T_ENERGY_X, Pf.T_STREAK_X, Pf.T_OPTIONS_X};
-        double[] ths = {0.70, 0.70, 0.70};
-        for (int i = 0; i < names.length; i++) {
-            double[] r = match(work, names[i], Pf.ROI_POPUP, ths[i]);
-            if (r != null) return centerOf(work, r, names[i]);
+        double best = 0;
+        String bestName = null;
+        double[] bestHit = null;
+        for (String n : names) {
+            double[] r = match(work, n, Pf.ROI_POPUP, 0.70);
+            if (r != null && r[2] > best) {
+                best = r[2];
+                bestName = n;
+                bestHit = r;
+            }
         }
-        return null;
+        if (bestHit == null) return null;
+        int[] c = centerOf(work, bestHit, bestName);
+        log(String.format("弹窗 X: %s %.2f @ %d,%d", bestName.substring(bestName.indexOf('/') + 1),
+                best, c[0], c[1]));
+        return c;
     }
 
     /** 服务器错误弹窗按钮 (srv_ok / srv_retry)。 */

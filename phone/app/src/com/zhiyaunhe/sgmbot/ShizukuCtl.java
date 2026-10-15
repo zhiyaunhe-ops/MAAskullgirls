@@ -64,12 +64,27 @@ public final class ShizukuCtl {
                 SgmLog.i("shizuku", "UserService disconnected");
             }
         };
+        /* ⚠️ version 必须**随代码更新**。官方 (RikkaApps/Shizuku-API):
+         *   「若 version 不匹配, 会启动新的 User Service, 并对旧的调用 destroy 方法」
+         * 反过来 —— tag + version 都不变时 Shizuku 会**直接复用旧进程**, 于是新 APK 的
+         * App 连上去跑的还是**旧 APK 的 ShellService 代码**。
+         * 2026-10-15 实栽: 写死 version(1), 重装后新 App 连到旧 ShellService, 首帧
+         * screencap 永久挂死 (旧实现 readLine 阻塞且 waitFor 够不着)。
+         * 改用 APK 的 lastUpdateTime (重装必变) ⇒ Shizuku 自动起新服务、销毁旧的。
+         * 本地包 versionCode 恒为 9999, 不能拿它当 version。 */
+        long ver;
+        try {
+            ver = ctx.getPackageManager()
+                    .getPackageInfo(ctx.getPackageName(), 0).lastUpdateTime;
+        } catch (Exception e) {
+            ver = System.currentTimeMillis();
+        }
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx, com.zhiyaunhe.sgmbot.shizuku.ShellService.class))
                 // UserService 进程名后缀 (<pkg>:sgmbot); 缺它 bindUserService 抛
                 // NPE "process name suffix must not be null" (Shizuku.java forAdd)
                 .processNameSuffix("sgmbot")
-                .version(1).tag("v1");
+                .version((int) (ver & 0x7FFFFFFFL)).tag("v1");
         Shizuku.bindUserService(args, conn);
         SgmLog.i("shizuku", "bindUserService...");
     }
@@ -136,7 +151,7 @@ public final class ShizukuCtl {
             if (b != null) { capFails = 0; capOk = d; lastScale = b.getHeight() / (float) WORK_H; return b; }
             capOut = out;
         }
-        if (capFails++ % 20 == 0) {   // 每 20 次报一次, 别刷屏
+        if (capFails++ % 2 == 0) {    // 诊断期每 2 次报一次 (原 20 次: 真机排障时看不见)
             StringBuilder sb = new StringBuilder("截屏失败 尝试=");
             for (String d : dirs) sb.append(d).append(' ');
             SgmLog.i("cap", sb.append("| err=").append(capErr)
@@ -243,7 +258,13 @@ public final class ShizukuCtl {
     /** work 坐标点击 (1280x576 基准 → 实机 scale 换算, 同 autojs tapWork) */
     public void tapWork(Bitmap frame, float wx, float wy) {
         float s = frame.getHeight() / (float) WORK_H;
-        exec("input tap " + Math.round(wx * s) + " " + Math.round(wy * s));
+        int px = Math.round(wx * s), py = Math.round(wy * s);
+        /* 诊断 (2026-10-15): 真机上出现过"判据/坐标都对但点了没反应"的现场,
+         * 当时无法区分是坐标换算错了还是注入通道没生效 ⇒ 把实际下发值打出来。
+         * 帧高不是 1080 时 s 会跑偏 (例如切后台拿到竖屏帧 → s=4.17), 坐标直接飞出屏幕。 */
+        SgmLog.i("tap", String.format("work(%.0f,%.0f) -> 物理(%d,%d) [帧高%d s=%.3f]",
+                wx, wy, px, py, frame.getHeight(), s));
+        exec("input tap " + px + " " + py);
     }
 
     /** 最近一次成功截屏推断出的缩放倍数 (实机高 / WORK_H); 还没截过 = 0 */

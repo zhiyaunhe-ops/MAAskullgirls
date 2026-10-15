@@ -78,12 +78,29 @@ public final class Pf {
     public static final String T_CONTINUE     = "pf/pf_continue_btn";   // 结算 CONTINUE (残局脱离)
     public static final String T_RESULT_CONT  = "pf/result_continue";   // VICTORY 结算页底部 CONTINUE
     public static final String T_HOME         = "home";                 // 顶栏房子 (HUD: 走匹配不硬编码)
+    /**
+     * 「缺 Moves / Guest Star」无 X 弹窗里的 FIGHT! 按钮。
+     *
+     * <p>2026-10-15 真机首次遇到（PC 代码里没有这个判据）：正文问
+     * "At least one of your Fighters is missing Moves or a Guest Star! ... FIGHT anyway
+     * or EQUIP..."，两按钮 EQUIP(紫) / FIGHT!(橙) 在**画面中央**。
+     * 它挡在编队页之上，而编队页**右上**也有一个 FIGHT! ⇒ 两个同字不同位的小部件，
+     * 实测互不混淆（本模板在右上区只有 0.295，vs_fight_btn 在中央 0.782）。
+     */
+    public static final String T_MOVES_FIGHT  = "pf/moves_fight";
 
     // ---------------- ROI (PC 基准, 经 R() 换算) ----------------
     // 用 [x0,y0,x1,y1] 写, 与实际调用处的 Vision 口径无关。
 
-    /** 弹窗右上 X 区域 (find_popup_x 用)。 */
-    public static final int[] ROI_POPUP      = R(860, 160, 1060, 340);
+    /**
+     * 弹窗右上 X 区域。
+     *
+     * <p>⚠️ PC 的 {@code (860,160,1060,340)} 套公式只到 work x=976/y=272, **够不着真机的 X**
+     * （2026-10-15 实测: OPTIONS 的关闭 X 在 work (1075,27)、PROFILE 的在 (1223,32)）。
+     * 真机 HUD 铺满 20:9，**X 的位置随弹窗宽度浮动** ⇒ 只能靠模板匹配定位, ROI 必须
+     * 一直覆盖到屏幕右缘 (第一版放宽到 x=1180 仍然漏了 PROFILE 那个)。
+     */
+    public static final int[] ROI_POPUP      = {840, 0, 440, 320};
     /** 结算页底部 CONTINUE 行。 */
     public static final int[] ROI_RESULT     = R(400, 570, 980, 700);
     /**
@@ -96,6 +113,20 @@ public final class Pf {
      * 这里用实测值 (左右各留余量)。
      */
     public static final int[] ROI_TOPRIGHT = {1080, 0, 200, 130};
+
+    /** 画面中央 (「缺 Moves/Guest Star」弹窗的 EQUIP/FIGHT! 行所在)。 */
+    public static final int[] ROI_CENTER_FIGHT = {600, 360, 300, 120};
+
+    /**
+     * 顶栏"房子"(回大厅)的搜索区 —— ⚠️ **必须排除左上角的齿轮**。
+     *
+     * <p>2026-10-15 实栽: 真机**大厅顶栏没有房子, 那个位置是齿轮(设置)**; 而 PF hub 里
+     * 才有房子。两者相邻、都是"圆形金环包一个图形", `home.png` 以 0.723 稳稳匹配到齿轮
+     * ⇒ gotoHub 每轮点它打开 OPTIONS, 下一轮再点 X 关掉, **关了又开自激循环**
+     * (现场日志: 每 3 秒交替 `work(1078,29)`/`work(32,33)`, 永不前进)。
+     * 齿轮实测 work x 11~45, 房子 x 64~92 ⇒ 搜索区从 x=50 起即可分离。
+     */
+    public static final int[] ROI_HOME = {50, 0, 110, 62};
     /** PF hub 居中卡 PLAY! */
     public static final int[] ROI_HUB_PLAY   = R(500, 400, 780, 530);
     /** 大厅促销弹窗右上 X。 */
@@ -144,7 +175,11 @@ public final class Pf {
     /** 编队页入口 TEAM 菱形 (内容区, 可套换算)。 */
     public static final int[] TEAM_DIAMOND  = PI(637, 555);
 
-    /** 顶栏返回键 (HUD 实测 work ≈ (25,26); PC 值 (45,40) 套公式会算到 x=164, 错)。 */
+    /**
+     * 未知界面的兜底返回 —— ⚠️ **真机上 (25,26) 是"设置齿轮"不是返回键**
+     * (2026-10-15 实栽: 点它打开 OPTIONS 菜单, 之后永远出不去, gotoHub 空转到 300s 超时)。
+     * 优先走系统返回键 {@code input keyevent 4}，见 {@code PfFlow} 未知界面分支。
+     */
     public static final int[] BACK_BTN      = {25, 26};
     /** 顶栏房子 (仅作兜底; 优先用 {@link #T_HOME} 模板定位)。HUD 实测 work ≈ (78,26)。 */
     public static final int[] HOME_BTN      = {78, 26};
