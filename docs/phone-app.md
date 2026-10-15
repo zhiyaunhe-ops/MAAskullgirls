@@ -1036,3 +1036,12 @@ python3 phone/app/tools/gen_graph_preview.py
 它把同一套页面用当前 `assets/config.json` 在纯 JVM 上跑一遍、**内联**成自包含 HTML，
 产物落 `debug/graph_preview.html`。⚠️ 产物**不入库**——快照每次现生成，入库就会过期，
 又变成"图与实不符"。
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [phone/app/README.md](../phone/app/README.md)
+- [docs/phone-app-shizuku.md](phone-app-shizuku.md)
+- [README.md](../README.md)
+- [AGENTS.md](../AGENTS.md)

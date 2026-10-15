@@ -364,3 +364,11 @@ tailscale serve --https=8444 off
 |---|---|
 | 通用规则、提示词模板、研究依据、语言token计数 | [agent-context-guidelines](https://github.com/zhiyaunhe-ops/agent-context-guidelines) |
 | 本项目压缩与事实校正记录 | [f24de46](https://github.com/zhiyaunhe-ops/MAAskullgirls/commit/f24de4636785f85fdec29264912c7905e31b74bf)；实机／浏览器未重跑 |
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [AGENTS.md](AGENTS.md)
+- [README.md](README.md)
+- [docs/session-tag.md](docs/session-tag.md)

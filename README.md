@@ -96,3 +96,17 @@ python tools/jjc_store.py versions
 ## 免责声明
 
 个人学习与自用；与游戏官方无关；自动化存在封号风险，使用后果自行承担。
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [AGENTS.md](AGENTS.md)
+- [PF_BOT.md](PF_BOT.md)
+- [docs/phone-app.md](docs/phone-app.md)
+- [phone/app/README.md](phone/app/README.md)
+- [phone/autojs/README.md](phone/autojs/README.md)
+- [docs/session-tag.md](docs/session-tag.md)
+- [docs/phone-app-shizuku.md](docs/phone-app-shizuku.md)
+- [docs/incident-2026-09-24-webui-js-dead.md](docs/incident-2026-09-24-webui-js-dead.md)
+- [docs/explore/2026-09-05/REPORT.md](docs/explore/2026-09-05/REPORT.md)

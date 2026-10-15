@@ -43,3 +43,12 @@
 | JJC | UI普通读取不触网；刷新显式；CLI show缺缓存可触网 |
 | 外部点击 | 导航前停bot；非运行态仍可能清弹窗 |
 | 验证 | 预览为模拟数据；按用户范围验证；仅报告实际执行结果 |
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [README.md](README.md)
+- [PF_BOT.md](PF_BOT.md)
+- [docs/phone-app.md](docs/phone-app.md)
+- [docs/incident-2026-09-24-webui-js-dead.md](docs/incident-2026-09-24-webui-js-dead.md)

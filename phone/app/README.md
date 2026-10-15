@@ -154,3 +154,11 @@ python3 tools/MapFightProbe.py      # FIGHT 追踪窗口 + map_check 大保底 +
 #                                               #   但未命中时峰值 0.341→-2.000。见 docs/phone-app.md
 #   (StoreProbe/SlotProbe 需完整 app classes, 见 docs/phone-app.md)
 ```
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [docs/phone-app.md](../../docs/phone-app.md)
+- [docs/phone-app-shizuku.md](../../docs/phone-app-shizuku.md)
+- [README.md](../../README.md)

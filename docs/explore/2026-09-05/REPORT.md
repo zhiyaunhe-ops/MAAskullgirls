@@ -220,3 +220,10 @@
 - 金币 1,438,212→20,332、钻石 18,647→17,187（用户自行消耗）；RELICS 计数 851→835→开箱后 853/1036（COLLECTION 计数 1032→1036）。
 - MISSIONS 红点 3→无（用户已自行领取）；GUILDS 徽章 6→8；PF 赛季计时 01D:21H→01D:11H（**新一轮 Prize Fight 已开始**，即 Medici Shakedown 结束后滚动了新周期）。
 - 大厅 EVENTS 菱形美术图随时间轮换（女骑士→MARIE 立绘等），菱形本身功能不变。
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [README.md](../../../README.md)
+- [AGENTS.md](../../../AGENTS.md)

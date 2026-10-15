@@ -270,3 +270,10 @@ AutoJs6 内置打包：文件列表长按 `sgm_settle` 文件夹（或脚本）�
   当前只告警不处理，人肉接管换队或先用 DAILY_CAP 限场兜底；换人逻辑已备，见 5.4。
 - 息屏后 screencap 截到黑屏、input 仍生效但游戏可能暂停——挂机请保持亮屏
   （游戏内设置或系统息屏时长调长）。
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [README.md](../../README.md)
+- [AGENTS.md](../../AGENTS.md)

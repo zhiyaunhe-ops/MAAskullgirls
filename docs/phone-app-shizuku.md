@@ -59,3 +59,11 @@
 写不进别的包的 `Android/data` ⇒ 未授权时私有目录这条路多半也不通，
 **「所有文件访问」实质是必授项**（主页按「③ 授权所有文件访问」跳设置页）。
 已连 adb 时也可 `adb shell cmd appops set com.zhiyaunhe.sgmbot MANAGE_EXTERNAL_STORAGE allow`。
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [docs/phone-app.md](phone-app.md)
+- [phone/app/README.md](../phone/app/README.md)
+- [README.md](../README.md)

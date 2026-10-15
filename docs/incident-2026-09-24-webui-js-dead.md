@@ -91,3 +91,11 @@ Python求值：
 |---|---|
 | 旧建议“拆静态JS／新增检查工具” | 027e318已实施；不继续列为待办 |
 | raw字符串／模板字面量 | 需按实际输出评估；不盲目全局替换 |
+
+## Related documents
+
+按相关任务跳读：README 供使用者，AGENTS 规定 Agent 工作边界，PF_BOT 是实现细节，事故与探索报告只在排查对应问题时读取。
+
+- [README.md](../README.md)
+- [PF_BOT.md](../PF_BOT.md)
+- [AGENTS.md](../AGENTS.md)
