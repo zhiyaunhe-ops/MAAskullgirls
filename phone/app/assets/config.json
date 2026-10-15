@@ -867,5 +867,13 @@
  },
  "store": {
   "keep_days": 400
+ },
+ "pf": {
+  "energy_cost": 4,
+  "favorite": true,
+  "rule": null,
+  "tap_delay_ms": 400,
+  "pages_max": 30,
+  "_note": "PF 全链 (nav 模式) 配置。energy_cost=每个出战槽角色需要的黄钉能量; favorite=编队筛选勾喜爱; rule=场次条件 {type:element|class,value:...} 或 null (element 规则会触发筛选替换, class 只约束防守队、不进出战队编队路径); tap_delay_ms=主循环每步间隔; pages_max=候选区翻页上限。⚠️ 几何/阈值不在这里 —— 见 Pf.java (PC 值 + 换算, 便于与 tools/pf_bot.py 逐条对照)"
  }
 }

@@ -19,12 +19,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 前台服务 — 悬浮条/工作线程/常驻通知的宿主。
- * M2: settle 模式跑 SettleLoop (移植 autojs 结算循环); 导航链待 NavChain 接入。
- * 控制面三入口 (悬浮条/广播/HTTP) 全部汇到 start/stop/trigger。
+ * 两种模式: {@code settle} = 结算闭环 (SettleLoop); {@code nav} = PF 全链 (PfFlow,
+ * 导航+选场+选对手+编队选人+FIGHT+结算)。控制面三入口 (悬浮条/广播/HTTP) 全部汇到
+ * start/stop/trigger。
  */
 public class BotService extends Service {
     public static final String MODE_SETTLE = "settle";
+    /** PF 全链 (2026-10-15 起实装, 不再是占位)。 */
     public static final String MODE_NAV = "nav";
+
+    /** 上一轮 PF 循环的停止原因 (null = 正常结束)。 */
+    private volatile String lastFatal;
 
     private static volatile boolean running = false;
     /**
@@ -251,15 +256,22 @@ public class BotService extends Service {
     }
 
     private void runBot(String m) {
-        if (MODE_NAV.equals(m)) {
-            /* M2: NavChain 未接入前, 导航模式退化为直接进结算循环 (不盲点未知界面) */
-            SgmLog.i("bot", "导航链待 NavChain (M2) 接入 — 本次先跑结算循环");
-        }
         SgmLog.i("bot", "开始 mode=" + m);
-        notify_("SGM挂机 " + m + " — 结算循环中");
+        final boolean pf = MODE_NAV.equals(m);
+        notify_("SGM挂机 " + (pf ? "PF 全链" : "结算循环") + " — 循环中");
         Update.autoCheck(this, cfg, false);   // 顺手查一次更新 (默认只热更 bundle, 不自动装 APK)
         try {
-            new SettleLoop(sh, tpls, bar).run(RUN, cfg);
+            if (pf) {
+                /* nav 模式 = PF 全链 (2026-10-15 起): 导航 → 选场次 → 选对手 → 编队选人
+                 * → FIGHT → 战斗 → 结算 → 再战 (每场都重选角色)。移植 tools/pf_bot.py 的
+                 * step() 14 分支优先级表, 口径见 PfFlow / PfTeam 类注释。
+                 * ⚠️ 旧的"导航退化为结算循环"占位实现已删 —— 那时 NavChain 未接入。 */
+                PfFlow flow = new PfFlow(sh, tpls, bar);
+                flow.run(RUN, cfg, false);
+                lastFatal = flow.fatalReason();
+            } else {
+                new SettleLoop(sh, tpls, bar).run(RUN, cfg);
+            }
         } catch (Throwable t) {
             SgmLog.i("bot", "循环异常: " + t);
         }
