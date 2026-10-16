@@ -67,6 +67,8 @@ final class PfTeam {
         favorite = p.optBoolean("favorite", true);
         tapDelayMs = p.optInt("tap_delay_ms", 400);
         pagesMax = p.optInt("pages_max", 30);
+        /* 临时采集 hook (2026-10-16): config 里 "pf": {"dump_opp": true} 即开 */
+        PfDump.setEnabled(p.optBoolean("dump_opp", false));
         JSONObject r = p.optJSONObject("rule");
         if (r != null) {
             String t = r.optString("type", "");
@@ -255,6 +257,8 @@ final class PfTeam {
      */
     void pickOpponent(Vision.Frame work, Bitmap bmp) {
         flow.setStepText("选对手");
+        /* 临时截图 hook (2026-10-16): 采选对手页样本补 mult_* 模板 —— 关着时零开销 */
+        PfDump.oppPage(work);
         int fireCount = 0, firstFire = -1;
         double[] mults = new double[3];
         for (int i = 0; i < 3; i++) {

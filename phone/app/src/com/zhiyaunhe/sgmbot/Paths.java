@@ -72,6 +72,8 @@ public final class Paths {
     public static boolean legacy() { return legacy; }
 
     public static String frame() { return root + "/frame.png"; }
+    /** 临时采集落点 (dump/): 截图 hook 类的调试样本, 手动删或脚本拉走, 不进清理范围。 */
+    public static String dumpDir() { return root + "/dump/"; }
     public static String store() { return root + "/store.json"; }
     public static String config() { return root + "/config.json"; }
     public static String tplDir() { return root + "/templates/"; }
