@@ -678,7 +678,26 @@ public final class PfFlow {
         setStep("进编队");
         if (!inTeamEditor(work)) {
             log("不在编队编辑器 — 点 TEAM 菱形进入");
-            tap(bmp, Pf.TEAM_DIAMOND);           // TEAM 菱形
+            /* ⚠️ 必须**模板定位**, 不能用固定坐标 —— 菱形位置随场次变 (见 Pf.TEAM_DIAMOND 注释)。 */
+            double[] dm = matchFull(work, Pf.T_TEAM_DIAMOND, Pf.ROI_TEAM_DIAMOND,
+                    Pf.TH_TEAM_DIAMOND);
+            if (dm == null) {
+                /* 预览页是淡入的, 这一帧可能是半透明过渡帧 ⇒ 补一帧再看 (见 TH_TEAM_DIAMOND)。 */
+                sleep_(900);
+                Bitmap bd = sh.capture();
+                if (bd != null) {
+                    Vision.Frame wd = Vision.toWork(bd);
+                    dm = matchFull(wd, Pf.T_TEAM_DIAMOND, Pf.ROI_TEAM_DIAMOND,
+                            Pf.TH_TEAM_DIAMOND);
+                    if (dm != null) { bmp = bd; work = wd; }
+                }
+            }
+            if (dm != null) {
+                tapCenter(bmp, work, dm, Pf.T_TEAM_DIAMOND);
+            } else {
+                log("TEAM 菱形模板没命中 — 退回固定坐标 (位置可能已漂)");
+                tap(bmp, Pf.TEAM_DIAMOND);
+            }
             sleep_(1600);
             Bitmap b2 = sh.capture();
             if (b2 != null) {
@@ -933,7 +952,47 @@ public final class PfFlow {
      * @return 是否处理了 (true 时代码调用方 continue)
      */
     private boolean confirmSaveTeam(Bitmap bmp) {
-        return false;                                 // TODO(ocr): 补正文/按钮判据后启用
+        if (saveTeamGiveUp) return false;
+        Vision.Frame w = Vision.toWork(bmp);
+        /* 「Save changes to your Team?」: 正文问要不要保存, 两个按钮 **NO(紫蓝) / YES(绿)**,
+         * 同一行 y=441 (PC 源码: NO x=527 / YES x=751)。手机端没 OCR ⇒ 用**按钮配色对**兜底:
+         * 只有"NO 位是紫蓝 **且** YES 位是绿"才认 —— 单看一个绿会误报 (难度锁定弹窗/排行榜
+         * 都踩过这个坑), 两个颜色同时对上就基本不会错。
+         * ⚠️ 用户 2026-10-16 明确要求「第一次进来需要点取消」⇒ 这里点 **NO** 而不是 YES。 */
+        boolean noPurple = purpleRatio(w, Pf.SAVE_TEAM_NO[0], Pf.SAVE_TEAM_NO[1], 30, 12) >= 0.45;
+        boolean yesGreen = team.greenRatio(w, Pf.SAVE_TEAM_YES[0], Pf.SAVE_TEAM_YES[1], 30, 12) >= 0.45;
+        if (!(noPurple && yesGreen)) return false;
+        if (++saveTeamTries > 3) {
+            saveTeamGiveUp = true;
+            log("存档确认弹窗连点 3 次仍在 — 本次运行不再处理它");
+            return false;
+        }
+        log("「Save changes to your Team?」弹窗, 点 NO/取消 (第 " + saveTeamTries + " 次)");
+        tap(bmp, Pf.SAVE_TEAM_NO);
+        sleep_(1800);
+        return true;
+    }
+
+    /**
+     * 某点周围窗口里"紫蓝"像素占比 (存档弹窗 NO 按钮的底色)。
+     *
+     * <p>返回**占比**而不是布尔 —— 与 {@link #greenRatio} 保持同一形状, 阈值留给调用处,
+     * 这样日志里能直接打印分数 (排查时最有用的东西)。
+     */
+    private static double purpleRatio(Vision.Frame f, int cx, int cy, int hw, int hh) {
+        int ok = 0, n = 0;
+        float[] hsv = new float[3];
+        for (int y = cy - hh; y <= cy + hh; y++) {
+            if (y < 0 || y >= f.h) continue;
+            for (int x = cx - hw; x <= cx + hw; x++) {
+                if (x < 0 || x >= f.w) continue;
+                PfTeam.hsv(f.px[y * f.w + x], hsv);
+                n++;
+                // 紫蓝: 色相 225~285 度 (HSV 里 0~360 映射到 0~360? 本实现用 0~360 尺度)
+                if (hsv[0] >= 225 && hsv[0] <= 285 && hsv[1] >= 0.25f && hsv[2] >= 0.35f) ok++;
+            }
+        }
+        return n == 0 ? 0 : ok / (double) n;
     }
 
     // ==================================================================

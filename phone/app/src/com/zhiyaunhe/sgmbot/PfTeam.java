@@ -905,7 +905,8 @@ final class PfTeam {
     }
 
     /** 以 (cx,cy) 为中心、半宽 hw/半高 hh 的区域内"绿色像素"占比。 */
-    private double greenRatio(Vision.Frame f, int cx, int cy, int hw, int hh) {
+    /* 去掉 private: PfFlow 的存档确认弹窗判据也要用它 (两个颜色同时对上才算, 见 confirmSaveTeam) */
+    double greenRatio(Vision.Frame f, int cx, int cy, int hw, int hh) {
         int x0 = Math.max(0, cx - hw), x1 = Math.min(f.w, cx + hw);
         int y0 = Math.max(0, cy - hh), y1 = Math.min(f.h, cy + hh);
         if (x1 <= x0 || y1 <= y0) return 0;

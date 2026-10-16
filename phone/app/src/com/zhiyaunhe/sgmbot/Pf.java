@@ -237,7 +237,31 @@ public final class Pf {
     //    内容区类 (编队槽位/筛选面板/对手卡) 可以套 —— 见下面分组。
 
     /** 编队页入口 TEAM 菱形 (内容区, 可套换算)。 */
+    /**
+     * TEAM 菱形 —— PC 换算的**兜底坐标**。
+     *
+     * <p>⚠️⚠️ 2026-10-16 实栽: 这个菱形的**位置随场次变**。用固定坐标点它, 在新场次会落到
+     * 旁边角色头像上 ⇒ 打开角色详情页 ⇒ 「点 TEAM 菱形 → 误入角色详情页」来回循环。
+     * 现在改成**模板定位** {@link #T_TEAM_DIAMOND} 优先, 这里只作模板也没命中时的兜底。
+     */
     public static final int[] TEAM_DIAMOND  = PI(637, 555);
+
+    /** TEAM 菱形模板 (真机裁, 自匹配 1.000 / 其它界面 ≤0.234)。 */
+    public static final String T_TEAM_DIAMOND = "pf/team_diamond";
+    /**
+     * TEAM 菱形阈值。
+     *
+     * <p>⚠️ 0.62 而不是 0.70: 从选对手页点 CONTINUE 进来时预览页是**淡入**的, bot 抓到的
+     * 那一帧常常是半透明的过渡帧, 实测同一位置从 0.79 掉到 0.6x ⇒ 0.70 判"没命中"
+     * (日志连续 3 次「菱形模板没命中」)。反例上限只有 **0.234**, 掉到 0.62 仍留一倍余量。
+     */
+    public static final double TH_TEAM_DIAMOND = 0.62;
+    /**
+     * TEAM 菱形的搜索区。⚠️ 定 ROI 的铁律: **x0+模板宽 &lt;= x0+w 且 y0+模板高 &lt;= y0+h**
+     * (2026-10-16 踩过 ROI 比模板还窄的坑, 匹配器不报错、只静默返回"没找到")。
+     * 模板 96x80 ⇒ 这里 340x220 绰绰有余。
+     */
+    public static final int[] ROI_TEAM_DIAMOND = {400, 340, 340, 220};
 
     /**
      * 大厅 PRIZE FIGHTS 节点的点击点 (work 坐标) —— **固定值, 不靠模板定位**。
@@ -310,6 +334,18 @@ public final class Pf {
     public static final int[] LOCK_CONTINUE = PI(748, 576);
     /** 「Save changes to your Team?」YES (绿, NO 在 527 —— 绝不能点)。 */
     public static final int[] SAVE_TEAM_YES = PI(751, 441);
+
+    /**
+     * 「Save changes to your Team?」**NO / 取消** —— 用户 2026-10-16 明确要求:
+     * 「第一次进来需要点取消」。坐标来自 PC 源码注释 (NO 在 PC x=527, 与 YES 同一行 y=441)。
+     *
+     * <p>⚠️ 这个弹窗**无 X**, 挡在编队页前面, 不点掉就进不去 —— 而手机端原先的
+     * {@code confirmSaveTeam()} 是个 `return false` 的空壳, 等于完全没处理。
+     */
+    public static final int[] SAVE_TEAM_NO = PI(527, 441);
+
+    /** 存档确认弹窗的正文带 (PC: 400,305 → 870,375)。判据只在带内取颜色, 不做全文搜索。 */
+    public static final int[] ROI_SAVE_TEAM = R(400, 305, 870, 375);
     /** 防守队说明弹窗 OK (绿按钮心)。 */
     public static final int[] DEFENSE_OK    = PI(751, 541);
 
