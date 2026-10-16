@@ -106,6 +106,7 @@ public final class OverlayBar {
         btnStart = addBtn(row, startText, "start");     // 暂停后变「继续」, 见 refreshStartLabel
         addBtn(row, "导航", "start_nav");
         addBtn(row, "暂停", "stop");                    // 只停循环, 窗口留着可续 (动作名仍是 stop)
+        addBtn(row, "监控", "monitor");                 // 长跑看进度: 当前界面/场次/时长/日志
         addBtn(row, "结束", "end");                     // 连服务/窗口一起收 = 退出挂机
         Button fold = new Button(ctx);
         fold.setText("◀");

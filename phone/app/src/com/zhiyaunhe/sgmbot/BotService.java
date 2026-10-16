@@ -140,6 +140,15 @@ public class BotService extends Service {
             /* 悬浮条独立启停 (不需要服务) — 主页/悬浮条/HTTP 都能调 */
             case "overlay_show": OverlayCtl.show(c); break;
             case "overlay_hide": OverlayCtl.hide(); break;
+            /* 监控页 (长跑看进度)。⚠️ 必须 NEW_TASK —— 悬浮条/广播里没有 Activity 栈。 */
+            case "monitor":
+                try {
+                    c.startActivity(new Intent(c, MonitorActivity.class)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (Exception e) {
+                    SgmLog.i("ctl", "打开监控页失败: " + e);
+                }
+                break;
             /* 更新: 网络 IO, 一律丢后台线程 (trigger 会被 UI 线程/HTTP 线程直接调)
              * ⚠️ 配置一律走 cfgOr(c) 而不是 static cfg —— 服务没起过时 cfg==null,
              *    而"打开 App 就点更新"是最常见顺序 (服务根本没起)。见 cfgOr 注释。 */

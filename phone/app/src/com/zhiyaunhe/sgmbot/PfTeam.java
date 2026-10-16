@@ -306,6 +306,8 @@ final class PfTeam {
      */
     boolean fixTeam(PfFlow owner, boolean replacing) {
         flow.setStepText("编队(" + (replacing ? "替换能量不足" : "初始化") + ")");
+        energyWaits = 0;            // 每次进入编队重新计"等能量"的轮数
+        noEnergy = false;
 
         // 首次编队: 按设置归位筛选 (清残留 + 喜爱芯片) —— 游戏内筛选跨运行持久。
         if (!owner.isFilterCleared()) {
@@ -391,15 +393,47 @@ final class PfTeam {
 
             int[] roster = readRosterEnergy(w);
             flow.log("候选区能量 " + arr(roster));
-            int src = -1;
+            /* ⚠️ 重试要**换一张卡**, 不能只挪偏移量 (2026-10-16 实栽: 槽3 连拖 4 次全失败,
+             * 每次都是同一张候选[4] + 不同偏移 ⇒ 偏移改了也没用, 白等 4 轮然后整个运行停掉。
+             * 换卡的成功面比换偏移大得多 —— 某些卡面(已在队里被压暗/刚拖过还没复位)
+             * 本来就拖不动, 换一张立刻就好。偏移仍保留, 只是排在换卡之后当微调。 */
+            List<Integer> cands = new ArrayList<>();
             for (int i = 0; i < roster.length; i++) {
-                if (roster[i] >= energyCost) { src = i; break; }
+                if (roster[i] >= energyCost) cands.add(i);
+            }
+            int src = -1;
+            if (!cands.isEmpty()) {
+                int fails = slotFails[bad.get(0)];
+                src = cands.get(fails % cands.size());      // 每次失败换下一张
             }
             if (src < 0) {
                 pages++;
                 if (pages > pagesMax) {
-                    flow.log("候选区翻页超限, 没有可用能量的角色了");
-                    return false;
+                    /* ⚠️⚠️ "没能量" ≠ "失败" (2026-10-16 为「跑 200 场」改):
+                     * 旧实现直接 return false ⇒ 上层立刻 `fatal = "编队失败: 无可用能量角色"`
+                     * **结束整轮**。但 PF 的能量是**随时间恢复**的 (每槽黄钉会涨回来),
+                     * 打不了 5 场就必然全体见底 —— 那样根本跑不到 200 场, 而这不是故障,
+                     * 是游戏机制。正确做法是**等**: 把候选列归零、睡一个恢复周期、重新找。
+                     * 只在连续等了 ENERGY_WAIT_MAX 轮仍无可用角色时才真判定失败
+                     * (那时多半是配置/判定出了问题, 而不是单纯没能量)。 */
+                    if (++energyWaits > ENERGY_WAIT_MAX) {
+                        flow.log("候选区翻页超限, 已等待 " + energyWaits + " 轮仍无可用能量的角色 — 停止");
+                        noEnergy = true;
+                        return false;
+                    }
+                    flow.log("候选区无可换角色 (第 " + energyWaits + "/" + ENERGY_WAIT_MAX
+                            + " 轮等待能量恢复, 每轮 " + (ENERGY_WAIT_MS / 1000) + "s)");
+                    flow.setStepText("等待能量恢复 " + energyWaits + "/" + ENERGY_WAIT_MAX);
+                    PfFlow.sleep_(ENERGY_WAIT_MS);
+                    pages = 0;                                  // 归零重试
+                    Bitmap bw = sh.capture();
+                    if (bw != null) {
+                        for (int i = 0; i < 4; i++) {
+                            flow.swipe(bw, Pf.X(420), Pf.Y(570), Pf.X(1150), Pf.Y(570), 400);
+                            PfFlow.sleep_(400);
+                        }
+                    }
+                    continue;
                 }
                 flow.swipe(b, Pf.X(1150), Pf.Y(570), Pf.X(420), Pf.Y(570), 400);
                 PfFlow.sleep_(900);
@@ -409,7 +443,9 @@ final class PfTeam {
             int sx = Pf.ROSTER_CENTERS[src][0], sy = Pf.ROSTER_CENTERS[src][1];
             int dx = Pf.SLOT_DROP_X[slotI], dy = Pf.DRAG_DY;
             int fails = slotFails[slotI];
-            int[] off = offsets[Math.min(fails, offsets.length - 1)];
+            // 偏移只作为"换卡之外"的微调, 且要跳过已经用过的档位 (见上面换卡的注释)
+            int[] off = offsets[Math.min(fails / Math.max(1, cands.size()),
+                    offsets.length - 1)];
             flow.log("拖拽 候选[" + src + "](能量" + roster[src] + ") -> 槽位" + (slotI + 1)
                     + ((off[0] != 0 || off[1] != 0) ? " (偏移" + off[0] + "," + off[1] + ")" : ""));
             flow.drag(b, sx, sy, dx + off[0], dy + off[1]);
@@ -444,6 +480,23 @@ final class PfTeam {
     /** 单个槽位拖拽连续失败多少次就放弃 (防止"一直拉拽最底下那排"的死循环)。 */
     private static final int DRAG_MAX_FAILS = 4;
 
+    /**
+     * 找不到够能量的角色时, **等待能量恢复**的轮数与每轮时长。
+     *
+     * <p>PF 的黄钉随时间恢复, 连续打几十场必然见底。要跑满 200 场就必须等, 而不是停机。
+     * 30 轮 x 60s ≈ 30 分钟的容忍度: 够撑过正常恢复周期, 又不至于在真出问题时无限挂机。
+     */
+    private static final int ENERGY_WAIT_MAX = 30;
+    private static final long ENERGY_WAIT_MS = 60_000L;
+
+    /** 最近一次 fixTeam 失败是不是"真的没能量"(供上层区分: 等 vs 停)。 */
+    private boolean noEnergy;
+
+    /** 本轮 fixTeam 已等了多少轮能量恢复。 */
+    private int energyWaits;
+
+    boolean lastFailWasNoEnergy() { return noEnergy; }
+
     /** 从当前 (可能已筛选) 候选区拖左一个能量达标的角色到指定槽位, 带校验重试。 */
     private boolean dragBestToSlot(int slotI) {
         int pages = 0;
@@ -460,7 +513,10 @@ final class PfTeam {
             }
             if (src < 0) {
                 pages++;
-                if (pages > pagesMax) return false;
+                if (pages > pagesMax) {
+                    noEnergy = true;     // 筛选后整排都不够能量 ⇒ 同样是"没能量", 不是故障
+                    return false;
+                }
                 flow.swipe(b, Pf.X(1150), Pf.Y(570), Pf.X(420), Pf.Y(570), 400);
                 PfFlow.sleep_(900);
                 continue;

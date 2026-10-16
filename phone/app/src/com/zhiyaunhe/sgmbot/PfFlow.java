@@ -73,6 +73,23 @@ public final class PfFlow {
     /** 界面快速识别器 (见 {@link PfScene} 的类注释: 快路径靠它, 认不出才回退串行链)。 */
     private final PfScene scene;
 
+    /** 正在跑的那个实例 (给监控页读实时状态; 服务里同一时刻只有一个)。 */
+    private static volatile PfFlow live;
+
+    /** 本次运行开始时刻 (监控页算已跑时长)。 */
+    private long startMs;
+
+    /** 监控页用: 当前在跑的实例, 没在跑返回 null。 */
+    static PfFlow live() { return live; }
+
+    /** 监控页用: 当前识别出的界面名 (没识别过返回 "-")。 */
+    String sceneText() { return scene == null ? "-" : scene.lastScene().name(); }
+
+    /** 监控页用: 已跑毫秒。 */
+    long elapsedMs() {
+        return startMs == 0 ? 0 : System.currentTimeMillis() - startMs;
+    }
+
     public PfFlow(ShizukuCtl sh, TplStore tpls, OverlayBar bar) {
         this.sh = sh;
         this.tpls = tpls;
@@ -140,6 +157,8 @@ public final class PfFlow {
 
         SgmLog.i("pf", "PF 主循环开始 — 每场重选角色 | 匹配=" + Vision.modeText()
                 + (quiet ? " | 静默模式(不主动导航)" : ""));
+        live = this;                       // 监控页从这里读实时状态
+        startMs = System.currentTimeMillis();
 
         /* 起步: 先确保站在 PF hub (PC 的 run() 在每次「开始」都走 navigate_to_scene)。
          * quiet 模式跳过 —— 给"人已经停在编队页"的调试场景用。 */
@@ -166,6 +185,7 @@ public final class PfFlow {
         pushUi();
         SgmLog.i("pf", "PF 主循环结束 — 本次 " + roundsDone + " 场"
                 + (fatal != null ? " (" + fatal + ")" : ""));
+        if (live == this) live = null;     // 停了就别让监控页读到陈实例
     }
 
     /**
@@ -660,8 +680,17 @@ public final class PfFlow {
         int rotations = 0;
         while (run.get()) {
             if (!team.fixTeam(this, rotations > 0)) {
-                fatal = "编队失败: 无可用能量角色";
-                log("编队失败: 无可用能量角色, 停止");
+                /* ⚠️ "没能量" 不是故障 (见 PfTeam 里 ENERGY_WAIT_* 的注释): fixTeam 已经
+                 * 等过若干轮恢复周期, 这里**不置 fatal** —— 退回主循环让它重新分派,
+                 * 下一轮再等。要跑满 200 场, 能量见底一定会发生, 停机就永远跑不完。
+                 * 用户仍可随时用悬浮窗的「暂停/结束」中断。 */
+                /* ⚠️ 一律**不置 fatal** —— 要跑满 200 场, 中途任何一次编队不顺(没能量 /
+                 * 某张卡拖不动)都不该结束整轮, 退回主循环下一轮再试即可。
+                 * fixTeam 内部各环节都已各自封顶 (能量最多等 30 轮、拖拽最多 4 次),
+                 * 所以这里不会变成无限空转; 真想停就按悬浮窗的「暂停/结束」。 */
+                log(team.lastFailWasNoEnergy()
+                        ? "能量仍未恢复 — 退回主循环继续等 (不停止本次运行)"
+                        : "本次编队没成 (拖拽/规则) — 退回主循环重试, 不停止本次运行");
                 return;
             }
             Bitmap bf = sh.capture();
@@ -711,7 +740,8 @@ public final class PfFlow {
                 sleep_(1600);
                 continue;                            // 回 fixTeam 换人
             }
-            log("战斗已开始, 等待结束…");
+            roundsDone++;                     // 打完才算一场? 不 —— 开场就算, 便于中途观察进度
+            log("▶ 第 " + roundsDone + " 场开始 (本次累计 " + roundsDone + " 场), 等待结束…");
             if (!battleAutoChecked) {
                 battleAutoChecked = true;
                 team.ensureBattleAuto();

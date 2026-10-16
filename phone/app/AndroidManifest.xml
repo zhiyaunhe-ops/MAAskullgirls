@@ -53,6 +53,12 @@
         <!-- 每日战绩: GitHub contributions 风格热力图 + 每日明细 + 口径说明 -->
         <activity android:name=".StatsActivity" android:exported="false"/>
 
+        <!-- 运行监控: 长跑(一场 200 场)时看进度/卡在哪一页。悬浮窗的「监控」键进这里。
+             ⚠️ exported=true 是**故意**的: 这样 `adb shell am start` 也能直接拉起来
+             (非 exported 时 am start 会抛 "Permission Denial: not exported",
+              实测 2026-10-16 踩到)。本页只读状态, 不接任何外部 intent 数据。 -->
+        <activity android:name=".MonitorActivity" android:exported="true"/>
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="com.zhiyaunhe.sgmbot.shizuku"
