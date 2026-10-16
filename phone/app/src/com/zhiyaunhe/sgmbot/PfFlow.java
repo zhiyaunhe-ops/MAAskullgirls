@@ -836,6 +836,12 @@ public final class PfFlow {
                     log("能量弹窗循环超限, 停止");
                     return;
                 }
+                /* ⚠️⚠️ 关键一步: **把门槛抬上去再回去换人** (2026-10-16 实栽)。
+                 * 原来只关弹窗 + continue, 门槛还是 4 ⇒ fixTeam 看 [7,4,9] 判"全部达标"
+                 * ⇒ 又点 FIGHT ⇒ 又弹 ⇒ 关 ⇒ 又点…空转到 rotations>15 报错停机。
+                 * 真正的原因就是门槛低了一档 (角色场每场要 5 钉, 配置是 4),
+                 * 只要把 4 抬到 5, fixTeam 下一轮就会把槽 2 那颗 4 钉的角色换掉。 */
+                team.bumpEnergyCost();
                 log("FIGHT 后能量弹窗, 关闭并继续换人");
                 tap(bp, ex);
                 sleep_(1600);

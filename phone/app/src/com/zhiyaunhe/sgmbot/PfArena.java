@@ -62,9 +62,28 @@ final class PfArena {
         return new File(Paths.root(), "arena_target.png");
     }
 
+    /**
+     * 有没有可用的指纹。
+     *
+     * <p>⚠️ 还要**校验尺寸** —— 老版本存的是实机尺寸的裁剪块 (574x473), 与现在的 work 基准
+     * 指纹 (306x252) 不同坐标系, 留着只会让匹配恒 0.00。尺寸不对就当作过期, 丢掉重学,
+     * 这样装机后不用手动删文件。
+     */
     boolean hasTarget() {
         File f = file();
-        return f.isFile() && f.length() > 1000;
+        if (!f.isFile() || f.length() <= 1000) return false;
+        try {
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+            if (o.outWidth != CARD[2] || o.outHeight != CARD[3]) {
+                SgmLog.i("pf", "场次锁定: 旧格式指纹 " + o.outWidth + "x" + o.outHeight
+                        + " 与 work 基准 " + CARD[2] + "x" + CARD[3] + " 不符 — 丢弃重学");
+                f.delete();
+                return false;
+            }
+        } catch (Throwable ignored) { }
+        return true;
     }
 
     /** 忘掉目标 (换场次用)。 */
@@ -80,6 +99,7 @@ final class PfArena {
      *         false = 没找到 —— **上层绝不能再点 PLAY!** (宁可不打, 也不能进错场)
      */
     boolean ensureTarget(Bitmap bmp) {
+        if (disabled) return true;                 // 已关掉锁定 ⇒ 直接放行 (见 MAX_FAILS 注释)
         Vision.Frame w = Vision.toWork(bmp);
         if (!hasTarget()) {
             if (learn(bmp)) {
@@ -90,7 +110,8 @@ final class PfArena {
         }
         double s = score(w);
         if (s >= TH) {
-            flow.log("场次锁定: 居中卡就是目标场 (%.2f)".replace("%.2f", fmt(s)));
+            failCount = 0;                         // 找到了就清零
+            flow.log("场次锁定: 居中卡就是目标场 (" + fmt(s) + ")");
             return true;
         }
         flow.log("场次锁定: 居中卡不是目标场 (" + fmt(s) + ") — 滑轮播找回");
@@ -106,14 +127,34 @@ final class PfArena {
             flow.log("场次锁定: 滑动 " + (i + 1) + " 次 (" + (left ? "左" : "右")
                     + ") 后匹配 " + fmt(s2));
             if (s2 >= TH) {
+                failCount = 0;
                 flow.log("场次锁定: 找回目标场次");
                 return true;
             }
         }
         flow.log("⚠ 场次锁定: 滑了 " + MAX_SLIDES + " 次仍没找到目标场次 — 不进场"
                 + " (宁可漏跑也不错跑; 想换场次请删掉 " + file().getAbsolutePath() + ")");
+        /* ⚠️⚠️ 必须**有放弃上限** (2026-10-16 实栽): 指纹一旦是坏的, 这里每次返回 false
+         * ⇒ 上层"退回导航重试" ⇒ 再进 hub ⇒ 再滑 4 次 ⇒ 又 false …**无限循环**,
+         * 实测连刷 169 次、一场没打。失败满 MAX_FAILS 次就**本次运行关掉锁定**并放行,
+         * 宁可这次打错场次, 也不能把挂机卡死。 */
+        if (++failCount >= MAX_FAILS) {
+            disabled = true;
+            flow.log("⚠ 场次锁定连续失败 " + failCount + " 次 — **本次运行关闭锁定**放行"
+                    + " (先保证能打上; 下次运行会重新学习指纹)");
+            return true;
+        }
         return false;
     }
+
+    /** 连续几次找回失败就本运行关闭锁定 (见 ensureTarget 注释)。 */
+    private static final int MAX_FAILS = 3;
+
+    private int failCount;
+    private boolean disabled;
+
+    /** 本次运行是否已因连续失败而关闭锁定。 */
+    boolean disabled() { return disabled; }
 
     /** 当前居中卡与指纹的相似度 (0~1)。 */
     double score(Vision.Frame w) {
@@ -125,33 +166,45 @@ final class PfArena {
         return r == null ? 0 : r[0];
     }
 
-    /** 读指纹 PNG → work 基准的 Frame (与别的模板同一口径)。 */
+    /** 读指纹 PNG → Frame。⚠️ **不能走 {@link Vision#toWork}** —— 见 learn() 的注释。 */
     private Vision.Frame fingerprint() {
         try {
             Bitmap b = android.graphics.BitmapFactory.decodeFile(file().getAbsolutePath());
-            return b == null ? null : Vision.toWork(b);
+            if (b == null) return null;
+            int w = b.getWidth(), h = b.getHeight();
+            int[] px = new int[w * h];
+            b.getPixels(px, 0, w, 0, 0, w, h);
+            return new Vision.Frame(px, w, h);
         } catch (Throwable t) {
             return null;
         }
     }
 
     /**
-     * 把当前居中卡存成目标指纹。
+     * 把当前居中卡存成目标指纹 (**work 基准**)。
      *
-     * <p>⚠️ 裁剪用**帧高换算** (同 {@code ShizukuCtl.tapWork}): 实机帧 2400x1080 → work 1280x576
-     * 的倍数是 1080/576 = 1.875, 直接写死 1.875 会在竖屏帧 (259x576 → s=1.0) 上裁飞。
+     * <p>⚠️⚠️ 2026-10-16 实栽, 一度让 bot 在 hub 无限循环: 第一版直接裁实机帧存盘,
+     * 读回来又过了一遍 {@link Vision#toWork} —— 那函数会**把图缩放到高 576**, 而指纹是
+     * 574x473 的裁剪块 ⇒ 被拉成 699x576, 比搜索区(354x300)还大 ⇒ 匹配恒 0.00
+     * ⇒ "不是目标场" ⇒ 滑轮播 4 次 ⇒ 不进场 ⇒ 回导航 ⇒ 再进 hub ⇒ 又 0.00 …循环 169 次。
+     * 修法: **先把帧转成 work 基准再裁**, 存的就是 work 尺寸; 读回来**原样**包成 Frame,
+     * 绝不再做任何缩放。指纹和搜索区从此同坐标系。
      */
     private boolean learn(Bitmap bmp) {
         try {
-            float s = bmp.getHeight() / 576f;
-            Bitmap crop = Bitmap.createBitmap(bmp,
-                    Math.round(CARD[0] * s), Math.round(CARD[1] * s),
-                    Math.round(CARD[2] * s), Math.round(CARD[3] * s));
+            Vision.Frame wf = Vision.toWork(bmp);        // 实机 → work(1280x576)
+            int x0 = CARD[0], y0 = CARD[1], cw = CARD[2], ch = CARD[3];
+            if (x0 + cw > wf.w || y0 + ch > wf.h) return false;
+            int[] px = new int[cw * ch];
+            for (int y = 0; y < ch; y++) {
+                System.arraycopy(wf.px, (y0 + y) * wf.w + x0, px, y * cw, cw);
+            }
+            Bitmap crop = Bitmap.createBitmap(px, cw, ch, Bitmap.Config.ARGB_8888);
             FileOutputStream fo = new FileOutputStream(file());
             crop.compress(Bitmap.CompressFormat.PNG, 100, fo);
             fo.close();
-            SgmLog.i("pf", "场次锁定: 指纹已存 " + crop.getWidth() + "x" + crop.getHeight()
-                    + " → " + file().getAbsolutePath());
+            SgmLog.i("pf", "场次锁定: 指纹已存 " + cw + "x" + ch + " (work 基准) → "
+                    + file().getAbsolutePath());
             return true;
         } catch (Throwable t) {
             SgmLog.i("pf", "场次锁定: 存指纹失败 " + t);
