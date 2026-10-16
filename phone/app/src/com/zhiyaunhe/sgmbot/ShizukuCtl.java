@@ -159,11 +159,18 @@ public final class ShizukuCtl {
      */
     public Bitmap capture() {
         String[] dirs = dirs();
+        /* ⚠️⚠️ 每次调用**唯一文件名** (2026-10-16 实栽): 旧实现用固定 frame.raw/frame.png,
+         * 而截屏有两个并发调用方 —— bot 主循环 + HTTP /screencap (WebUI 实时画面/远程采集)。
+         * 时序: A 发出 `rm -f && screencap` 正在写 → B 的 `rm -f` 把 A 正在写的文件删了
+         * → A 的 decode 读不到 ⇒ "no-file"。实测 1.5s 一次的远程轮询就能把主循环打出
+         * 每几秒一次「截屏失败」, 且失败是**间歇性**的 (两条调用线偶尔才撞上), 极难归因。
+         * 唯一名后谁也不动谁的文件; "不吃陈旧帧"的修复依然成立 —— 新文件不存在就是失败,
+         * 不存在"上一帧还在盘上"的问题 (decode 成功/失败都会 delete, 自清理)。 */
+        String uniq = String.valueOf(System.nanoTime());
         if (rawOK) {                                   // ① 裸 RGBA (省 PNG 编解码)
             for (String d : dirs) {
-                String p = d + "/frame.raw";
-                /* ⚠️⚠️ rm -f 必须先于 screencap —— 见 PNG 分支同处注释 (陈旧帧 bug)。 */
-                String out = exec("rm -f \"" + p + "\" && mkdir -p \"" + d + "\" && screencap \"" + p + "\"");
+                String p = d + "/frame_" + uniq + ".raw";
+                String out = exec("mkdir -p \"" + d + "\" && screencap \"" + p + "\"");
                 Bitmap b = decodeRaw(p);
                 if (b != null) { capFails = 0; capOk = d; lastScale = b.getHeight() / (float) WORK_H; return b; }
                 capOut = out;
@@ -175,16 +182,9 @@ public final class ShizukuCtl {
             }
         }
         for (String d : dirs) {                        // ② PNG (回退路径, 逐字未改)
-            String p = d + "/frame.png";
-            /* ⚠️⚠️ 2026-10-15 修的**陈旧帧** bug (真机现场: 永远判"未知界面", 而屏幕早已回到大厅):
-             * 截屏落盘用**固定文件名**, 却**不先删旧文件** ⇒ 一旦 screencap 失败/超时/报错
-             * (如息屏被 SurfaceFlinger 挂住), 上一轮的 frame.png 还在盘上 ⇒ decode() 照旧
-             * 成功解出**上一帧**并当作新帧返回。后果: 状态机永远看着过期画面,
-             * 「未知界面 → 按返回键」无限空转, 而人在旁边看画面明明是正常的。
-             * 修法: 每次截屏前 `rm -f` 目标文件 —— 截屏真失败就 decode 不到东西, 老实返回 null
-             * (上层丢帧重试), 而不是悄悄喂陈旧帧。
-             * (mkdir -p 仍必要: 目录不存在时 screencap 报 "Error opening file" 且不自建目录。) */
-            String out = exec("rm -f \"" + p + "\" && mkdir -p \"" + d + "\" && screencap -p \"" + p + "\"");
+            String p = d + "/frame_" + uniq + ".png";
+            /* (mkdir -p 仍必要: 目录不存在时 screencap 报 "Error opening file" 且不自建目录。) */
+            String out = exec("mkdir -p \"" + d + "\" && screencap -p \"" + p + "\"");
             Bitmap b = decode(p);
             if (b != null) { capFails = 0; capOk = d; lastScale = b.getHeight() / (float) WORK_H; return b; }
             capOut = out;
