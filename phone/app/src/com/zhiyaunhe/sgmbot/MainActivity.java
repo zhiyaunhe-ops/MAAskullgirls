@@ -175,10 +175,13 @@ public class MainActivity extends Activity {
         Ui.add(this, Ui.section(this, "PF 挂机"));
         Ui.add(this, Ui.hint(this,
                 "「开始 PF」= 自动 导航 → 选对手 → 编队 → 战斗 → 结算 循环连打。\n"
-                + "⚠️ 开始后**悬浮窗会整个隐藏** (避免挡住游戏判定区) —— 要暂停/看进度都回这个页面;\n"
-                + "暂停或结束后悬浮窗会自动回来。\n"
-                + "「监控」随时可看 当前界面 / 场次 / 已跑时长 / 最近日志。"));
+                + "「就地开始」= 假定**你已经把游戏停在 PF 上**(某个场次的 hub / 编队页),\n"
+                + "    跳过起步导航直接开跑 —— ⚠️ 选场逻辑还没做, 从外面自动导航只能盲点居中那张卡;\n"
+                + "    想打哪一场就自己先停到那一场再点这个。\n"
+                + "开始后**悬浮窗会整个隐藏** (避免挡住游戏判定区) —— 暂停/看进度都回这个页面;\n"
+                + "暂停或结束后悬浮窗自动回来。「监控」随时可看 当前界面/场次/时长/日志。"));
         pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
+        Ui.button(this, "▶ 就地开始（先在游戏里手动停在 PF）", "", feed, () -> startPf(true));
         Ui.button(this, "监控 (当前界面 / 场次 / 时长 / 日志)", "", feed,
                 () -> startActivity(new Intent(this, MonitorActivity.class)));
 
@@ -309,10 +312,22 @@ public class MainActivity extends Activity {
             feed.setText("› 已暂停 PF — 悬浮窗恢复显示; 再点一次「▶ 开始 PF」继续");
             return;
         }
+        startPf(false);
+    }
+
+    /**
+     * 启动 PF。
+     *
+     * @param here true = **就地开始**: 跳过起步导航, 假定人已把游戏停在 PF 上 (见
+     *             {@link BotService#MODE_NAV_HERE})。选场逻辑没做之前, 这是"打对场次"的唯一办法。
+     */
+    private void startPf(boolean here) {
         Ui.gate(this, feed, Ui.NEED_CHANNEL, () -> {
-            BotService.trigger("start_nav");
+            BotService.trigger(here ? "start_here" : "start_nav");
             feed.setTextColor(Ui.OK);
-            feed.setText("› PF 已启动 — 悬浮窗已隐藏; 「监控」可看实时进度, 这里可暂停");
+            feed.setText(here
+                    ? "› 就地开始 —— 悬浮窗已隐藏; 假定你已停在 PF 上, 不做起步导航"
+                    : "› PF 已启动 (自动导航进场) —— 悬浮窗已隐藏, 可随时暂停");
         }).run();
     }
 

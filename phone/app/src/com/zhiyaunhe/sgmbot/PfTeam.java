@@ -309,6 +309,22 @@ final class PfTeam {
         energyWaits = 0;            // 每次进入编队重新计"等能量"的轮数
         noEnergy = false;
 
+        /* ⚠️⚠️ 读能量前**先确保筛选面板是关的** (2026-10-16 实测踩到):
+         * 面板一旦开着就会盖住顶部的三个出战槽和底部候选列 ⇒ 钉条读数全 0
+         * ⇒ bot 判"三个槽都要换人"却一个都拖不动 ⇒ 白等 30 轮能量恢复 (每轮 60s = 半小时)。
+         * 现场日志: 「槽位能量 [0,0,0] / 候选区能量 [0,0,0,0,0,0,0,0]」刷屏, 而截图里
+         * 面板明明开着、选人区被压暗。面板开/关的判据本身没错, 错在没人**保证它关着**。 */
+        if (panelOpen()) {
+            flow.log("筛选面板还开着 — 先关掉再读能量");
+            int guard = 0;
+            while (panelOpen() && guard++ < 3) {
+                Bitmap bb = sh.capture();
+                if (bb == null) break;
+                tapResident(bb, Pf.FILTER_CLOSE);
+                PfFlow.sleep_(1500);
+            }
+        }
+
         // 首次编队: 按设置归位筛选 (清残留 + 喜爱芯片) —— 游戏内筛选跨运行持久。
         if (!owner.isFilterCleared()) {
             owner.markFilterCleared();
@@ -609,14 +625,32 @@ final class PfTeam {
          * 实测 1240 (差 140px ⇒ 点下去什么都没发生)。找不到就退回实测坐标兜底。 */
         int[] btn = flow.funnel(Vision.toWork(b));
         if (btn == null) btn = Pf.FILTER_BTN;
-        tapResident(b, btn);
-        PfFlow.sleep_(1200);
+        /* ⚠️⚠️ 漏斗必须用**真 tap** (`input tap`), 不能用 tapResident ——
+         * tapResident 走的是"零距离 180ms 滑动", 对漏斗这种小图标实测**点不开面板**
+         * (同坐标连点 3 次都不开, 日志「漏斗=0.03 ✕=0.20」), 而 `input tap` 一下就成了。
+         * 2026-10-16 实栽: 坐标/ROI/模板/等待时长全查过一轮, 最后发现是**手势类型**不对。 */
+        flow.tap(b, btn[0], btn[1]);
+        /* ⚠️⚠️ 2500ms 不能短 (2026-10-16 实测): 原来 1200ms —— 手工点漏斗后等 4s 面板确实开了
+         * (✕ 模板 0.985), 但 bot 等 1200ms 就去判"面板呢", 动画没播完 ⇒ panelOpen() 返回 false
+         * ⇒ 重试一次仍然 false ⇒ **放弃筛选**。日志里那句「筛选面板打不开」有一半是这么来的,
+         * 不是坐标错、也不是模板错。 */
+        PfFlow.sleep_(2500);
         /* ⚠️ 必须**验证面板真的开了**再往下点 (2026-10-15 实栽): 漏斗坐标曾经是错的,
          * 于是"清空/芯片/关闭"三下全打在游戏画面上 —— 面板从没打开过, 而函数**静默返回**,
          * 上层以为筛选已生效 ⇒ 拖人完全没有筛选条件。这就是"选角色不加筛选条件"的真身。 */
         if (!panelOpen()) {
-            tapResident(b, btn);
-            PfFlow.sleep_(1200);
+            flow.tap(b, btn[0], btn[1]);
+            PfFlow.sleep_(2500);
+            if (!panelOpen()) {
+                /* 再给一次机会: 有的机型/画质下漏斗图标的渲染会变 (2026-10-16 实测: 旧模板
+                 * 在同一台机器上从 1.000 掉到 0.44, 就是因为图标背景多了一圈青色辉光)。
+                 * 与其直接放弃筛选, 不如按"点了没反应"再试一轮, 并把分数写进日志。 */
+                Bitmap b3 = sh.capture();
+                if (b3 != null) {
+                    flow.tap(b3, btn[0], btn[1]);
+                    PfFlow.sleep_(2500);
+                }
+            }
             if (!panelOpen()) {
                 /* 诊断: 记下漏斗/✕ 的**实际最分**再放弃 —— 只说"打不开"没法分辨三种情况:
                  * ① 漏斗没找到(坐标错) ② 漏斗点了但游戏没响应 ③ 面板开了只是 ✕ 模板没匹配上。

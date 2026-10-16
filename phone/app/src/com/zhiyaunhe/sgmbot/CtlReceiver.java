@@ -22,6 +22,12 @@ public class CtlReceiver extends BroadcastReceiver {
             case "start_nav":
                 BotService.start(ctx, BotService.MODE_NAV);
                 break;
+            /* 就地开始: 跳过起步导航 (见 BotService.MODE_NAV_HERE)。
+             * ⚠️ 新增动作**必须同时加到这里和 BotService.trigger** —— 广播通道与
+             *    HTTP /trigger 各有自己的白名单, 漏一处就"unknown action"静默失效。 */
+            case "start_here":
+                BotService.start(ctx, BotService.MODE_NAV_HERE);
+                break;
             case "start":
                 BotService.start(ctx, BotService.MODE_SETTLE);
                 break;

@@ -27,6 +27,20 @@ public class BotService extends Service {
     public static final String MODE_SETTLE = "settle";
     /** PF 全链 (2026-10-15 起实装, 不再是占位)。 */
     public static final String MODE_NAV = "nav";
+    /**
+     * PF 全链, 但**跳过起步导航** —— 「我已经在 PF 里了, 就地开始」。
+     *
+     * <p>⚠️ 2026-10-16 用户要求「你都没做选场逻辑, 就别再在外面开始拉, 就直接在 pf 里面开始」。
+     * 现在选场(读 hub 卡名)还没做 ⇒ 从外面一路导航进去只能盲点居中那张卡, 很可能不是你想要的场;
+     * 而人自己把游戏停到目标场次的 hub 上再点开始, 场次就是对的。
+     * 所以把它做成一条**正式模式**而不是调试开关 (PfFlow 里早有 quiet 参数, 之前没人用)。
+     *
+     * <p>只影响"起步那一下": 之后的每场循环照旧自己认界面/补导航 —— 否则打完一场就出不来了。
+     */
+    public static final String MODE_NAV_HERE = "nav_here";
+
+    /** 是不是 PF 全链 (两种起点都算)。 */
+    public static boolean isPfMode(String m) { return MODE_NAV.equals(m) || MODE_NAV_HERE.equals(m); }
 
     /** 上一轮 PF 循环的停止原因 (null = 正常结束)。 */
     private volatile String lastFatal;
@@ -133,6 +147,8 @@ public class BotService extends Service {
         if (action == null || c == null) return;
         switch (action) {
             case "start_nav": start(c, MODE_NAV); break;
+            /* 就地开始: 假定人已把游戏停在 PF hub/编队页, 不做起步导航 (见 MODE_NAV_HERE) */
+            case "start_here": start(c, MODE_NAV_HERE); break;
             case "start": start(c, MODE_SETTLE); break;
             case "stop": stop(c); break;
             case "end": end(c); break;
@@ -272,7 +288,7 @@ public class BotService extends Service {
 
     private void runBot(String m) {
         SgmLog.i("bot", "开始 mode=" + m);
-        final boolean pf = MODE_NAV.equals(m);
+        final boolean pf = isPfMode(m);
         notify_("SGM挂机 " + (pf ? "PF 全链" : "结算循环") + " — 循环中");
         Update.autoCheck(this, cfg, false);   // 顺手查一次更新 (默认只热更 bundle, 不自动装 APK)
         try {
@@ -282,7 +298,9 @@ public class BotService extends Service {
                  * step() 14 分支优先级表, 口径见 PfFlow / PfTeam 类注释。
                  * ⚠️ 旧的"导航退化为结算循环"占位实现已删 —— 那时 NavChain 未接入。 */
                 PfFlow flow = new PfFlow(sh, tpls, bar);
-                flow.run(RUN, cfg, false);
+                /* quiet = nav_here ⇒ 跳过起步的 gotoHub, 假定人已经把游戏停在 PF hub 上
+                 * (理由见 MODE_NAV_HERE 的注释)。之后的循环照常自己认界面。 */
+                flow.run(RUN, cfg, MODE_NAV_HERE.equals(m));
                 lastFatal = flow.fatalReason();
             } else {
                 new SettleLoop(sh, tpls, bar).run(RUN, cfg);
