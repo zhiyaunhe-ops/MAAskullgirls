@@ -219,6 +219,34 @@ public final class PfFlow {
     private void step(Vision.Frame work, Bitmap bmp, AtomicBoolean run, JSONObject c) {
         if (justFoughtTicks > 0) justFoughtTicks--;   // "刚点完 FIGHT"的时效窗 (见 ⑨)
 
+        /* ---- ⓪b 连接中/加载中: **只等, 绝不按返回键** (2026-10-16 用户: 「又卡进 leaderboard 界面了」) ----
+         * 现场抓到的是 **「CONNECTING...」**(断网重连, 中央一块红骷髅徽章面板 + 右侧 120 倒计时)。
+         * 旧行为: 判"未知界面" → 等 3s → **按系统返回键** → 越按越乱, 而且期间还会被
+         * `findLockPopup` 的绿色判据误认成"难度锁定弹窗"去点 CONTINUE。
+         *
+         * 判据: **整屏近黑占比 > 0.92**。实测 CONNECTING = **0.985**,
+         * 而十个真实界面 (编辑器/预览/hub/选对手/结算/弹窗…) 全部 **≤ 0.774**
+         * —— 中间空档很大, 不会把正常界面误判成连接中。
+         * 等待是有界的: 连等 CONNECTING_WAIT_MS 之后交回主循环让看门狗升级脱困
+         * (断网久了确实需要重拉游戏, 但不能一上来就按返回键)。 */
+        if (connectingFrame(work)) {
+            if (connectingSince == 0) connectingSince = System.currentTimeMillis();
+            long waited = System.currentTimeMillis() - connectingSince;
+            if (waited < CONNECTING_WAIT_MS) {
+                if (System.currentTimeMillis() - lastNoteMs > 15_000) {
+                    lastNoteMs = System.currentTimeMillis();
+                    log("连接中/加载中 (近黑帧) — 等待, 不按返回键 (已等 " + waited / 1000 + "s)");
+                }
+                setStepText("连接中… 等待");
+                sleep_(4000);
+                return;
+            }
+            log("连接中已超 " + CONNECTING_WAIT_MS / 1000 + "s — 交回主循环让看门狗脱困");
+            connectingSince = 0;
+        } else {
+            connectingSince = 0;
+        }
+
         /* ---- ⓪ 弹窗**必须最先剥** (2026-10-16 实栽, 用户: 「能量看错了, 才导致这个弹窗」) ----
          * 原来弹窗检查在快路径**之后**, 于是: PfScene 把"编辑器 + ENERGY REFILL 弹窗"认成
          * TEAM_EDITOR (漏斗露在弹窗右侧, 0.785 > 阈值) ⇒ switch 直接跳进 fightFlow,
@@ -1111,6 +1139,37 @@ public final class PfFlow {
 
     /** 上一次点 FIGHT 的时刻 —— 用来认出"紧随其后"的 ENERGY REFILL 弹窗 (见 step ⓪)。 */
     private long lastFightTapMs;
+
+    /** 本段"连接中"从何时开始算 (0 = 没在连接中)。 */
+    private long connectingSince;
+
+    /** 连接中最多等多久就交回主循环 (断网久了确实要重拉游戏, 但不能一上来就按返回键)。 */
+    private static final long CONNECTING_WAIT_MS = 120_000L;
+
+    /**
+     * 是不是"连接中/加载中"画面 —— 判据: **整屏近黑**。
+     *
+     * <p>实测 (2026-10-16, 11 帧对照): CONNECTING 帧近黑占比 **0.985**;
+     * 十个真实界面 (编辑器 0.306 / 预览 0.289 / hub 0.610 / 选对手 0.213 /
+     * 结算弹窗 0.774 / 详情页 0.235…) 全部 **≤0.774**。阈值 0.92 落在空档正中。
+     *
+     * <p>⚠️ 与 {@link #blankFrame} 的区别: 那个只认**纯色**(标准差极小), 而 CONNECTING
+     * 中央有一块亮面板(骷髅徽章 + 文字), 标准差并不小 ⇒ blankFrame 抓不到它。
+     * 两者是互补的: blankFrame = 冷启动闪屏, connectingFrame = 连服务器。
+     */
+    static boolean connectingFrame(Vision.Frame f) {
+        if (f == null || f.px == null) return false;
+        long dark = 0, n = 0;
+        for (int y = 0; y < f.h; y += 4) {
+            for (int x = 0; x < f.w; x += 4) {
+                n++;
+                int p = f.px[y * f.w + x];
+                int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, bl = p & 0xFF;
+                if ((r + g + bl) / 3 < 40) dark++;
+            }
+        }
+        return n > 0 && dark / (double) n > 0.92;
+    }
 
     /** 「刚点完 FIGHT」的剩余步数 (>0 才认难度锁定弹窗, 见 step() ⑨ 的注释)。 */
     private int justFoughtTicks;
