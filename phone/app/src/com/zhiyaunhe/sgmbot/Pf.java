@@ -363,6 +363,14 @@ public final class Pf {
     public static final int ENERGY_COST = 4;
 
     /**
+     * 能量门槛的上限 (自适应封顶)。
+     *
+     * <p>各场次每场消耗: **character 5 钉** / element·misc·monthly 4 钉 (见项目 MEMORY 的
+     * 场次条件表) ⇒ 5 就是全局最大值。自适应只在这个区间里升, 不会越调越离谱。
+     */
+    public static final int ENERGY_MAX_COST = 5;
+
+    /**
      * 三个出战槽: 钉条中心 x / 钉条行带 / 窗口半宽。
      *
      * <p>⚠️⚠️ 2026-10-15 真机实测 (8.11.1 编辑器页)：**x 比 PC 换算整体小 68px**。

@@ -219,12 +219,38 @@ public final class PfFlow {
     private void step(Vision.Frame work, Bitmap bmp, AtomicBoolean run, JSONObject c) {
         if (justFoughtTicks > 0) justFoughtTicks--;   // "刚点完 FIGHT"的时效窗 (见 ⑨)
 
+        /* ---- ⓪ 弹窗**必须最先剥** (2026-10-16 实栽, 用户: 「能量看错了, 才导致这个弹窗」) ----
+         * 原来弹窗检查在快路径**之后**, 于是: PfScene 把"编辑器 + ENERGY REFILL 弹窗"认成
+         * TEAM_EDITOR (漏斗露在弹窗右侧, 0.785 > 阈值) ⇒ switch 直接跳进 fightFlow,
+         * ①/①b 的弹窗链**根本没走到** ⇒ 弹窗永远没人关 ⇒ 它盖住出战槽与候选列 ⇒
+         * 钉条读数全 0 ⇒ bot 判"三个槽都要换人"却一个都拖不动 ⇒ 白等 30 轮能量恢复
+         * (每轮 60s = 半小时)。日志现场「槽位能量 [0,0,0] / 候选区能量 [0,...]」刷屏,
+         * 而截图里 ENERGY REFILL 清清楚楚。
+         *
+         * 为什么不担心误报: 四个 X 模板在**真弹窗**上 0.964 / 0.834, 在**十个普通界面**
+         * (编辑器/预览/hub/选对手/结算…) 上全部 ≤0.358 —— 阈值 0.70 正中空档。 */
+        int[] px0 = findPopupX(work);
+        if (px0 != null) {
+            unknownTries = 0;
+            /* 紧跟在"点 FIGHT"之后的弹窗 = ENERGY REFILL ("Someone needs a breather!")。
+             * 它出现就说明**能量门槛判低了** (角色场每场要 5 钉, 而配置是 4) ⇒ 自我纠正 +1。
+             * 这就是「能量看错了才导致这个弹窗」的正解: 让 bot 从游戏自己的拒绝里学, 
+             * 比猜场次级能量靠谱 (卡名还没 OCR, 认不出这是不是角色场)。 */
+            if (justFoughtTicks > 0 || System.currentTimeMillis() - lastFightTapMs < 20_000) {
+                team.bumpEnergyCost();
+            }
+            log("弹窗 (能量/streak/OPTIONS), 关闭");
+            tap(bmp, px0);
+            sleep_(1500);
+            return;
+        }
+
         /* ---- 快路径: 界面识别 (PfScene) ----
          * ⚠️ 原来下面是一条**串行的全帧匹配链**, 每一步依次对十几个模板做 ROI_FULL 全搜,
          * 真机实测一轮循环慢到 14 秒 —— 识别比操作还贵。
          * 现在先花一顿便宜的代价认出"这是哪一页"(小 ROI 模板 + 像素特征), 认出来就
          * **直接跳到对应分支**, 不再逐个试。认不出才回退原链 (宁可慢也别误判)。
-         * 弹窗类 (①/①b/②/③) 因为压在别的界面之上, 必须比页面分支先处理。 */
+         * ⚠️ 弹窗 (上面那一段) 一定要排在页面分支**之前** —— 它压在别的界面之上。 */
         PfScene.S sc = scene.classify(work);
         /* 界面一变就是进展 (看门狗的计时基准) —— 卡死时界面是不变的。 */
         if (sc != lastSceneSeen) {
@@ -790,6 +816,7 @@ public final class PfFlow {
             }
             tapCenter(bf, wf, fight, Pf.T_FIGHT);
             justFoughtTicks = 12;   // 接下来 12 步内才允许认"难度锁定弹窗" (见 ⑨ 注释)
+            lastFightTapMs = System.currentTimeMillis();   // 用于识别"紧随其后的 ENERGY REFILL"
             sleep_(2500);
             Bitmap bp = sh.capture();
             if (bp == null) return;
@@ -1075,6 +1102,9 @@ public final class PfFlow {
 
     /** 上次按系统返回键的时刻 (限流用)。 */
     private long lastBackMs;
+
+    /** 上一次点 FIGHT 的时刻 —— 用来认出"紧随其后"的 ENERGY REFILL 弹窗 (见 step ⓪)。 */
+    private long lastFightTapMs;
 
     /** 「刚点完 FIGHT」的剩余步数 (>0 才认难度锁定弹窗, 见 step() ⑨ 的注释)。 */
     private int justFoughtTicks;

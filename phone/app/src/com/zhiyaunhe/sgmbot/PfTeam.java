@@ -32,6 +32,22 @@ final class PfTeam {
 
     /** 配置 (config.json 的 pf 段)。 */
     private int energyCost = Pf.ENERGY_COST;
+
+    /**
+     * 能量门槛**只升不降**, 最高 {@link Pf#ENERGY_MAX_COST}。
+     *
+     * <p>⚠️ 2026-10-16 用户: 「能量看错了, 才导致这个弹窗」。根因: 配置 {@code energy_cost=4},
+     * 而**角色场每场要 5 颗黄钉** ⇒ 恰好 4 钉的角色被放行出战 ⇒ 游戏弹
+     * 「ENERGY REFILL / Someone needs a breather!」。
+     * 卡名还没 OCR, 认不出"这是不是角色场", 所以让 bot **从游戏自己的拒绝里学**:
+     * 看到这个弹窗就把门槛 +1 (封顶 5 = 各场次的最大值)。只升不降 —— 降会立刻重犯。
+     */
+    void bumpEnergyCost() {
+        if (energyCost >= Pf.ENERGY_MAX_COST) return;
+        energyCost++;
+        flow.log("能量门槛判低了 (游戏弹了 ENERGY REFILL) — 门槛 " + (energyCost - 1)
+                + " → " + energyCost + ", 后续按新门槛编队");
+    }
     private boolean favorite = true;
     private String ruleType;      // "element" | "class" | null
     private String ruleValue;
