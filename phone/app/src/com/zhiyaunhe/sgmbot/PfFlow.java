@@ -851,10 +851,20 @@ public final class PfFlow {
             Vision.Frame wp = Vision.toWork(bp);
 
             if (team.findLockPopup(wp)) {           // 角色场首入: 锁定难度确认 (无 X)
-                log("难度锁定弹窗: 点 CONTINUE 锁定, 交回主循环");
-                tap(bp, Pf.LOCK_CONTINUE);
-                sleep_(3000);
-                return;
+                /* ⚠️ 复核一帧再认 (2026-10-16 实栽): 点完 FIGHT 之后的**过渡帧**也会误报
+                 * (这条误报链在 ⑨ 的注释里记过一次: 排行榜页也有绿块 ⇒ 误点 → 判未知 →
+                 * 返回键 → hub → PLAY → 又误报 = 死循环)。真弹窗会一直挂着, 过渡帧不会,
+                 * 所以"隔 1.2s 再看一眼"就能把过渡帧滤掉, 又不会漏掉真弹窗。 */
+                sleep_(1200);
+                Bitmap bc = sh.capture();
+                if (bc == null || !team.findLockPopup(Vision.toWork(bc))) {
+                    log("难度锁定弹窗复核不过 — 判为过渡帧误报, 忽略");
+                } else {
+                    log("难度锁定弹窗: 点 CONTINUE 锁定, 交回主循环");
+                    tap(bc, Pf.LOCK_CONTINUE);
+                    sleep_(3000);
+                    return;
+                }
             }
             int[] ex = findPopupX(wp);
             if (ex != null) {

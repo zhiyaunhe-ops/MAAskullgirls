@@ -163,7 +163,12 @@ final class PfArena {
         int[] roi = {Math.max(0, CARD[0] - PAD), Math.max(0, CARD[1] - PAD),
                 CARD[2] + PAD * 2, CARD[3] + PAD * 2};
         double[] r = Vision.findScored(w, t, roi, 0.0, -1, 0);
-        return r == null ? 0 : r[0];
+        /* ⚠️⚠️ 取 **r[2]** 不是 r[0]!  `findScored` 返回的是 **{x, y, best}** ——
+         * 第一版写成 r[0] 取到了 **x 坐标**, 于是日志打出「居中卡就是目标场 (494.00)」
+         * 这种不可能的分值 (分数恒在 0~1), 且 494 >= 0.72 ⇒ **永远判"就是目标场"**
+         * ⇒ 场次锁定形同虚设, 还掩盖了真正的错场 —— 用户看到的正是这种
+         * 「选人 ↔ hub」来回跳。 */
+        return r == null ? 0 : r[2];
     }
 
     /** 读指纹 PNG → Frame。⚠️ **不能走 {@link Vision#toWork}** —— 见 learn() 的注释。 */
