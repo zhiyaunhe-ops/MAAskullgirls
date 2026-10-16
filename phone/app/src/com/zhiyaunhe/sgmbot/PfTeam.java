@@ -449,11 +449,22 @@ final class PfTeam {
             flow.log("拖拽 候选[" + src + "](能量" + roster[src] + ") -> 槽位" + (slotI + 1)
                     + ((off[0] != 0 || off[1] != 0) ? " (偏移" + off[0] + "," + off[1] + ")" : ""));
             flow.drag(b, sx, sy, dx + off[0], dy + off[1]);
-            PfFlow.sleep_(1400);
+            /* ⚠️⚠️ 2026-10-16 实测破案: 落点坐标根本没错 —— 手工把同一张卡拖到槽1 的
+             * 四个不同落点 (165/232/200/130, y=192), **每一次都成功**(槽1 能量 4↔5 来回变)。
+             * bot 失败的原因是**只等 1400ms 就读数**, 而换人动画(卡换进去 + 钉条重新填充)
+             * 还没播完 ⇒ 读到的是旧卡 ⇒ 判"拖拽未生效" ⇒ 白白重试 4 次然后放弃。
+             * 表现就是日志里槽 1 反复「拖拽未生效 → 放弃 → 回主循环 → 再来」, 单场拖 40+ 次。
+             * 现在: 先等 2500ms; 若读数仍不达标, 再补等 1800ms 复读一次, 两次都不过才算失败。 */
+            PfFlow.sleep_(2500);
 
             Bitmap b2 = sh.capture();
             if (b2 == null) return false;
             int[] slots2 = readSlotEnergy(Vision.toWork(b2));
+            if (slots2[slotI] < energyCost) {
+                PfFlow.sleep_(1800);                       // 补读: 动画可能还没完
+                Bitmap b2b = sh.capture();
+                if (b2b != null) slots2 = readSlotEnergy(Vision.toWork(b2b));
+            }
             if (slots2[slotI] < energyCost) {
                 slotFails[slotI] = fails + 1;
                 /* ⚠️ 必须**有上限** (2026-10-15 用户当场看到的现象: "为什么一直在拉拽最底下那排"):
@@ -523,9 +534,16 @@ final class PfTeam {
             }
             flow.drag(b, Pf.ROSTER_CENTERS[src][0], Pf.ROSTER_CENTERS[src][1],
                     Pf.SLOT_DROP_X[slotI], Pf.DRAG_DY);
-            PfFlow.sleep_(1400);
+            /* 同 fixTeam: 1400ms 不够等换人动画, 读到旧卡会误判失败。 */
+            PfFlow.sleep_(2500);
             Bitmap b2 = sh.capture();
-            if (b2 != null && readSlotEnergy(Vision.toWork(b2))[slotI] >= energyCost) return true;
+            int e = b2 == null ? 0 : readSlotEnergy(Vision.toWork(b2))[slotI];
+            if (e < energyCost) {
+                PfFlow.sleep_(1800);
+                Bitmap b2b = sh.capture();
+                e = b2b == null ? 0 : readSlotEnergy(Vision.toWork(b2b))[slotI];
+            }
+            if (e >= energyCost) return true;
             /* 同上: 拖不中必须收敛, 不能无限重试 (用户 2026-10-15 看到的就是这个死循环)。 */
             if (++fails >= DRAG_MAX_FAILS) {
                 flow.log("筛选槽拖拽连续 " + DRAG_MAX_FAILS + " 次未生效 — 放弃");
