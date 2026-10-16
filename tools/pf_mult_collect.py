@@ -29,9 +29,15 @@ DEF_IN = os.path.join(ROOT, "debug", "pf", "collect_remote")
 DEF_OUT = os.path.join(ROOT, "debug", "pf", "mult_clusters")
 
 # 与 App Pf.FIRE_SEARCH 完全一致 (work [x,y,w,h])
-FIRE_SEARCH = [(1008, 110, 93, 62), (1008, 254, 93, 66), (1008, 394, 93, 62)]
-# 选对手页 REFRESH 判据 ROI: R(700,15,960,115) → (688,12,208,80)
-ROI_REFRESH = (688, 12, 208, 80)
+# ⚠️ 2026-10-16 真机实测重标: 徽章锚在各卡右上角、**右缘锚定** (x≈1214-1258),
+# 旧值 (R(1100,…) → x1008-1101) 整个搜不到 — 与 ROI_REFRESH 同一批右缘元素,
+# 套 PC 居中换算全偏。这里改按**右列全高**搜索 (含 CONTINUE 按钮这种大块干扰,
+# 用 w<=70 过滤掉), 反正后面还有聚类+人工核对兜底。
+FIRE_SEARCH = [(1100, 0, 180, 576)]
+BADGE_MAX_W = 70
+# 选对手页 REFRESH 判据 ROI: 真机实测模板命中 (844,26) 尺寸 164x53 → 右缘锚定,
+# 旧值 R(700,15,960,115)=[688,12,208,80] 连模板都放不下 (x 844+164=1008 > 896)。
+ROI_REFRESH = (820, 0, 280, 110)
 BADGE_W, BADGE_H = 60, 66          # 与 mult_25.png 同尺寸
 # 数字带: 徽章下部 (x2.5 白字所在), 聚类只比这一条
 BAND_Y0, BAND_Y1 = 0.50, 0.95
@@ -87,26 +93,28 @@ def extract(in_dir):
             sub = img[ry:ry + rh, rx:rx + rw]
             mask = is_red(sub).astype(np.uint8)
             n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-            best, best_a = None, 0
+            cand = []
             for i in range(1, n):
                 area = int(stats[i, cv2.CC_STAT_AREA])
-                if area > best_a:
-                    best_a, best = area, i
-            if best is None or best_a < 150:
-                continue
-            x0 = int(stats[best, cv2.CC_STAT_LEFT]) + rx
-            y0 = int(stats[best, cv2.CC_STAT_TOP]) + ry
-            w0 = int(stats[best, cv2.CC_STAT_WIDTH])
-            h0 = int(stats[best, cv2.CC_STAT_HEIGHT])
-            cx, cy = x0 + w0 // 2, y0 + h0 // 2
-            # 60x66 居中裁 (与 mult_25 版式一致), 越界补黑
-            bx0, by0 = cx - BADGE_W // 2, cy - BADGE_H // 2
-            badge = np.zeros((BADGE_H, BADGE_W, 3), np.uint8)
-            sx0, sy0 = max(0, bx0), max(0, by0)
-            sx1, sy1 = min(img.shape[1], bx0 + BADGE_W), min(img.shape[0], by0 + BADGE_H)
-            if sx1 > sx0 and sy1 > sy0:
-                badge[sy0 - by0:sy1 - by0, sx0 - bx0:sx1 - bx0] = img[sy0:sy1, sx0:sx1]
-            out.append((os.path.basename(p), ci, badge))
+                w0 = int(stats[i, cv2.CC_STAT_WIDTH])
+                # 徽章火苗 ~44 宽; CONTINUE 等大块右缘元素 w>70 直接排除
+                if area >= 150 and w0 <= BADGE_MAX_W:
+                    cand.append(i)
+            cand.sort(key=lambda i: -int(stats[i, cv2.CC_STAT_AREA]))
+            for rank, i in enumerate(cand[:3]):    # 每帧最多取 3 个候选 (3 张卡)
+                x0 = int(stats[i, cv2.CC_STAT_LEFT]) + rx
+                y0 = int(stats[i, cv2.CC_STAT_TOP]) + ry
+                w0 = int(stats[i, cv2.CC_STAT_WIDTH])
+                h0 = int(stats[i, cv2.CC_STAT_HEIGHT])
+                cx, cy = x0 + w0 // 2, y0 + h0 // 2
+                # 60x66 居中裁 (与 mult_25 版式一致), 越界补黑
+                bx0, by0 = cx - BADGE_W // 2, cy - BADGE_H // 2
+                badge = np.zeros((BADGE_H, BADGE_W, 3), np.uint8)
+                sx0, sy0 = max(0, bx0), max(0, by0)
+                sx1, sy1 = min(img.shape[1], bx0 + BADGE_W), min(img.shape[0], by0 + BADGE_H)
+                if sx1 > sx0 and sy1 > sy0:
+                    badge[sy0 - by0:sy1 - by0, sx0 - bx0:sx1 - bx0] = img[sy0:sy1, sx0:sx1]
+                out.append((os.path.basename(p), ci, badge))
     print("帧 %d 张, 选对手页 %d 张, 提取徽章 %d 个" % (len(paths), n_sel, len(out)))
     return out
 
@@ -157,7 +165,8 @@ def contact(clusters, path, cols=6):
 
 def emit(clusters, pairs):
     """--emit 簇号:倍率值 → 覆盖 assets mult_<值>.png (值 1/1.5/2/2.5/3/4 → 1/15/2/25/3/4)。"""
-    name = {"1": "1", "1.5": "15", "2": "2", "2.5": "25", "3": "3", "4": "4", "5": "5"}
+    name = {"1": "1", "1.5": "15", "2": "2", "2.5": "25", "3": "3",
+            "3.5": "35", "4": "4", "5": "5"}   # 3.5 真机实见 (PC 候选表没有)
     for pair in pairs:
         idx, val = pair.split(":", 1)
         idx = int(idx)
