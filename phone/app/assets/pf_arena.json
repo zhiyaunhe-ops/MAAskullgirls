@@ -1,0 +1,271 @@
+{
+ "_说明": [
+  "★ 场次表 (2026-10-16 从 tools/data/{arena_manual,monthly_manual}.json 合并生成, 别手改)。",
+  "用途: 手机端把 hub 卡名/卡位映射成 tag + 条件 (score_target / energy / rule)。",
+  "口径见 PF_BOT.md 6.11/6.12 与项目 MEMORY 的「场次条件」表。",
+  "⚠️ 月场固定占 hub #1/#2 (MONTHLY_SLOTS=2) —— **位置优先于名称**, idx<2 一律按月场处理。"
+ ],
+ "monthly_slots": 2,
+ "arenas": {
+  "HIGHTIDE": {
+   "name": "HIGH TIDE",
+   "tag": "element",
+   "element": "water",
+   "char": null,
+   "monthly": false
+  },
+  "RINGOFFIRE": {
+   "name": "RING OF FIRE",
+   "tag": "element",
+   "element": "fire",
+   "char": null,
+   "monthly": false
+  },
+  "EYEOFTHESTORM": {
+   "name": "EYE OF THE STORM",
+   "tag": "element",
+   "element": "wind",
+   "char": null,
+   "monthly": false
+  },
+  "ASHININGEXAMPLE": {
+   "name": "A SHINING EXAMPLE",
+   "tag": "element",
+   "element": "light",
+   "char": null,
+   "monthly": false
+  },
+  "TWOTOTANGLE": {
+   "name": "TWO TO TANGLE",
+   "tag": "character",
+   "element": null,
+   "char": "Filia",
+   "monthly": false
+  },
+  "DAMEOFTHRONES": {
+   "name": "DAME OF THRONES",
+   "tag": "character",
+   "element": null,
+   "char": "Parasoul",
+   "monthly": false
+  },
+  "RUMBLEPACK": {
+   "name": "RUMBLE PACK",
+   "tag": "character",
+   "element": null,
+   "char": "Beowulf",
+   "monthly": false
+  },
+  "CUTTINGROOMFLOOR": {
+   "name": "CUTTING ROOM FLOOR",
+   "tag": "character",
+   "element": null,
+   "char": "Peacock",
+   "monthly": false
+  },
+  "NOPAINNOGAIN": {
+   "name": "NO PAIN NO GAIN",
+   "tag": "character",
+   "element": null,
+   "char": "Painwheel",
+   "monthly": false
+  },
+  "FRAGSTORICHES": {
+   "name": "FRAGS TO RICHES",
+   "tag": "character",
+   "element": null,
+   "char": "Black Dahlia",
+   "monthly": false
+  },
+  "SECONDTONUN": {
+   "name": "SECOND TO NUN",
+   "tag": "character",
+   "element": null,
+   "char": "Double",
+   "monthly": false
+  },
+  "NIGHTSGHOUL": {
+   "name": "NIGHT'S GHOUL",
+   "tag": "character",
+   "element": null,
+   "char": "Squigly",
+   "monthly": false
+  },
+  "CASKETMATCH": {
+   "name": "CASKET MATCH",
+   "tag": "character",
+   "element": null,
+   "char": "Valentine",
+   "monthly": false
+  },
+  "ALEAGUEOFHERCLONE": {
+   "name": "A LEAGUE OF HER CLONE",
+   "tag": "character",
+   "element": null,
+   "char": "Fukua",
+   "monthly": false
+  },
+  "BLOODSPORT": {
+   "name": "BLOOD SPORT",
+   "tag": "character",
+   "element": null,
+   "char": "Eliza",
+   "monthly": false
+  },
+  "INFINITYANDBEYOND": {
+   "name": "INFINITY AND BEYOND",
+   "tag": "character",
+   "element": null,
+   "char": "Annie",
+   "monthly": false
+  },
+  "BIGBENSBEATDOWN": {
+   "name": "BIG BEN'S BEATDOWN",
+   "tag": "character",
+   "element": null,
+   "char": "Big Band",
+   "monthly": false
+  },
+  "HIGHWIREHIJINKS": {
+   "name": "HIGH WIRE HIJINKS",
+   "tag": "character",
+   "element": null,
+   "char": "Cerebella",
+   "monthly": false
+  },
+  "ONESANDZEROS": {
+   "name": "ONES AND ZEROS",
+   "tag": "character",
+   "element": null,
+   "char": "Robo-Fortune",
+   "monthly": false
+  },
+  "AHEADOFTHEGAME": {
+   "name": "A HEAD OF THE GAME",
+   "tag": "character",
+   "element": null,
+   "char": "Ms. Fortune",
+   "monthly": false
+  },
+  "CLOUDYWITHACHANCEOFPAIN": {
+   "name": "CLOUDY WITH A CHANCE OF PAIN",
+   "tag": "character",
+   "element": null,
+   "char": "Umbrella",
+   "monthly": false
+  },
+  "DEATHMETTLE": {
+   "name": "DEATH METTLE",
+   "tag": "character",
+   "element": null,
+   "char": "Marie",
+   "monthly": false
+  },
+  "MEDICISHAKEDOWN": {
+   "name": "MEDICI SHAKEDOWN",
+   "tag": "gold",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "MEDICIHEIST": {
+   "name": "MEDICI HEIST",
+   "tag": "gold",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "MEDICIFIGHTCLUB": {
+   "name": "MEDICI FIGHT CLUB",
+   "tag": "gold",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "MEDICICRIMESPREE": {
+   "name": "MEDICI CRIME SPREE",
+   "tag": "gold",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "MEDICIPITFIGHTING": {
+   "name": "MEDICI PIT FIGHTING",
+   "tag": "gold",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "SHOWMEYOURMOVES": {
+   "name": "SHOW ME YOUR MOVES",
+   "tag": "move",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "SHOWOMETOUR": {
+   "name": "SHOWOMETOUR",
+   "tag": "misc",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "SEEINGSTARS": {
+   "name": "SEEING STARS",
+   "tag": "assist",
+   "element": null,
+   "char": null,
+   "monthly": false
+  },
+  "HOTMESS": {
+   "name": "HOT MESS",
+   "tag": "monthly_element",
+   "element": "fire",
+   "char": null,
+   "monthly": false
+  },
+  "SINKORSWIM": {
+   "name": "SINK OR SWIM",
+   "tag": "element",
+   "element": "water",
+   "char": null,
+   "monthly": false
+  },
+  "ACLASSOFONESOWN": {
+   "name": "A CLASS OF ONE'S OWN",
+   "tag": "monthly_character",
+   "element": null,
+   "char": null,
+   "monthly": true,
+   "from": "2026-09-01",
+   "until": "2026-10-01"
+  },
+  "AGAINSTTHEWIND": {
+   "name": "AGAINST THE WIND",
+   "tag": "monthly_element",
+   "element": "wind",
+   "char": null,
+   "monthly": true,
+   "from": "2026-09-01",
+   "until": "2026-10-01"
+  },
+  "COSTUMEPARTY": {
+   "name": "COSTUMEPARTY",
+   "tag": "monthly_element",
+   "element": "dark",
+   "char": null,
+   "monthly": true,
+   "from": "2026-10-01",
+   "until": "2026-11-01"
+  },
+  "202609": {
+   "name": "202609元素月场",
+   "tag": "monthly_element",
+   "element": "wind",
+   "char": null,
+   "monthly": true,
+   "from": "2026-09-01",
+   "until": "2026-10-01"
+  }
+ }
+}

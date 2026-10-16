@@ -73,6 +73,9 @@ public final class PfFlow {
     /** 界面快速识别器 (见 {@link PfScene} 的类注释: 快路径靠它, 认不出才回退串行链)。 */
     private final PfScene scene;
 
+    /** 场次锁定 (保证一直打同一场, 见 {@link PfArena} 类注释)。 */
+    private final PfArena arena;
+
     /** 正在跑的那个实例 (给监控页读实时状态; 服务里同一时刻只有一个)。 */
     private static volatile PfFlow live;
 
@@ -96,6 +99,10 @@ public final class PfFlow {
         this.bar = bar;
         this.scene = new PfScene(tpls);
         this.team = new PfTeam(sh, tpls, this);
+        this.arena = new PfArena(this, sh);
+        /* 场次表 (hub 卡名/卡位 → tag + 条件)。⚠️ 只载一次, 失败也只是退化成 unknown, 不拦流程。
+         * App 未起 (单测/异常路径) 时不给 Context, 留给下一次 classify 时的懒加载。 */
+        if (App.inst != null) PfArenaTable.load(App.inst);
     }
 
     public String stepText() { return stepText; }
@@ -240,6 +247,14 @@ public final class PfFlow {
                 case HUB:
                     unknownTries = 0;
                     setStep("PF hub");
+                    /* ⚠️⚠️ 点 PLAY! 之前**必须核对场次** (2026-10-16 用户: 「掉到别的场次里了」)。
+                     * 看门狗会重拉游戏 → 从大厅重进 hub → 轮播位置变了 ⇒ 盲点居中卡就进错场。
+                     * ensureTarget 会拿指纹核对, 不对就滑轮播找回; 找不回就**不进场**。 */
+                    if (!arena.ensureTarget(bmp)) {
+                        log("PF hub: 没确认到目标场次 — 这次不进场, 退回导航重试");
+                        noteProgress();
+                        return;
+                    }
                     log("PF hub 就绪 — 点 PLAY! 进场");
                     {
                         double[] hub2 = match(work, Pf.T_HUB_PLAY, Pf.ROI_HUB_PLAY, Pf.TH_HUB_PLAY);
@@ -324,6 +339,12 @@ public final class PfFlow {
         if (hub != null) {
             unknownTries = 0;
             setStep("PF hub");
+            /* 同 gotoHub 的 HUB 分支: **先核对场次再点 PLAY** (见 PfArena 类注释)。 */
+            if (!arena.ensureTarget(bmp)) {
+                log("PF hub: 没确认到目标场次 — 这次不进场");
+                noteProgress();
+                return;
+            }
             log("PF hub 就绪 — 点 PLAY! 进场");
             tapCenter(bmp, work, hub, Pf.T_HUB_PLAY);
             sleep_(3000);
