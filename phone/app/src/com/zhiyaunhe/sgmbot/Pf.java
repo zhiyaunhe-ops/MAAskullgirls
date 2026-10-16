@@ -159,8 +159,19 @@ public final class Pf {
     public static final int[] ROI_SCENE_X    = R(880, 30, 1240, 180);
     /** 模态弹窗方形 X (上限 1060 挡 OPTIONS X)。 */
     public static final int[] ROI_MODAL_X    = R(700, 0, 1060, 300);
-    /** 选对手页 REFRESH。 */
-    public static final int[] ROI_REFRESH    = R(700, 15, 960, 115);
+    /**
+     * 选对手页 REFRESH。
+     *
+     * <p>⚠️⚠️ 2026-10-16 实栽 —— **这是"选队逻辑从未生效"的总根因**。旧值
+     * {@code R(700,15,960,115)} 展开是 <b>{688,12,208,80}</b>, 而 REFRESH 模板 (164x53)
+     * 真机实测命中在 <b>(844,26)</b> ⇒ 844+164=1008 &gt; 688+208=896, **模板在 ROI 里放不下**
+     * ⇒ {@code PfScene} 的 OPPONENT 判据永远落空 ⇒ **选对手页一直被判 UNKNOWN**:
+     * 结算 CONTINUE 后游戏明明回到选对手页, bot 却按返回键退到编队页、
+     * 对着同一个待战对手反复打, 倍率比较根本没机会跑 (现场: 同一对手连打 6 场)。
+     * 与 {@link #ROI_FILTER_X} 同类错误 (ROI 比模板窄, 静默漏检), 且同属
+     * **右缘锚定**元素 —— 套 PC 居中换算必偏, 一律实测。
+     */
+    public static final int[] ROI_REFRESH = {820, 0, 280, 110};
     /** 编队页 DRAG 提示行。 */
     public static final int[] ROI_DRAGHINT   = R(430, 405, 850, 465);
     /** 居中卡 "SCORE: n"。 */
@@ -412,8 +423,17 @@ public final class Pf {
                                                R(798, 514, 900, 554)};
     public static final int[][] OPP_FIRE    = {R(1136, 156, 1206, 222), R(1136, 332, 1206, 398),
                                                R(1136, 508, 1206, 574)};
-    public static final int[][] FIRE_SEARCH = {R(1100, 138, 1216, 215), R(1100, 318, 1216, 400),
-                                               R(1100, 493, 1216, 570)};
+    /**
+     * 对手三卡火框搜索窗。
+     *
+     * <p>⚠️⚠️ 2026-10-16 真机实测重标 —— 徽章锚在各卡**右上角**且右缘锚定
+     * (x2.5 徽章红域实测 x1214-1258), 三卡卡顶 y = {88, 264, 440} (间距 176),
+     * 徽章向上探出卡沿约 38px。旧值 {@code R(1100,…)} 换算后 x1008-1101,
+     * **整个搜索区都够不着徽章** ⇒ readMult 恒 NaN, 倍率比较形同虚设
+     * (与 {@link #ROI_REFRESH} 同一批"右缘锚定"元素, 同一天一并修)。
+     */
+    public static final int[][] FIRE_SEARCH = {
+            {1180, 30, 100, 120}, {1180, 206, 100, 120}, {1180, 382, 100, 120}};
 
     /** 选对手页左侧总分 / 连胜层数。 */
     public static final int[] ROI_SCORE  = R(132, 336, 275, 370);

@@ -328,8 +328,11 @@ final class PfTeam {
      * (work 约 60x66), 存成 {@code assets/templates/pf/mult_<档位>.png} 即可。
      */
     private static final String[] MULT_TPL = {
-            "pf/mult_1", "pf/mult_15", "pf/mult_2", "pf/mult_25", "pf/mult_3", "pf/mult_4"};
-    private static final double[] MULT_VAL = {1, 1.5, 2, 2.5, 3, 4};
+            "pf/mult_1", "pf/mult_15", "pf/mult_2", "pf/mult_25", "pf/mult_3",
+            "pf/mult_35", "pf/mult_4", "pf/mult_5"};
+    /* ⚠️ 3.5 是真机实见档位 (2026-10-17 采集时遇到 x3.5 徽章), PC 的候选集没有它;
+     * x1/x4/x5 的模板还没采到, 缺哪个自动跳过那档。 */
+    private static final double[] MULT_VAL = {1, 1.5, 2, 2.5, 3, 3.5, 4, 5};
 
     /** 倍率模板命中阈值 (同一块裁剪自匹配接近 1.0; 不同档位的字差别很大)。 */
     private static final double TH_MULT = 0.70;
@@ -779,14 +782,19 @@ final class PfTeam {
     /**
      * 候选列第一张卡是否目标元素 (用于确认筛选面板的清空/点亮确实生效)。
      *
-     * <p>取首卡左缘框条 (PC x37-49 / y470-620) 数元素色占比; light/neutral 无法靠颜色分辨
-     * ⇒ 返回 true (不验证)。
+     * <p>取样点 = 首卡**左上角的元素图钉** (金环包彩色小图标, 2026-10-16 真机实测
+     * work ≈ (12-54, 364-406))。旧值 {@code Pf.R(37,470,49,620)} 换算后是
+     * work (158,376)-(168,496) —— 落在首卡**右缘**之外, 采到的几乎全是卡缝背景,
+     * 什么元素都判"不符" ⇒ 规则补人永远「筛选后首卡元素不符」白转 (2026-10-16 实栽,
+     * 现场日志连续「重开面板再筛 → 复验连续失败」)。
+     *
+     * <p>light/neutral 无法靠颜色分辨 ⇒ 返回 true (不验证)。
      */
     private boolean candidateIsElement(Vision.Frame f, String element) {
         if (element == null || element.isEmpty()) return true;
         float[] range = elementHue(element);
         if (range == null) return true;               // light/neutral: 不做颜色复验
-        int[] box = Pf.R(37, 470, 49, 620);
+        int[] box = {12, 364, 42, 42};                // work [x,y,w,h] — 首卡元素图钉
         int ok = 0, n = 0;
         float[] hsv = new float[3];
         for (int y = box[1]; y < box[1] + box[3] && y < f.h; y++) {
@@ -797,7 +805,7 @@ final class PfTeam {
                 n++;
             }
         }
-        // 实测风首卡绿色 ~43%, 错元素卡为 0: 阈值 15% 两侧余量都足够。
+        // 图钉在 42x42 窗口里占一半左右, 卡面底色偶尔入镜: 阈值 15% 两侧余量都够。
         return n > 0 && ok >= 0.15 * n;
     }
 
