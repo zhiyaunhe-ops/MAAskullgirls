@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
     private TextView feed;          // 点击反馈行 (只由 Ui.act/gate 写)
     private Button fastBtn;         // 运行模式切换按钮 (文案随当前模式变, 每秒刷)
     private Button overlayBtn;      // 悬浮窗 启动/隐藏 (文案随窗口状态变, 每秒刷)
+    private Button pfBtn;           // PF 挂机 开始/暂停 (文案随运行状态变, 每秒刷)
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -67,6 +68,10 @@ public class MainActivity extends Activity {
             if (overlayBtn != null) {
                 String lb = overlayLabel();
                 if (!lb.contentEquals(overlayBtn.getText())) overlayBtn.setText(lb);
+            }
+            if (pfBtn != null) {
+                String lb = pfLabel();
+                if (!lb.contentEquals(pfBtn.getText())) pfBtn.setText(lb);
             }
             h.postDelayed(this, 1000);
         }
@@ -160,6 +165,22 @@ public class MainActivity extends Activity {
                 + "「结束」= 退出挂机 —— 连服务与悬浮窗一起收掉。\n"
                 + "主页只做一件事 —— 把悬浮窗叫出来 (不需要先起服务)。"));
         overlayBtn = Ui.button(this, overlayLabel(), "", feed, this::toggleOverlay);
+
+        /* ---------------- PF 挂机 ----------------
+         * ⚠️ 2026-10-16 用户要求: App 里要有 PF 模式, 且**开始后悬浮窗自动隐藏**避免干扰。
+         * 这推翻了 2026-10-11 "控制只有一处=悬浮窗"的规矩 (用户本人改主意) —— 因为悬浮窗
+         * 挂机时整个藏起来了, 悬浮窗上的按钮全都够不着, 控制必须有一个够得着的地方。
+         * 前置检查仍走**同一份** Ui.blockReason (和悬浮窗共用), 不会出现
+         * 「主页能点、悬浮窗不能点」那种两条路检查不一致的老毛病。 */
+        Ui.add(this, Ui.section(this, "PF 挂机"));
+        Ui.add(this, Ui.hint(this,
+                "「开始 PF」= 自动 导航 → 选对手 → 编队 → 战斗 → 结算 循环连打。\n"
+                + "⚠️ 开始后**悬浮窗会整个隐藏** (避免挡住游戏判定区) —— 要暂停/看进度都回这个页面;\n"
+                + "暂停或结束后悬浮窗会自动回来。\n"
+                + "「监控」随时可看 当前界面 / 场次 / 已跑时长 / 最近日志。"));
+        pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
+        Ui.button(this, "监控 (当前界面 / 场次 / 时长 / 日志)", "", feed,
+                () -> startActivity(new Intent(this, MonitorActivity.class)));
 
         /* ---------------- 运行模式 ---------------- */
         Ui.add(this, Ui.section(this, "运行模式"));
@@ -268,6 +289,32 @@ public class MainActivity extends Activity {
     }
 
     /* ---------------- 行为 ---------------- */
+
+    /** PF 挂机按钮的文案 = 当前该做什么 (没跑 ⇒ 开始; 在跑 ⇒ 暂停)。 */
+    private String pfLabel() {
+        return BotService.isRunning() ? "⏸ 暂停 PF" : "▶ 开始 PF";
+    }
+
+    /**
+     * 开始 / 暂停 PF。
+     *
+     * <p>⚠️ 动作名仍是 {@code start_nav} / {@code stop} —— 那是 adb 广播与 HTTP /trigger
+     * 的接口契约 (见 OverlayBar 顶注), 这里只是**多一条路**到同一个动作。
+     * 启动走和悬浮窗**同一份**前置检查 (Ui.NEED_CHANNEL), 不另设一套。
+     */
+    private void togglePf() {
+        if (BotService.isRunning()) {
+            BotService.trigger("stop");
+            feed.setTextColor(Ui.OK);
+            feed.setText("› 已暂停 PF — 悬浮窗恢复显示; 再点一次「▶ 开始 PF」继续");
+            return;
+        }
+        Ui.gate(this, feed, Ui.NEED_CHANNEL, () -> {
+            BotService.trigger("start_nav");
+            feed.setTextColor(Ui.OK);
+            feed.setText("› PF 已启动 — 悬浮窗已隐藏; 「监控」可看实时进度, 这里可暂停");
+        }).run();
+    }
 
     /** 悬浮窗按钮的文案 = 当前该做什么 (显示中 ⇒ 点了是隐藏) */
     private String overlayLabel() {

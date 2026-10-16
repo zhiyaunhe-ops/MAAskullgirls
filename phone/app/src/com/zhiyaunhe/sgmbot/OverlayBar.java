@@ -48,6 +48,8 @@ public final class OverlayBar {
     private Button btnStart;
     private TextView tvStat;
     private boolean folded;
+    /** 挂机期间整个窗口被藏起来了 (见 {@link #setHidden})。 */
+    private boolean hiddenForRun;
 
     /** 挂机开始**之前**用户的折叠状态 (null = 本次挂机还没动过), 停手时据此还原。 */
     private Boolean preRunFold;
@@ -290,14 +292,57 @@ public final class OverlayBar {
         post(() -> {
             if (running) {
                 if (preRunFold == null) preRunFold = folded;
-                if (!folded) setFold(true);
+                setHidden(true);          // 挂机时**整个隐藏**, 不只折叠 (见 setHidden 注释)
             } else {
-                if (preRunFold != null && !preRunFold) setFold(false);
+                boolean expand = preRunFold != null && !preRunFold;
                 preRunFold = null;
+                setHidden(false);         // 先恢复可见
+                if (expand) setFold(false);
             }
-            SgmLog.i("overlay", "foldForRun 应用后 folded=" + folded);
+            SgmLog.i("overlay", "foldForRun 应用后 hidden=" + hiddenForRun);
         });
     }
+
+    /**
+     * 挂机期间把悬浮窗**视觉上完全消失**。
+     *
+     * <p>⚠️⚠️ 不能用 {@code root.setVisibility(GONE)} —— 2026-10-16 实栽: 那样 App 就
+     * **一个可见窗口都没有了**, MIUI 的后台冻结立刻把它冻住 (实测: 启动 8 秒后整个进程
+     * 无响应, 日志/HTTP/看门狗全部沉默; 而之前 8 小时长跑窗口一直可见就没事)。
+     *
+     * <p>做法: 把窗口缩成 **1x1 像素、alpha=0**、贴在 (0,0) —— 用户看不见也点不到,
+     * 但对系统来说它仍是一个可见窗口, 冻结器不动它。暂停/结束时按备份的 LayoutParams 恢复。
+     */
+    private void setHidden(boolean on) {
+        hiddenForRun = on;
+        if (on) {
+            if (savedW == 0) {                 // 只备份一次 (重复开始不会把 1x1 存回去)
+                savedW = lp.width;
+                savedH = lp.height;
+                savedAlpha = lp.alpha;
+            }
+            lp.width = 1;
+            lp.height = 1;
+            lp.alpha = 0f;
+            lp.x = 0;
+            lp.y = 0;
+        } else if (savedW != 0) {
+            lp.width = savedW;
+            lp.height = savedH;
+            lp.alpha = savedAlpha;
+            savedW = 0;
+        }
+        root.setVisibility(View.VISIBLE);   // ⚠️ 永远 VISIBLE —— 理由见上
+        clampPos();
+        try { wm.updateViewLayout(root, lp); } catch (Exception ignored) { }
+    }
+
+    /** 隐藏前的窗口尺寸/透明度 (恢复用; {@code WindowManager.LayoutParams} 没有拷贝构造)。 */
+    private int savedW, savedH;
+    private float savedAlpha = -1f;
+
+    /** 挂机期间窗口是否被整体隐藏 (监控页/主页可用它提示"悬浮窗已藏, 回 App 操作")。 */
+    public boolean hiddenForRun() { return hiddenForRun; }
 
     public void destroy() {        if (root != null) {
             try { wm.removeView(root); } catch (Exception ignored) { }
