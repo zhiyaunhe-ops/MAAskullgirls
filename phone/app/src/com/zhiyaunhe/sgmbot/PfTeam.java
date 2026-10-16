@@ -256,26 +256,40 @@ final class PfTeam {
     void pickOpponent(Vision.Frame work, Bitmap bmp) {
         flow.setStepText("选对手");
         int fireCount = 0, firstFire = -1;
+        double[] mults = new double[3];
         for (int i = 0; i < 3; i++) {
-            int[] badge = findFireBadge(work, Pf.FIRE_SEARCH[i]);
-            boolean fire = badge != null;
+            boolean fire = findFireBadge(work, Pf.FIRE_SEARCH[i]) != null;
             double power = readPower(work, Pf.OPP_POWER[i]);
-            double mult = fire ? readMult(work, badge) : Double.NaN;
+            /* 倍率直接在火框 ROI 里按档位模板比 —— 不再依赖 findFireBadge 的命中框
+             * (那只是"有没有火"的判据, 位置不一定正好框住徽章整块)。 */
+            mults[i] = readMult(work, Pf.FIRE_SEARCH[i]);
             if (fire) {
                 fireCount++;
                 if (firstFire < 0) firstFire = i;
             }
-            flow.log("对手卡" + (i + 1) + ": 战力=" + fmt(power) + " 倍率=" + fmt(mult)
+            flow.log("对手卡" + (i + 1) + ": 战力=" + fmt(power) + " 倍率=" + fmt(mults[i])
                     + " 火框=" + fire);
         }
-        int chosen;
-        if (fireCount > 0) {
+        /* PC 口径 (pf_bot.pick_opponent): **倍率可读的排前, 倍率大优先**;
+         * 都读不出来才退"组内战力最低" (战力也读不到 ⇒ 退首个火框卡 / 第 1 张)。 */
+        int chosen = -1;
+        double bestMult = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < 3; i++) {
+            if (fireCount > 0 && findFireBadge(work, Pf.FIRE_SEARCH[i]) == null) continue;
+            if (Double.isNaN(mults[i])) continue;
+            if (mults[i] > bestMult) {
+                bestMult = mults[i];
+                chosen = i;
+            }
+        }
+        if (chosen >= 0) {
+            flow.log("选对手: 卡" + (chosen + 1) + " 倍率最大 = " + fmt(bestMult));
+        } else if (fireCount > 0) {
             chosen = firstFire;
-            flow.log("选对手: 火框卡" + (chosen + 1) + " (倍率/战力均不可读, 退化取首个火框卡)"
-                    + " — TODO(ocr)");
+            flow.log("选对手: 倍率不可读 (缺 mult_* 模板) — 退化取首个火框卡 " + (chosen + 1));
         } else {
             chosen = 0;
-            flow.log("选对手: 无火框, 退化取第 1 张 (战力不可读) — TODO(ocr)");
+            flow.log("选对手: 无火框 — 退化取第 1 张 (战力不可读)");
         }
         int[] p = Pf.OPP_CLICK[chosen];
         flow.tap(bmp, p[0], p[1]);
@@ -299,13 +313,47 @@ final class PfTeam {
         }
     }
 
-    /** TODO(ocr): 战力 (卡左上数字, '28.1k'/'9,713')。读不到返回 NaN。 */
-    private double readPower(Vision.Frame f, int[] roi) {
-        return Double.NaN;
+    /**
+     * 倍率模板 ↔ 数值。
+     *
+     * <p>⚠️ 倍率取值是小集合 (x1 / x1.5 / x2 / x2.5 / x3 …), 字与底色都固定 ⇒
+     * **不需要 OCR, 整块模板匹配就够**。缺哪个模板就自动跳过那一档 (TplStore.get 返回 null),
+     * 所以这张表可以按需扩充, 不会因为缺样本而报错。
+     *
+     * <p>怎么补模板: 在选对手页截一帧, 从卡右下角的红火苗徽章裁一块
+     * (work 约 60x66), 存成 {@code assets/templates/pf/mult_<档位>.png} 即可。
+     */
+    private static final String[] MULT_TPL = {
+            "pf/mult_1", "pf/mult_15", "pf/mult_2", "pf/mult_25", "pf/mult_3", "pf/mult_4"};
+    private static final double[] MULT_VAL = {1, 1.5, 2, 2.5, 3, 4};
+
+    /** 倍率模板命中阈值 (同一块裁剪自匹配接近 1.0; 不同档位的字差别很大)。 */
+    private static final double TH_MULT = 0.70;
+
+    /**
+     * 读倍率 —— 在火框 ROI 里拿各档模板比一遍, 取最高的那档。
+     *
+     * <p>⚠️⚠️ {@code findScored} 返回 **{x, y, best}**, 分数是 **r[2]** ——
+     * 曾经在 PfArena 里写成 r[0] 拿到 x 坐标当分数, 害得判据恒真 (2026-10-16 实栽)。
+     */
+    private double readMult(Vision.Frame f, int[] roi) {
+        double best = 0;
+        double val = Double.NaN;
+        for (int i = 0; i < MULT_TPL.length; i++) {
+            Vision.Frame t = tpls.get(MULT_TPL[i]);
+            if (t == null) continue;               // 这一档还没模板, 跳过
+            double[] r = Vision.findScored(f, t, roi, 0.0, -1, 0);
+            if (r != null && r[2] > best) {
+                best = r[2];
+                val = MULT_VAL[i];
+            }
+        }
+        return best >= TH_MULT ? val : Double.NaN;
     }
 
     /** TODO(ocr): 火框内倍率 ('x1.5'/'X2')。读不到返回 NaN。 */
-    private double readMult(Vision.Frame f, int[] badge) {
+    /** TODO(ocr): 战力 (卡左上数字, '28.1k'/'9,713')。读不到返回 NaN (仍按 PC 的二级排序兜底)。 */
+    private double readPower(Vision.Frame f, int[] roi) {
         return Double.NaN;
     }
 
