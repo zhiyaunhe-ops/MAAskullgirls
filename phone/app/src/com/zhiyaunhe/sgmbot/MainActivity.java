@@ -184,6 +184,8 @@ public class MainActivity extends Activity {
         Ui.button(this, "▶ 就地开始（先在游戏里手动停在 PF）", "", feed, () -> startPf(true));
         Ui.button(this, "监控 (当前界面 / 场次 / 时长 / 日志)", "", feed,
                 () -> startActivity(new Intent(this, MonitorActivity.class)));
+        Ui.button(this, "WebUI 控制台 (状态 / 开始 / 实时画面 / 采集开关)", "", feed,
+                () -> startActivity(new Intent(this, WebUiActivity.class)));
 
         /* ---------------- 运行模式 ---------------- */
         Ui.add(this, Ui.section(this, "运行模式"));
