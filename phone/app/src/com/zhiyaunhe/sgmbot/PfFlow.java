@@ -151,6 +151,9 @@ public final class PfFlow {
         bootWaitStart = 0;
         lastBackMs = 0;
         justFoughtTicks = 0;
+        lastProgressMs = System.currentTimeMillis();
+        stuckLevel = 0;
+        lastSceneSeen = null;
         roundsDone = 0;
         sessionFightNo = 0;
         lastActMs = System.currentTimeMillis();
@@ -168,6 +171,21 @@ public final class PfFlow {
         }
 
         while (run.get() && fatal == null) {
+            /* ---- 看门狗: 长时间没有任何实质进展就自动脱困 ----
+             * ⚠️⚠️ 2026-10-16 实栽, 这是"几小时才 80 场"的头号原因: 日志里有一段
+             * **18326 秒(5.1 小时)的空档**, 期间刷了 8600 行同样的
+             *     「不在编队编辑器 → 点 TEAM 菱形 → 未进入 → 回主循环」
+             * 每 4 秒一次, 没有任何机制打断它 —— 因为 fightFlow 只是"返回", 而 step()
+             * 下一轮又走同一条路点同一个坐标。单点失败不可怕, **没有脱困升级链**才可怕。
+             * 现在: 超过 STUCK_MS 没进展就按 返回键 → 重拉游戏 → 重新导航 逐级升级,
+             * 每级之间重新计时, 不让它停在同一级。 */
+            long nowMs = System.currentTimeMillis();
+            /* 起步阶段不算卡住: 第一场还没开打时, 导航本身就要花时间 (冷启动/结算残留),
+             * 那时按返回键只是噪声。第一场开打之后才开始计时。 */
+            if (roundsDone > 0 && nowMs - lastProgressMs > STUCK_MS) {
+                escalateStuck(run, c);
+                lastProgressMs = System.currentTimeMillis();
+            }
             if (System.currentTimeMillis() - lastUiMs > 2000) {
                 lastUiMs = System.currentTimeMillis();
                 pushUi();
@@ -201,6 +219,11 @@ public final class PfFlow {
          * **直接跳到对应分支**, 不再逐个试。认不出才回退原链 (宁可慢也别误判)。
          * 弹窗类 (①/①b/②/③) 因为压在别的界面之上, 必须比页面分支先处理。 */
         PfScene.S sc = scene.classify(work);
+        /* 界面一变就是进展 (看门狗的计时基准) —— 卡死时界面是不变的。 */
+        if (sc != lastSceneSeen) {
+            if (lastSceneSeen != null && sc != PfScene.S.UNKNOWN) noteProgress();
+            lastSceneSeen = sc;
+        }
         if (sc != PfScene.S.UNKNOWN) {
             switch (sc) {
                 case QUIT_DIALOG:            // 我们按返回键按出来的, 无 X, 必须先点掉否则死锁
@@ -679,6 +702,17 @@ public final class PfFlow {
 
         int rotations = 0;
         while (run.get()) {
+            /* ⚠️ 轮次**必须封顶** (2026-10-16 实测: 有一场为了凑齐 3 个槽位跑了 **43 次拖拽 /
+             * 14 轮 fixTeam**, 单场耗时 193 秒, 而战斗本身只花了 12 秒)。
+             * 拖拽后槽位能量回读不稳定时, fixTeam 会一次次返回 false, 每轮还要做 4 次归零滑动
+             * + 全列读数 ≈ 10 秒 —— 不封顶就等于把时间全烧在重复读同一批卡上。
+             * 3 轮是经验值: 正常情况下 1 轮就够 (能量齐), 最多再试 2 轮覆盖抖动。 */
+            if (rotations >= FIX_TEAM_MAX_ROUNDS) {
+                log("编队已试 " + rotations + " 轮仍未就绪 — 本轮放弃, 回主循环");
+                noteProgress();
+                return;
+            }
+            rotations++;
             if (!team.fixTeam(this, rotations > 0)) {
                 /* ⚠️ "没能量" 不是故障 (见 PfTeam 里 ENERGY_WAIT_* 的注释): fixTeam 已经
                  * 等过若干轮恢复周期, 这里**不置 fatal** —— 退回主循环让它重新分派,
@@ -741,6 +775,7 @@ public final class PfFlow {
                 continue;                            // 回 fixTeam 换人
             }
             roundsDone++;                     // 打完才算一场? 不 —— 开场就算, 便于中途观察进度
+            noteProgress();                   // 开打 = 最硬的进展
             log("▶ 第 " + roundsDone + " 场开始 (本次累计 " + roundsDone + " 场), 等待结束…");
             if (!battleAutoChecked) {
                 battleAutoChecked = true;
@@ -963,6 +998,66 @@ public final class PfFlow {
 
     /** 「刚点完 FIGHT」的剩余步数 (>0 才认难度锁定弹窗, 见 step() ⑨ 的注释)。 */
     private int justFoughtTicks;
+
+    /**
+     * 看门狗: 多久没有实质进展就认为卡住。
+     *
+     * <p>90s 的依据: 正常一轮循环 (战斗→结算→编辑器→再战) 实测约 15~40s, 最慢的合法
+     * 环节是等能量恢复 (但那会打日志并走 setStepText, 同样算进展, 见 {@link #noteProgress})。
+     * 取 90s 比最慢合法环节宽一倍, 又比"5 小时空转"快三个数量级。
+     */
+    private static final long STUCK_MS = 90_000L;
+
+    /** 编队最多试几轮 (超过就回主循环, 见 fightFlow 里的注释)。 */
+    private static final int FIX_TEAM_MAX_ROUNDS = 3;
+
+    /** 上一次出现实质进展的时刻。 */
+    private long lastProgressMs;
+
+    /** 脱困升级链当前级别 (0=返回键 1=重拉游戏 2=重新导航)。 */
+    private int stuckLevel;
+
+    /** 上一帧识别出的界面 (变了就算有进展 —— 看门狗的判据之一)。 */
+    private PfScene.S lastSceneSeen;
+
+    /** 记一次"真的在往前走的进展" —— 界面变了 / 开打了 / 拖成了 / 结算过了 都算。 */
+    private void noteProgress() { lastProgressMs = System.currentTimeMillis(); }
+
+    /**
+     * 卡住时的分级脱困。
+     *
+     * <p>顺序刻意从**最温和**到**最重**: 系统返回键 (可能只是有个弹窗没剥掉) →
+     * 重拉 Skullgirls (进程卡死/断网重连) → 整套重新导航 (界面彻底跑丢)。
+     * 每级用完都 {@link #noteProgress} 重新计时, 所以即使某一级无效也会在下一个
+     * STUCK_MS 后试下一级, 不会像旧实现那样永远停在"点 TEAM 菱形"。
+     */
+    private void escalateStuck(AtomicBoolean run, JSONObject c) {
+        if (!run.get()) return;
+        String[] acts = {"系统返回键", "重拉 Skullgirls", "重新导航到 PF hub"};
+        String act = acts[Math.min(stuckLevel, acts.length - 1)];
+        SgmLog.i("pf", "⚠ 看门狗: " + (System.currentTimeMillis() - lastProgressMs) / 1000
+                + "s 无进展 (界面=" + sceneText() + ", 场次=" + roundsDone
+                + ") — 脱困第 " + (stuckLevel + 1) + " 级: " + act);
+        unknownTries = 0;
+        switch (Math.min(stuckLevel, 2)) {
+            case 0:
+                sh.exec("input keyevent 4");           // 系统返回键
+                PfFlow.sleep_(2500);
+                break;
+            case 1:
+                sh.exec("am force-stop com.autumn.skullgirls");
+                PfFlow.sleep_(1500);
+                sh.exec("monkey -p com.autumn.skullgirls -c android.intent.category.LAUNCHER 1");
+                PfFlow.sleep_(6000);                   // 冷启动要时间, 别急着再判
+                break;
+            default:
+                gotoHub(run, c);
+                PfFlow.sleep_(2500);
+                break;
+        }
+        stuckLevel = (stuckLevel + 1) % acts.length;   // 循环升级, 不永久停在一级
+        noteProgress();
+    }
 
     /** 返回键最小间隔 —— 瞬态过渡画面 (splash/过场) 靠它自然过去, 详见调用处注释。 */
     private static final long BACK_MIN_GAP_MS = 10_000L;

@@ -185,7 +185,16 @@ public final class Pf {
      */
     public static final int[] ROI_FILTER_BTN = {1120, 100, 160, 440};
     /** 战斗速度泡 (battle_speed_level)。 */
-    public static final int[] ROI_SPD        = R(600, 565, 690, 645);
+    /**
+     * 战斗速度泡 ROI。
+     *
+     * <p>⚠️⚠️ 2026-10-16 实栽: 旧值 {@code R(600,565,690,645)} 换算成 work x480~570,
+     * 而真机速度泡在 **work(616,454)** (56x56) ⇒ **整个 ROI 都够不着它**, 于是日志长期
+     * 报「自动战斗已开但速度泡未识别」—— 不是模板不像, 是压根没在搜的地方搜。
+     * 顺带把 {@code battle_spd_3x} 模板改裁真机帧 (自匹配 1.000 / 非战斗帧 ≤0.300;
+     * PC 裁的那个只有 0.732, 贴着阈值, 一有抖动就丢)。
+     */
+    public static final int[] ROI_SPD        = {590, 430, 130, 90};
     /** 结算页 CONTINUE (handle_results / wait_battle_end)。 */
     public static final int[] ROI_RESULT_C   = R(400, 570, 980, 700);
     /** 全屏 (等价 PC 的 (0,0,0,0))。 */
