@@ -207,6 +207,8 @@ public final class OverlayCtl {
     /* ---------------- 位置记忆 (独立启动没有服务记, 自己存) ---------------- */
 
     private static final String POS = "overlay_pos";
+    /** 挂机期间那颗「暂停」小浮标的位置 (与主窗分开记 —— 两窗不同时可见, 位置互不相干)。 */
+    private static final String FAB_POS = "overlay_fab_pos";
 
     static void rememberPos(int x, int y) {
         try {
@@ -240,5 +242,29 @@ public final class OverlayCtl {
             c.getSharedPreferences("sgmbot", Context.MODE_PRIVATE)
                     .edit().putBoolean(FOLD, on).apply();
         } catch (Throwable ignored) { }
+    }
+
+    /** 记「暂停」小浮标的位置 (null = 还没拖过, 用默认角落)。 */
+    static void rememberFabPos(int x, int y) {
+        try {
+            Context c = App.inst;
+            if (c == null) return;
+            c.getSharedPreferences("sgmbot", Context.MODE_PRIVATE)
+                    .edit().putString(FAB_POS, x + "," + y).apply();
+        } catch (Throwable ignored) { }
+    }
+
+    static int[] savedFabPos() {
+        try {
+            Context c = App.inst;
+            if (c == null) return null;
+            String s = c.getSharedPreferences("sgmbot", Context.MODE_PRIVATE)
+                    .getString(FAB_POS, "");
+            if (s == null || s.length() == 0) return null;
+            String[] p = s.split(",");
+            return new int[]{Integer.parseInt(p[0].trim()), Integer.parseInt(p[1].trim())};
+        } catch (Throwable t) {
+            return null;
+        }
     }
 }

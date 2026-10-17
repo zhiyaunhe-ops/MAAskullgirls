@@ -53,6 +53,12 @@ public final class OverlayBar {
 
     /** 挂机开始**之前**用户的折叠状态 (null = 本次挂机还没动过), 停手时据此还原。 */
     private Boolean preRunFold;
+    /** 「暂停」小浮标的窗口 (挂机期间主窗整个藏起来, 只剩它 —— 见 setFabVisible)。 */
+    private FrameLayout fabRoot;
+    private WindowManager.LayoutParams fabLp;
+    private boolean fabShown;
+    /** 浮标上次响应点击的时刻 (防连点: 挂机中手滑点到两下会"暂停→又继续→又暂停") */
+    private long fabLastTapMs;
     /** 统计文案 (单独启动时由 OverlayCtl 周期刷新; 服务跑时由 SettleLoop 推) */
     private volatile String statText = "待机";
     /** 「开始 / 继续」当前文案 —— 记住它而不是回读 Button (回读要依赖 View.getText, 探针桩也得跟着长) */
@@ -170,8 +176,8 @@ public final class OverlayBar {
         int[] pos = OverlayCtl.savedPos();
         if (pos != null) { lp.x = pos[0]; lp.y = pos[1]; }
 
-        root.setOnTouchListener(dragListener());
-        btnMini.setOnTouchListener(dragListener());   // 小箭头也能拖 (点击=展开)
+        root.setOnTouchListener(dragListener(lp, root, CLICK_NONE));
+        btnMini.setOnTouchListener(dragListener(lp, root, CLICK_FOLD));   // 小箭头也能拖 (点击=展开)
 
         try {
             wm.addView(root, lp);
@@ -232,30 +238,42 @@ public final class OverlayBar {
     /** 当前「开始/继续」键上的文案 (探针断言用) */
     public String startLabel() { return startText; }
 
-    /** 按住空白处拖动; 松手 clamp 拉回屏内 (JS clampPos 同款, 无贴边缩进) */
+    /** 拖动监听里"松手算点击"时的三种语义 (主窗空白 / 小箭头展开 / 浮标暂停)。 */
+    private static final int CLICK_NONE = 0, CLICK_FOLD = 1, CLICK_PAUSE = 2;
+
+    /** 按住空白处拖动; 松手 clamp 拉回屏内 (JS clampPos 同款, 无贴边缩进)
+     *  @param targetLp  要改的那个窗口的 LayoutParams (主窗或浮标)
+     *  @param targetRoot 要 updateViewLayout 的那个根 view
+     *  @param clickMode 松手且没拖动时的语义 */
     @SuppressLint("ClickableViewAccessibility")
-    private View.OnTouchListener dragListener() {
+    private View.OnTouchListener dragListener(final WindowManager.LayoutParams targetLp,
+                                              final View targetRoot, final int clickMode) {
         final int[] down = new int[2];
         final int[] moved = {0};
         return (v, e) -> {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    down[0] = (int) e.getRawX() - lp.x;
-                    down[1] = (int) e.getRawY() - lp.y;
+                    down[0] = (int) e.getRawX() - targetLp.x;
+                    down[1] = (int) e.getRawY() - targetLp.y;
                     moved[0] = 0;
                     return true;
                 case MotionEvent.ACTION_MOVE: {
                     int nx = (int) e.getRawX() - down[0], ny = (int) e.getRawY() - down[1];
-                    if (Math.abs(nx - lp.x) + Math.abs(ny - lp.y) > 4) moved[0] = 1;
-                    lp.x = nx; lp.y = ny;
-                    try { wm.updateViewLayout(root, lp); } catch (Exception ignored) { }
+                    if (Math.abs(nx - targetLp.x) + Math.abs(ny - targetLp.y) > 4) moved[0] = 1;
+                    targetLp.x = nx; targetLp.y = ny;
+                    try { wm.updateViewLayout(targetRoot, targetLp); } catch (Exception ignored) { }
                     return true;
                 }
                 case MotionEvent.ACTION_UP:
-                    if (v == btnMini && moved[0] == 0) setFold(false);   // 点箭头未拖 = 展开
-                    clampPos();
-                    try { wm.updateViewLayout(root, lp); } catch (Exception ignored) { }
-                    OverlayCtl.rememberPos(lp.x, lp.y);      // 记住位置, 下次独立启动复原
+                    if (moved[0] == 0) {
+                        if (clickMode == CLICK_FOLD) setFold(false);            // 点箭头未拖 = 展开
+                        else if (clickMode == CLICK_PAUSE) tapPauseFab();       // 点浮标 = 暂停
+                    }
+                    clampPos(targetLp, targetRoot);
+                    try { wm.updateViewLayout(targetRoot, targetLp); } catch (Exception ignored) { }
+                    /* 位置记忆按窗口分开记 —— 两窗不同时可见, 共用一把 key 会互相覆盖。 */
+                    if (clickMode == CLICK_PAUSE) OverlayCtl.rememberFabPos(targetLp.x, targetLp.y);
+                    else OverlayCtl.rememberPos(targetLp.x, targetLp.y);
                     if (onLayoutChange != null) onLayoutChange.run();
                     return true;
             }
@@ -264,14 +282,17 @@ public final class OverlayBar {
     }
 
     /** 松手拉回屏内: 面板/小箭头都不能被拖丢在屏外 (JS clampPos 同款) */
-    private void clampPos() {
-        int w = root.getWidth(), h = root.getHeight(), sw = size.w(), sh = size.h();
+    private void clampPos(WindowManager.LayoutParams p, View r) {
+        int w = r.getWidth(), h = r.getHeight(), sw = size.w(), sh = size.h();
         if (w <= 0 || h <= 0) return;
-        if (lp.x < 0) lp.x = 0;
-        if (lp.y < 0) lp.y = 0;
-        if (lp.x + w > sw) lp.x = sw - w;
-        if (lp.y + h > sh) lp.y = sh - h;
+        if (p.x < 0) p.x = 0;
+        if (p.y < 0) p.y = 0;
+        if (p.x + w > sw) p.x = sw - w;
+        if (p.y + h > sh) p.y = sh - h;
     }
+
+    /** 主窗版 clamp (供老调用点用)。 */
+    private void clampPos() { clampPos(lp, root); }
 
     /**
      * 折叠: 面板 ↔ 小箭头; 折叠时窗口变小, 把窗口拉回屏内防箭头消失在屏外。
@@ -303,14 +324,16 @@ public final class OverlayBar {
         post(() -> {
             if (running) {
                 if (preRunFold == null) preRunFold = folded;
-                setHidden(true);          // 挂机时**整个隐藏**, 不只折叠 (见 setHidden 注释)
+                setFabVisible(true);         // 先把「暂停」浮标挂上 (用户唯一的停机入口)
+                setHidden(true);             // 再藏主窗 (见 setHidden 注释)
             } else {
+                setHidden(false);            // 先恢复主窗 (任何时刻至少有一个可见窗口)
+                setFabVisible(false);        // 再收浮标
                 boolean expand = preRunFold != null && !preRunFold;
                 preRunFold = null;
-                setHidden(false);         // 先恢复可见
                 if (expand) setFold(false);
             }
-            SgmLog.i("overlay", "foldForRun 应用后 hidden=" + hiddenForRun);
+            SgmLog.i("overlay", "foldForRun 应用后 hidden=" + hiddenForRun + " fab=" + fabShown);
         });
     }
 
@@ -331,6 +354,8 @@ public final class OverlayBar {
                 savedW = lp.width;
                 savedH = lp.height;
                 savedAlpha = lp.alpha;
+                savedX = lp.x;
+                savedY = lp.y;
             }
             lp.width = 1;
             lp.height = 1;
@@ -341,23 +366,147 @@ public final class OverlayBar {
             lp.width = savedW;
             lp.height = savedH;
             lp.alpha = savedAlpha;
+            /* ⚠️ x/y 也必须还原 (2026-10-17 修): 藏窗口时把它们按成了 (0,0), 只还原尺寸
+             * 的话暂停后主窗会蹦到左上角 —— 而左上角正是游戏 HUD (房子/金币) 那一带,
+             * 浮标让暂停变频繁之后这个 bug 天天能撞见。 */
+            lp.x = savedX;
+            lp.y = savedY;
             savedW = 0;
         }
         root.setVisibility(View.VISIBLE);   // ⚠️ 永远 VISIBLE —— 理由见上
-        clampPos();
+        /* ⚠️ 这里不 clamp: 此刻 root 的实际尺寸可能还是 1x1 (view 要等下一帧才重新布局),
+         * 拿旧尺寸 clamp 会把位置夹到右上角去。用户拖过的位置本来就是屏内的。 */
         try { wm.updateViewLayout(root, lp); } catch (Exception ignored) { }
     }
 
-    /** 隐藏前的窗口尺寸/透明度 (恢复用; {@code WindowManager.LayoutParams} 没有拷贝构造)。 */
-    private int savedW, savedH;
+    /* ================= 挂机期间的「暂停」小浮标 =================
+     * 为什么非要它 (2026-10-17 用户: 「你做一个自定义键, 我可以快速暂停」):
+     *   主窗挂机时被 setHidden 缩成 1x1 alpha=0 (为了不被 MIUI 冻住), **人点不到**
+     *   ⇒ 想暂停只能切回 App 主页, 而游戏切出去再切回来要好几秒, 挂机时很不顺手。
+     * 做法: 另开一个 52dp 的小窗口 (主窗藏起来时它可见, 主窗回来时它消失), 点一下
+     *   = trigger("stop"), 与悬浮条上那颗「暂停」键**走同一个动作名**, 不造第二套协议。
+     * ⚠️ 位置默认贴**右下角底部**: 游戏 HUD (FIGHT!/倍率徽章/CONTINUE) 全在右侧中上部,
+     *   work y≥540 (全屏 y≥1012) 是结算按钮行以下的空白带, 浮标 52dp 放进去不挡判定;
+     *   但每台机的 UI 不完全一样 ⇒ **可拖动**, 位置单独存盘 (overlay_fab_pos)。 */
+
+    /** 显示/隐藏浮标 (幂等; 懒创建 —— App 启动时不白占一个窗口)。
+     *  ⚠️ 这里必须**同步**做 (在 foldForRun 的主线程 post 里被调): 再套一层 post 会让
+     *  「先挂浮标、再藏主窗」的顺序倒过来, 中间出现一帧"两个窗口都没有" —— 正是
+     *  2026-10-16 想避开的 MIUI 后台冻结场景。所以非主线程调用时才转 post。 */
+    public void setFabVisible(final boolean on) {
+        if (on == fabShown) return;
+        fabShown = on;
+        main(() -> {
+            if (on) {
+                try {
+                    if (fabRoot == null) buildFab();
+                    if (fabRoot == null) return;          // 建失败 (极少见: 权限被收回)
+                    wm.addView(fabRoot, fabLp);
+                    /* 兜底 clamp: buildFab 时 root 还没布局 (getWidth()=0) ⇒ 那次 clamp 是
+                     * 空转; 这里尺寸有了, 再夹一次保证浮标一定在屏内 (横竖屏/metrics 取错
+                     * 值时不会飞到屏幕外面去)。 */
+                    clampPos(fabLp, fabRoot);
+                    try { wm.updateViewLayout(fabRoot, fabLp); } catch (Exception ignored) { }
+                    SgmLog.i("overlay", "暂停浮标已挂载 @(" + fabLp.x + "," + fabLp.y + ")");
+                } catch (Throwable t) {
+                    fabShown = false;
+                    SgmLog.i("overlay", "暂停浮标挂载失败 (不影响主链): " + t);
+                }
+            } else {
+                if (fabRoot == null) return;
+                try { wm.removeView(fabRoot); } catch (Exception ignored) { }
+                SgmLog.i("overlay", "暂停浮标已收起");
+            }
+        });
+    }
+
+    /** 主线程同步执行 (已在主线程就直接跑, 保住调用方要求的顺序)。 */
+    private void main(Runnable r) {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) { r.run(); return; }
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(r);
+    }
+
+    /** 建浮标窗口 (只在第一次要显示时跑)。 */
+    private void buildFab() {
+        final int dp = (int) (52 * ctx.getResources().getDisplayMetrics().density);
+        Button b = new Button(ctx);
+        b.setText("暂停");
+        b.setTextSize(9f);
+        b.setTextColor(0xFFFFFFFF);
+        b.setPadding(0, 0, 0, 0);
+        b.setAllCaps(false);
+        /* 圆角红底 —— 用代码画, 不引 drawable 资源 (手工构建没有 res 合并) */
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        bg.setCornerRadius(dp / 2f);
+        bg.setColor(0xCCB71C1C);
+        bg.setStroke(1, 0x66FFFFFF);
+        b.setBackground(bg);
+
+        FrameLayout f = new FrameLayout(ctx);
+        f.addView(b, new FrameLayout.LayoutParams(dp, dp));
+        fabRoot = f;
+
+        fabLp = new WindowManager.LayoutParams(
+                dp, dp,
+                Build.VERSION.SDK_INT >= 26
+                        ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        : WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT);
+        fabLp.gravity = Gravity.TOP | Gravity.START;
+        fabLp.alpha = 0.92f;
+        int[] pos = OverlayCtl.savedFabPos();
+        if (pos != null) {
+            fabLp.x = pos[0]; fabLp.y = pos[1];
+        } else {
+            /* 默认右下角贴底 (游戏底部是空白带, 见类注释) */
+            fabLp.x = size.w() - dp - 12;
+            fabLp.y = size.h() - dp - 12;
+        }
+        f.setOnTouchListener(dragListener(fabLp, f, CLICK_PAUSE));
+        clampPos(fabLp, f);
+    }
+
+    /**
+     * 点了浮标 = 暂停 (与悬浮条上「暂停」键同一个动作名 stop)。
+     * ⚠️ 防连点: 点下去到循环真正退出有几百 ms~几秒 (工作线程要跑完当前这步),
+     *   这期间再点一下就会"停了又开" —— 1.5s 内忽略后续点击。
+     * ⚠️ 立刻收起浮标做**即时反馈**: 光 trigger(stop) 的话, 从点击到循环退出之间
+     *   ( sleep 分段后 ≤100ms, 但赶上长搜索时要几秒) 浮标还挂在原处, 用户会以为
+     *   "点了没反应"又去点 —— 2026-10-17 实测过这种观感。 */
+    void tapPauseFab() {
+        long now = System.currentTimeMillis();
+        if (now - fabLastTapMs < 1500) {
+            SgmLog.i("overlay", "暂停浮标: 连点忽略 (距上次 " + (now - fabLastTapMs) + "ms)");
+            return;
+        }
+        fabLastTapMs = now;
+        SgmLog.i("overlay", "暂停浮标被点 → trigger(stop)");
+        setFabVisible(false);            // 即时反馈 (foldForRun(false) 里那次是幂等空操作)
+        BotService.trigger("stop");
+    }
+
+    /** 隐藏前的窗口尺寸/透明度/位置 (恢复用; {@code WindowManager.LayoutParams} 没有拷贝构造)。 */
+    private int savedW, savedH, savedX, savedY;
     private float savedAlpha = -1f;
 
     /** 挂机期间窗口是否被整体隐藏 (监控页/主页可用它提示"悬浮窗已藏, 回 App 操作")。 */
     public boolean hiddenForRun() { return hiddenForRun; }
 
-    public void destroy() {        if (root != null) {
+    public void destroy() {
+        if (root != null) {
             try { wm.removeView(root); } catch (Exception ignored) { }
             root = null;
+        }
+        /* 浮标也要收 —— 「结束」挂机时它是唯一还挂着的窗口, 不收就留在屏幕上点不动了。
+         * ⚠️ 同步摘 fabRoot 引用: setFabVisible 的幂等判断靠 fabShown 标志,
+         *    这里不重置它的话下次 setFabVisible(true) 会以为"已显示"而跳过 addView。 */
+        fabShown = false;
+        if (fabRoot != null) {
+            try { wm.removeView(fabRoot); } catch (Exception ignored) { }
+            fabRoot = null;
         }
     }
 

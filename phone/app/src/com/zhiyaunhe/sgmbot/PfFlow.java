@@ -78,6 +78,12 @@ public final class PfFlow {
 
     /** 正在跑的那个实例 (给监控页读实时状态; 服务里同一时刻只有一个)。 */
     private static volatile PfFlow live;
+    /** 当前这一轮循环的停止闸门 (= BotService 传进来的 RUN)。
+     *  ⚠️ 2026-10-17 实栽: sleep_ 原来是裸 Thread.sleep, 而循环里到处是 2.5~6s 的长等待
+     *  (导航/选人/冷启动甚至有 300s 轮询) ⇒ 点「暂停」后要等当前这串睡满才真停,
+     *  实测 3 分 20 秒 —— 浮标还挂在屏幕上, 用户以为"点了没反应"。
+     *  现在 sleep_ 按 60ms 分段睡, 每段查一次闸门。 */
+    private static volatile java.util.concurrent.atomic.AtomicBoolean gate;
 
     /** 本次运行开始时刻 (监控页算已跑时长)。 */
     private long startMs;
@@ -216,6 +222,7 @@ public final class PfFlow {
         sessionFightNo = 0;
         lastActMs = System.currentTimeMillis();
 
+        gate = run;                     // sleep_ 的分段睡要查它 (见 gate 字段注释)
         SgmLog.i("pf", "PF 主循环开始 — 每场重选角色 | 匹配=" + Vision.modeText()
                 + (quiet ? " | 静默模式(不主动导航)" : ""));
         readArena(c);                      // 「读取场次」: 选定的场次 → 分类 → 条件 (日志可见)
@@ -1439,7 +1446,20 @@ public final class PfFlow {
 
     void setStepText(String s) { setStep(s); }
 
+    /**
+     * 分段睡: 每 60ms 查一次停止闸门, 叫停就**立刻醒** (不等睡满)。
+     * ⚠️ 只有 {@code gate} 为 false 时才提前返回; 正常睡眠时长不受影响
+     * (下一轮循环会重新截图判断界面, 早醒 60ms 没有副作用)。 */
     static void sleep_(long ms) {
-        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        if (ms <= 0) return;
+        long end = System.currentTimeMillis() + ms;
+        while (true) {
+            java.util.concurrent.atomic.AtomicBoolean g = gate;
+            if (g != null && !g.get()) return;             // 已被叫停 ⇒ 立刻醒
+            long left = end - System.currentTimeMillis();
+            if (left <= 0) return;
+            try { Thread.sleep(Math.min(60, left)); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+        }
     }
 }

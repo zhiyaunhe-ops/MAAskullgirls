@@ -106,6 +106,14 @@ public final class DebugHttp {
             } else if (path.startsWith("/pf")) {
                 replyHtml(s, PF_HTML);
                 return;
+            } else if (path.startsWith("/fab_tap")) {
+                /* 调试后门: 直接触发「暂停浮标被点」那条链 (真手点走的是 InputDispatcher,
+                 * 而这台 K70 Pro 上 input tap 注入到不了 overlay 窗口 —— 2026-10-17 实测,
+                 * 于是这条后门用来验证"点下去之后"的链路: trigger(stop) → 循环退出 →
+                 * foldForRun(false) → 浮标收起 + 主窗恢复。 */
+                OverlayBar b2 = OverlayCtl.bar();
+                if (b2 == null) body = "没有悬浮窗实例 (bar==null)";
+                else { b2.tapPauseFab(); body = "已触发 tapPauseFab"; }
             } else if (path.startsWith("/shots_flood")) {
                 /* 自检: 连续存 n 张当前帧, 用来验证「总量封顶 → 从最旧删」真的会触发。
                  * ⚠️ 只在 adb/本机可达, 且不影响主循环 (走懒加载的那条 ctl())。 */
