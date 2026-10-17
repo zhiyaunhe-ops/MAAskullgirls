@@ -175,6 +175,64 @@ final class PfScene {
         return new int[]{Math.min(Math.max(x, 0), f.w - 1), Math.min(Math.max(y, 0), f.h - 1)};
     }
 
+    // ---------------- 服务器错误弹窗 (CANCEL / RETRY) ----------------
+
+    /**
+     * 服务器错误弹窗 RETRY 按钮的**内芯绿块** (work 坐标, 2026-10-17 真机实测)。
+     *
+     * <p>⚠️⚠️ 为什么不用模板: 全屏搜 137x50 的 {@code srv_retry} 要 ~4e9 次乘加
+     * (真机几十秒), 所以老代码只敢在 unknown 恢复链里调 {@code findServerError} ——
+     * 结果这个弹窗压在**别的高级界面之上**时根本没人检查它。现场 (2026-10-17 用户:
+     * 「又有弹窗 你这个没处理？」): 弹窗盖在编队预览页上, {@code PfScene} 按「FIGHT! 可见」
+     * 判成 TEAM_PREVIEW ⇒ 直接进 fightFlow ⇒ 「点 TEAM 菱形 → 未进入编队编辑器」
+     * 死循环刷了 6 小时。色块判据只要 ~5k 个像素的活, 可以放在**每一轮的最前面**。
+     *
+     * <p>⚠️ 也别改成"只认绿块": 单看绿块在普通界面上最高能到 0.038 但**紫块**能到 0.313
+     * (0306/0241 那两帧的卡面美术), 所以两个按钮**同时**成立才算 —— 实测正例
+     * 绿 0.688 / 紫 0.771, 20 张普通帧最像的只有 绿 0.038 / 紫 0.313, 阈值 0.45 落在空档正中。
+     */
+    static final int[] SRV_RETRY_BOX = {668, 367, 135, 29};
+    /** CANCEL 按钮的**内芯紫块** (work) —— 与绿块配对使用。 */
+    static final int[] SRV_CANCEL_BOX = {476, 367, 136, 25};
+
+    /** 是否「We're having some difficulty reaching our servers. Please try again!」弹窗。 */
+    static boolean serverPopup(Vision.Frame f) {
+        if (f == null || f.w < 900 || f.h < 500) return false;
+        return fracGreen(f, SRV_RETRY_BOX) >= 0.45 && fracPurple(f, SRV_CANCEL_BOX) >= 0.45;
+    }
+
+    /** RETRY 落点 (work 坐标) —— 弹窗恒居中, 位置固定, 走色块判据就不必再搜模板。 */
+    static int[] serverRetryAt() {
+        return new int[]{SRV_RETRY_BOX[0] + SRV_RETRY_BOX[2] / 2,
+                SRV_RETRY_BOX[1] + SRV_RETRY_BOX[3] / 2};
+    }
+
+    private static double fracGreen(Vision.Frame f, int[] b) {
+        int n = 0, ok = 0;
+        for (int y = b[1]; y < b[1] + b[3] && y < f.h; y++)
+            for (int x = b[0]; x < b[0] + b[2] && x < f.w; x++) {
+                if (x < 0 || y < 0) continue;
+                int p = f.px[y * f.w + x];
+                int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, bl = p & 0xFF;
+                n++;
+                if (g > 110 && g - r > 40 && g - bl > 40) ok++;
+            }
+        return n == 0 ? 0 : ok / (double) n;
+    }
+
+    private static double fracPurple(Vision.Frame f, int[] b) {
+        int n = 0, ok = 0;
+        for (int y = b[1]; y < b[1] + b[3] && y < f.h; y++)
+            for (int x = b[0]; x < b[0] + b[2] && x < f.w; x++) {
+                if (x < 0 || y < 0) continue;
+                int p = f.px[y * f.w + x];
+                int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, bl = p & 0xFF;
+                n++;
+                if (bl > 70 && r > 50 && bl - g > 25 && r < 170 && g < 150) ok++;
+            }
+        return n == 0 ? 0 : ok / (double) n;
+    }
+
     // ---------------- 模板 + 紧 ROI ----------------
 
     /**

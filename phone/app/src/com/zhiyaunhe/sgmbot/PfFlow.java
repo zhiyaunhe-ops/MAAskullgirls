@@ -247,6 +247,25 @@ public final class PfFlow {
             connectingSince = 0;
         }
 
+        /* ---- ⓪a 服务器错误弹窗 —— 排在最前, 比 X 弹窗还靠前 ----
+         * (2026-10-17 用户: 「又有弹窗 你这个没处理？」) 现场: 「We're having some difficulty
+         * reaching our servers」盖在**编队预览页**上, 而预览页右上还有 FIGHT! ⇒ PfScene 判
+         * TEAM_PREVIEW ⇒ 直接进 fightFlow ⇒ 「点 TEAM 菱形 → 未进入编队编辑器」死循环 6 小时
+         * (打到 83 场后卡死)。老代码只在 unknown 恢复链里查, 而这里**根本没走到那一步**。
+         *
+         * 判据是**像素色块**不是模板 (见 PfScene.serverPopup 注释: 全屏搜 srv_retry 要几十秒,
+         * 只有色块才付得起"每轮都查"的代价), 所以放在 X 弹窗之前也不心疼。
+         * 点 RETRY 而不是 CANCEL —— 这是网络请求失败, 重试才是本意。
+         * ⚠️ 点完要 noteProgress(): 弹窗不消失时界面不变, 看门狗会以为卡死然后去重拉游戏。 */
+        if (PfScene.serverPopup(work)) {
+            unknownTries = 0;
+            log("服务器错误弹窗 (CANCEL/RETRY) — 点 RETRY");
+            tap(bmp, PfScene.serverRetryAt());
+            sleep_(2500);
+            noteProgress();
+            return;
+        }
+
         /* ---- ⓪ 弹窗**必须最先剥** (2026-10-16 实栽, 用户: 「能量看错了, 才导致这个弹窗」) ----
          * 原来弹窗检查在快路径**之后**, 于是: PfScene 把"编辑器 + ENERGY REFILL 弹窗"认成
          * TEAM_EDITOR (漏斗露在弹窗右侧, 0.785 > 阈值) ⇒ switch 直接跳进 fightFlow,
@@ -272,6 +291,8 @@ public final class PfFlow {
             sleep_(1500);
             return;
         }
+
+        /* ---- ⓪a (已上移到 X 弹窗之前) ---- */
 
         /* ---- 快路径: 界面识别 (PfScene) ----
          * ⚠️ 原来下面是一条**串行的全帧匹配链**, 每一步依次对十几个模板做 ROI_FULL 全搜,
@@ -1123,7 +1144,8 @@ public final class PfFlow {
             for (String n : DIAG_TPL) {
                 Vision.Frame t = tpls.get(n);
                 if (t == null) continue;
-                double[] r = Vision.findScored(work, t, Pf.ROI_FULL, 0.0, -1, 0);
+                double[] r = Vision.findScored(work, t, Pf.ROI_FULL,
+                        Vision.SCAN_ALL, -1, 0, 1);
                 if (r != null) {
                     sb.append(n).append('=')
                       .append(Math.round(r[2] * 100) / 100.0).append(' ');

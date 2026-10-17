@@ -992,6 +992,17 @@ public final class SettleLoop {
 
     /** 按 config escape.items 顺序试: 命中即点并返回 true; 全不中再用三槽按钮兜底 */
     private boolean escape(Vision.Frame work, Bitmap bmp, JSONObject c) {
+        /* 服务器错误弹窗优先 —— 它是全局遮罩, 而 config 里的 srv_ok/srv_retry 模板是**旧版
+         * (PC/MuMu 1280x576 原生帧)** 裁的, 在真机 2400x1080 降采样帧上只剩 0.68 < 0.75
+         * ⇒ 这条链根本认不出它 (2026-10-17 实测)。改用零成本色块判据 (PfScene.serverPopup)。 */
+        if (PfScene.serverPopup(work)) {
+            int[] r = PfScene.serverRetryAt();
+            tap(bmp, r[0], r[1]);
+            SgmLog.i("弹", "服务器错误弹窗 → 点 RETRY (" + r[0] + "," + r[1] + ")");
+            Trace.put("escape", "server_popup", "retry", null, 1.0, true, "点 RETRY");
+            sleep_(2500);
+            return true;
+        }
         JSONObject esc = c.optJSONObject("escape");
         if (esc == null) return false;
         float[] okOff = farr(esc, "ok_offset", new float[]{210, 188});
