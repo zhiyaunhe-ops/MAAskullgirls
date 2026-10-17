@@ -127,6 +127,56 @@ public final class PfFlow {
     // ==================================================================
 
     /**
+     * 「读取场次」—— 把 App「PF 设置」页选定的场次过一遍场次表, 算出本场的取值条件。
+     *
+     * <p>⚠️⚠️ 2026-10-17 之前这块是断的: {@link PfArenaTable} 只有一句 {@code load()},
+     * 整张 22 场次的表**从未被查询过** —— 用户的原话是「你也没有读取场次的那个逻辑没有搬过来」。
+     * 现在至少把"用户选的场次 → tag/能量/分数上限/出战规则"这条链路接通并打进日志, 让
+     * 条件来源可见 (而不是像以前那样只能靠 config 里手填的裸数字)。</p>
+     *
+     * <p>⚠️ 仍未实装的是**自动认卡名**: App 内没有 OCR (PC 那套 PaddleOCR 的 det+rec 移植
+     * 代价另议), 所以现在靠"用户选 + 指纹锁"; 卡位规则 (月场固定占 #1/#2) 与名称表两条
+     * 路径都已经在 {@link PfArenaTable#classify} 里备好, 等卡名来源接上即可直接用。</p>
+     */
+    private void readArena(JSONObject c) {
+        try {
+            PfArenaTable.load(App.inst);
+            JSONObject p = c.optJSONObject("pf");
+            String want = p == null ? null : p.optString("arena", "");
+            if (want == null || want.isEmpty()) {
+                log("读取场次: 未指定目标场次 — 按**卡位**的保守口径 (4kw 分数 / 4 能量 / 无规则)");
+                arenaName = null;
+                return;
+            }
+            PfArenaTable.Spec sp = PfArenaTable.spec(want);
+            if (sp == null) {
+                log("读取场次: 「" + want + "」不在场次表里 (拼错? 新场次?) — 保守放行, 不做规则约束");
+                arenaName = null;
+                return;
+            }
+            arenaName = sp.name;
+            log("读取场次: " + sp.name + " → 类别 " + sp.tag
+                    + " | 能量 " + sp.energy() + " 钉"
+                    + " | 分数上限 " + (sp.noLimit() ? "无上限(月场, 判据跳过)"
+                            : String.valueOf(sp.scoreTarget()))
+                    + " | 出战规则 " + (sp.rule() == null ? "无" : sp.rule())
+                    + (sp.matched ? "" : " ⚠️ 未命中人工表, 取保守值"));
+            /* ⚠️ 场次表说了"这一场该用多少能量/什么规则", 但**不在这里改用户的配置**:
+             *    写入只在「PF 设置」页做 —— 一处写、多处读, 否则又是两套状态。
+             *    这里只做**一致性核对**, 不一致就提示 (看日志就知道要不要回设置页点一下)。 */
+            if (p != null && p.has("energy_cost") && p.optInt("energy_cost") != sp.energy()) {
+                log("⚠ 场次表说这一场要 " + sp.energy() + " 钉, 而配置里是 "
+                        + p.optInt("energy_cost") + " — 想按表走请到「PF 设置」页重新点一次该场次");
+            }
+        } catch (Throwable t) {
+            log("读取场次失败 (不致命): " + t);
+        }
+    }
+
+    /** 当前目标场次名 (未指定 = null) —— 监控页/状态页显示用。 */
+    volatile String arenaName;
+
+    /**
      * PF 主循环 (在 BotService 工作线程里跑)。
      *
      * @param run    停止标志; 内部判定到结构性错误时会置 false
@@ -167,6 +217,7 @@ public final class PfFlow {
 
         SgmLog.i("pf", "PF 主循环开始 — 每场重选角色 | 匹配=" + Vision.modeText()
                 + (quiet ? " | 静默模式(不主动导航)" : ""));
+        readArena(c);                      // 「读取场次」: 选定的场次 → 分类 → 条件 (日志可见)
         live = this;                       // 监控页从这里读实时状态
         startMs = System.currentTimeMillis();
 

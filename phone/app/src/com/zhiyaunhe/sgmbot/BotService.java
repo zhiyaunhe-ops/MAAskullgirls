@@ -39,8 +39,54 @@ public class BotService extends Service {
      */
     public static final String MODE_NAV_HERE = "nav_here";
 
+    /**
+     * 日常 Events · 快速 —— settle 循环 + **强制 fast.enable=true** (盲点连点结算)。
+     * ⚠️ 是"强制覆盖", 不是"读配置": 模式本身就是用户的选择, 再让它被 fast.enable 二次开关
+     *    就会重演「两条路各说各话」那类毛病 (见本文件开头 2026-10-11 的教训)。
+     */
+    public static final String MODE_EVENT_FAST = "event_fast";
+
+    /**
+     * 日常 Events · 长滚 —— 进场 → 地图长滚找王关 → 开打 → 结算 → 循环。
+     *
+     * <p>⚠️⚠️ **进场 + 王关链还没移植完** (2026-10-17): 那一段目前只存在于 AutoJS 的
+     * {@code phone/autojs/pf_nav.js} (FIGHT_STEPS: 地图右移×2 → 绿✓色锚点定位王关 → FIGHT!,
+     * 真机标定过), 而 App 这条链还缺"大厅 → EVENTS 菱形 → 活动卡 PLAY! → 地图"的起步导航。
+     * 所以现在选到这个模式**只跑结算闭环**(等价快速模式的非 fast 版), 日志会明确写出来
+     * —— 宁可说清"这段没做", 也不要让用户以为它在长滚。</p>
+     */
+    public static final String MODE_EVENT_LONG = "event_long";
+
     /** 是不是 PF 全链 (两种起点都算)。 */
     public static boolean isPfMode(String m) { return MODE_NAV.equals(m) || MODE_NAV_HERE.equals(m); }
+
+    /* ---------------- 三种「用户模式」(2026-10-17 用户要求) ----------------
+     * 用户原话: 「手机 APP 里面可以切换三种模式吧 —— 日常 Events 的长滚快速模式、
+     *   PF 的这个屏幕刷的模式 … 然后 WebUI 的那些选场次 / 能量上限等等条件应该都在
+     *   APP 里面配置才对呀」。
+     *
+     * ⚠️ 与上面 MODE_* 的关系: MODE_* 是**引擎层**的取值 (settle/nav/nav_here),
+     *    这里 MODE_APP_* 是**配置层**的取值 (存在 config 的 app.mode), 由
+     *    {@code trigger("start_mode")} 翻译成引擎层 —— 这样三条老入口
+     *    (start / start_nav / start_here) 的契约一个字都不用动
+     *    (铁律: 动作名不许改, adb 广播 + HTTP /trigger 都按它们拼)。 */
+    /** 日常 Events · 长滚: 进场 → 地图长滚找王关 → 开打 → 结算 → 循环。 */
+    public static final String MODE_APP_EVENT_LONG = "event_long";
+    /** 日常 Events · 快速: 盲点连点结算 (settle + fast.enable=true)。 */
+    public static final String MODE_APP_EVENT_FAST = "event_fast";
+    /** PF 刷: 就地开始 PF 全链 (人自己把游戏停在目标场次的 hub/编队页)。 */
+    public static final String MODE_APP_PF = "pf";
+
+    /** 从配置读当前用户模式 (缺省 {@code pf})。 */
+    public static String appMode(Context c) {
+        try {
+            JSONObject a = cfgOr(c).read().optJSONObject("app");
+            String m = a == null ? null : a.optString("mode", "");
+            if (MODE_APP_EVENT_LONG.equals(m) || MODE_APP_EVENT_FAST.equals(m)
+                    || MODE_APP_PF.equals(m)) return m;
+        } catch (Throwable ignored) { }
+        return MODE_APP_PF;                        // 缺省按用户当下在搞的那条来
+    }
 
     /** 上一轮 PF 循环的停止原因 (null = 正常结束)。 */
     private volatile String lastFatal;
@@ -146,6 +192,13 @@ public class BotService extends Service {
         Context c = App.inst;
         if (action == null || c == null) return;
         switch (action) {
+            /* ★ App 内「三种模式」的统一入口 (悬浮窗 PF 模式只剩的那颗「开始」就走它)。
+             * 模式取自 config 的 app.mode —— 见 MODE_APP_* 注释: 老的三条入口一律不动。 */
+            case "start_mode":
+                String am = appMode(c);
+                start(c, MODE_APP_PF.equals(am) ? MODE_NAV_HERE
+                        : MODE_APP_EVENT_LONG.equals(am) ? MODE_EVENT_LONG : MODE_EVENT_FAST);
+                break;
             case "start_nav": start(c, MODE_NAV); break;
             /* 就地开始: 假定人已把游戏停在 PF hub/编队页, 不做起步导航 (见 MODE_NAV_HERE) */
             case "start_here": start(c, MODE_NAV_HERE); break;
@@ -302,7 +355,26 @@ public class BotService extends Service {
                  * (理由见 MODE_NAV_HERE 的注释)。之后的循环照常自己认界面。 */
                 flow.run(RUN, cfg, MODE_NAV_HERE.equals(m));
                 lastFatal = flow.fatalReason();
+            } else if (MODE_EVENT_LONG.equals(m)) {
+                /* ⚠️ 长滚链未实装 (见 MODE_EVENT_LONG 注释) —— 现在等价"非 fast 的结算闭环",
+                 * 但**必须把话说出来**, 否则用户会以为它在长滚地图找王关。 */
+                SgmLog.i("bot", "⚠ 长滚模式 (event_long): 进场/王关链尚未移植 (移植源 "
+                        + "phone/autojs/pf_nav.js 的 FIGHT_STEPS) — 本次只跑结算闭环; "
+                        + "请自己在游戏里把战斗开起来 (或在主页模式里改用其它模式)");
+                new SettleLoop(sh, tpls, bar).run(RUN, cfg);
             } else {
+                /* event_fast = settle + fast.enable=true。
+                 * ⚠️ 这里**不再自己造一份配置**: fast.enable 由主页的模式切换负责写
+                 *    (见 MainActivity.setAppMode) —— 一句话说清: "模式即开关", 不留两套
+                 *    互相对不上的状态 (Config 是 final 类, 也没法就地造个改了值的副本)。
+                 *    异常情况(比如用户手改过 config)只在这里留一行日志。 */
+                try {
+                    JSONObject f = cfg.read().optJSONObject("fast");
+                    if (f == null || !f.optBoolean("enable", false)) {
+                        SgmLog.i("bot", "⚠ event_fast 但 fast.enable=false (配置被手改过?) — "
+                                + "本次仍按普通结算跑; 在主页点一下「Events·快速」可修好");
+                    }
+                } catch (Throwable ignored) { }
                 new SettleLoop(sh, tpls, bar).run(RUN, cfg);
             }
         } catch (Throwable t) {

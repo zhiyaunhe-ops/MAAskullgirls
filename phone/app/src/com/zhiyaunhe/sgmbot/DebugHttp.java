@@ -118,7 +118,7 @@ public final class DebugHttp {
                 d.put("dir", PfDump.dir());
                 body = d.toString(2);
             } else if (path.startsWith("/screencap")) {
-                Bitmap b = BotService.sh() != null ? BotService.sh().capture() : null;
+                Bitmap b = ctl().capture();
                 if (b == null) {
                     body = "capt fail";
                 } else {
@@ -135,9 +135,9 @@ public final class DebugHttp {
             } else if (path.startsWith("/tap") && "GET".equals(method)) {
                 float wx = Float.parseFloat(query(path, "x"));
                 float wy = Float.parseFloat(query(path, "y"));
-                Bitmap b = BotService.sh() != null ? BotService.sh().capture() : null;
+                Bitmap b = ctl().capture();
                 if (b == null) { reply(s, "capt fail"); return; }
-                BotService.sh().tapWork(b, wx, wy);
+                ctl().tapWork(b, wx, wy);
                 body = "tapped " + wx + "," + wy;
                 SgmLog.i("http", body);
             } else if (path.startsWith("/reload")) {
@@ -252,6 +252,31 @@ public final class DebugHttp {
     }
 
     /** PF 实时状态 (/pf/state) — WebUI 页面的数据源, 与 MonitorActivity 读的是同一份内存。 */
+    /**
+     * 调试口要用的执行通道 —— **不能只看 BotService.sh()**。
+     *
+     * <p>⚠️ 2026-10-17 实栽: {@code BotService.sh()} 只在**服务被创建过**之后才非空, 而
+     * 「装完 APK 直接开 App」/「引擎没跑」时服务根本不存在 ⇒ {@code /screencap} 与
+     * {@code /tap} 恒返回 "capt fail" (而且一条日志都不打, 因为 capture() 压根没被调用),
+     * 排查时极像"截屏坏了"。现场就是 WebUI 的实时画面一直空白。</p>
+     *
+     * <p>这里自己造一个并触发绑定 (ShizukuCtl 的绑定是幂等的, 服务起来后会复用同一个
+     * UserService 进程)。</p>
+     */
+    private static ShizukuCtl ctl() {
+        ShizukuCtl s = BotService.sh();
+        if (s != null) return s;
+        if (lazy == null) {
+            lazy = new ShizukuCtl();
+            try { ShizukuCtl.tryBind(App.inst); } catch (Throwable t) {
+                SgmLog.i("http", "懒绑定 Shizuku 失败: " + t);
+            }
+        }
+        return lazy;
+    }
+
+    private static volatile ShizukuCtl lazy;
+
     private static JSONObject pfState() {
         JSONObject o = new JSONObject();
         try {
@@ -263,6 +288,8 @@ public final class DebugHttp {
             if (f != null) {
                 o.put("scene", f.sceneText());
                 o.put("step", f.stepText());
+                /* 「读取场次」的结果 —— 打哪一场、按什么条件 (未指定时给按卡位的保守口径说明)。 */
+                o.put("arena", f.arenaName == null ? "" : f.arenaName);
                 o.put("rounds", f.roundsDone);
                 o.put("elapsed_ms", f.elapsedMs());
                 String fatal = f.fatalReason();

@@ -49,7 +49,9 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends Activity {
     private TextView status;
     private TextView feed;          // 点击反馈行 (只由 Ui.act/gate 写)
-    private Button fastBtn;         // 运行模式切换按钮 (文案随当前模式变, 每秒刷)
+    /** 三选一的模式键 (下标 = 0 长滚 / 1 快速 / 2 PF); 文案随当前模式变, 每秒刷。 */
+    private Button[] modeBtn;
+    private Button pfSetBtn;        // PF 设置页入口 (文案带当前目标场次, 每秒刷)
     private Button overlayBtn;      // 悬浮窗 启动/隐藏 (文案随窗口状态变, 每秒刷)
     private Button pfBtn;           // PF 挂机 开始/暂停 (文案随运行状态变, 每秒刷)
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -61,7 +63,18 @@ public class MainActivity extends Activity {
             }
             Paths.init(MainActivity.this);   // 授权"所有文件访问"回来后自动换根, 不必重启
             status.setText(statusText());
-            if (fastBtn != null) fastBtn.setText(fastLabel());
+            if (modeBtn != null) {
+                for (int i = 0; i < modeBtn.length; i++) {
+                    if (modeBtn[i] == null) continue;
+                    String lb = modeLabel(i);
+                    /* 只在文案真变了才 setText —— 每秒无条件 setText 会把按下的高亮刷掉。 */
+                    if (!lb.contentEquals(modeBtn[i].getText())) modeBtn[i].setText(lb);
+                }
+            }
+            if (pfSetBtn != null) {
+                String lb = pfSetLabel();
+                if (!lb.contentEquals(pfSetBtn.getText())) pfSetBtn.setText(lb);
+            }
             /* 窗口可能被系统摘掉/被悬浮条上的「结束」收掉 ⇒ 文案要跟着变。
              * ⚠️ 只在**文本真的变了**时才 setText —— 每秒无条件 setText 会让按钮一直
              *    重绘 (按下的高亮都会被刷掉, 看着像"点不动")。 */
@@ -160,8 +173,10 @@ public class MainActivity extends Activity {
          *    现在定死: **控制只有一处 = 悬浮窗**; 主页只负责把它叫出来。 */
         Ui.add(this, Ui.section(this, "挂机控制"));
         Ui.add(this, Ui.hint(this,
-                "所有开关都在悬浮窗上: 开始 / 导航 / 暂停 / 结束 / ◀ 折叠。\n"
-                + "「开始」= 跑结算循环 (暂停后会变成「继续」); 「暂停」= 停循环, 窗口留着可再开;\n"
+                "控制都在悬浮窗上, **按键随模式变** (2026-10-17 起):\n"
+                + "  PF 刷      → 开始 / 暂停 / ◀ 折叠   (先在游戏里停到目标的 hub 或编队页, 再点开始)\n"
+                + "  Events 两种 → 开始 / 监控 / 暂停 / 结束 / ◀ 折叠\n"
+                + "「开始」暂停后会变成「继续」; 「暂停」= 只停循环, 窗口留着可再开;\n"
                 + "「结束」= 退出挂机 —— 连服务与悬浮窗一起收掉。\n"
                 + "主页只做一件事 —— 把悬浮窗叫出来 (不需要先起服务)。"));
         overlayBtn = Ui.button(this, overlayLabel(), "", feed, this::toggleOverlay);
@@ -176,8 +191,10 @@ public class MainActivity extends Activity {
         Ui.add(this, Ui.hint(this,
                 "「开始 PF」= 自动 导航 → 选对手 → 编队 → 战斗 → 结算 循环连打。\n"
                 + "「就地开始」= 假定**你已经把游戏停在 PF 上**(某个场次的 hub / 编队页),\n"
-                + "    跳过起步导航直接开跑 —— ⚠️ 选场逻辑还没做, 从外面自动导航只能盲点居中那张卡;\n"
-                + "    想打哪一场就自己先停到那一场再点这个。\n"
+                + "    跳过起步导航直接开跑。\n"
+                + "⚠️ 想打**哪一场**在下面的「PF 设置」里选 (会从场次表带出能量/分数/规则),\n"
+                + "    再在 hub 上点一次「记住当前场次指纹」锁住它 —— 自动读卡名 (OCR) 还没做,\n"
+                + "    所以不能让 bot 自己认场次。\n"
                 + "开始后**悬浮窗会整个隐藏** (避免挡住游戏判定区) —— 暂停/看进度都回这个页面;\n"
                 + "暂停或结束后悬浮窗自动回来。「监控」随时可看 当前界面/场次/时长/日志。"));
         pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
@@ -187,15 +204,34 @@ public class MainActivity extends Activity {
         Ui.button(this, "WebUI 控制台 (状态 / 开始 / 实时画面 / 采集开关)", "", feed,
                 () -> startActivity(new Intent(this, WebUiActivity.class)));
 
-        /* ---------------- 运行模式 ---------------- */
-        Ui.add(this, Ui.section(this, "运行模式"));
+        /* ---------------- 运行模式 (三选一) ----------------
+         * ⚠️ 2026-10-17 用户: 「APP 里面可以切换三种模式吧 —— 日常 Events 的长滚/快速、
+         *    PF 的这个屏幕刷的模式。切到 PF 之后悬浮窗应该只有一个开始, 然后 (人自己)
+         *    切到 PF 界面再点那个开始」。
+         * 所以这里从"常规 ⇄ 快速连点"的**二态开关**改成**三选一**, 并落进 config 的
+         * app.mode (BotService.appMode 读它) —— 悬浮窗的按键表也跟着这个值变。 */
+        Ui.add(this, Ui.section(this, "运行模式 (三选一)"));
         Ui.add(this, Ui.hint(this,
-                "常规: 每帧模板匹配认结算页 —— 稳, 但一轮要等截屏 + 匹配 (~1.5s)。\n"
-                + "快速连点: 盲点结算按钮行里居中那颗。第一个界面的 CONTINUE 与第二个界面的 "
-                + "REMATCH 是**同一个点**, 所以一直点它就能 前进 / 重开, 一轮 ~0.6s。\n"
-                + "⚠️ 前提是「一直胜利 + 该页没有额外奖励按钮 (SELL ALL / HIDE STATS)」。"
-                + "弹窗检测仍然保留 (搬到了独立观察线程, 每秒一帧)。"));
-        fastBtn = Ui.button(this, fastLabel(), "", feed, this::toggleFast);
+                "Events·长滚: Event 进场 → 地图长滚找王关 → 开打 → 结算循环。\n"
+                + "    ⚠️ 进场+长滚那段还没移植完 (在 AutoJS 里), 现在只跑结算闭环, 日志会写明。\n"
+                + "Events·快速: 盲点连点结算 (一轮 ~0.6s), 适合一直赢、该页没有额外奖励按钮。\n"
+                + "PF 刷: 选对手 → 编队选人 → FIGHT → 结算, 每场重选。\n"
+                + "    ⚠️ PF 模式下**悬浮窗只剩「开始 / 暂停」**: 先在游戏里停到目标场次的 "
+                + "hub 或编队页, 再点「开始」(就地开始, 不自动导航进场)。\n"
+                + "场次条件 (打哪一场 / 能量上限 / 分数上限 / 出战规则) 在下面「PF 设置」里配。"));
+        modeBtn = new Button[3];
+        for (int i = 0; i < modeBtn.length; i++) {
+            final int k = i;
+            modeBtn[i] = Ui.button(this, modeLabel(i), "", feed, () -> setAppMode(k));
+        }
+
+        /* ---------------- PF 设置 ----------------
+         * 用户原话: 「WebUI 的那些选场次 / 能量上限等等条件应该都在 APP 里面配置才对呀」。
+         * 那一页里同时管: 目标场次 (从场次表带出条件) / 能量上限 / 分数上限 / 出战规则 /
+         * 对手选择策略 / 场次指纹。 */
+        Ui.add(this, Ui.section(this, "PF 设置"));
+        pfSetBtn = Ui.button(this, pfSetLabel(), "", feed,
+                () -> startActivity(new Intent(this, PfSettingsActivity.class)));
 
         /* ---------------- 配置 / 查看 ---------------- */
         Ui.add(this, Ui.section(this, "配置与查看"));
@@ -386,44 +422,60 @@ public class MainActivity extends Activity {
         overlayBtn.setText(overlayLabel());
     }
 
-    /** 当前是不是快速连点模式 (读的是**合并后**的配置, 不是 override 文件本身) */
-    private boolean fastOn() {
-        try {
-            Config c = BotService.cfgOr(this);
-            JSONObject all = c == null ? null : c.read();
-            JSONObject f = all == null ? null : all.optJSONObject("fast");
-            return f != null && f.optBoolean("enable", false);
-        } catch (Throwable t) {
-            return false;
-        }
+    /* ================= 运行模式 三选一 ================= */
+
+    private static final String[] MODE_KEYS = {
+            BotService.MODE_APP_EVENT_LONG, BotService.MODE_APP_EVENT_FAST, BotService.MODE_APP_PF};
+    private static final String[] MODE_NAMES = {"Events·长滚", "Events·快速", "PF 刷"};
+
+    /** 当前模式下标 (读的是**合并后**的配置, 不是 override 文件本身)。 */
+    private int appModeIdx() {
+        String m = BotService.appMode(this);
+        for (int i = 0; i < MODE_KEYS.length; i++) if (MODE_KEYS[i].equals(m)) return i;
+        return 2;
     }
 
-    private String fastLabel() {
-        return fastOn() ? "运行模式: 快速连点 ⇄ (点一下切回常规)"
-                : "运行模式: 常规 ⇄ (点一下切快速连点)";
+    private String modeLabel(int i) {
+        return (appModeIdx() == i ? "● " : "○ ") + MODE_NAMES[i] + (appModeIdx() == i ? " (当前)" : "");
     }
 
-    /** 一键在「常规 / 快速连点」之间切 —— 写 override 单键 + 热重载 */
-    private void toggleFast() {
-        boolean on = fastOn();
-        String err = ConfigActivity.setOverride(this, "fast.enable", !on);
+    /** 切模式: 写 override (app.mode + 随模式联动的 fast.enable) → 热重载 → 悬浮窗按键表跟着换。 */
+    private void setAppMode(int i) {
+        if (appModeIdx() == i) return;
+        /* ⚠️ 顺手把 fast.enable 一起写: "Events·快速"这个模式**就是** fast 开关 ——
+         *    留两套状态给同一个意思是本项目反复栽过的坑 (两处判据各自为政)。
+         *    之前主页那颗"常规 ⇄ 快速连点"独立开关就是被这个模式键取代的。 */
+        java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
+        kv.put("app.mode", MODE_KEYS[i]);
+        if (BotService.MODE_APP_EVENT_FAST.equals(MODE_KEYS[i])) kv.put("fast.enable", true);
+        else if (BotService.MODE_APP_EVENT_LONG.equals(MODE_KEYS[i])) kv.put("fast.enable", false);
+        String err = ConfigActivity.setOverrides(this, kv);
         if (err != null) {
             feed.setTextColor(Ui.ERR);
             feed.setText("✗ 切换失败: " + err);
             return;
         }
-        /* 配置在循环开跑时读一次 ⇒ 改了要重跑才生效 —— 说清楚, 别让用户以为点了没反应。
-         * ⚠️ 2026-10-11 主页的运行键删光之后, 这里的指引必须指向**悬浮窗**上那两颗
-         *    「暂停」/「开始(继续)」—— 文案再写"点主页的停止引擎"就是在指一个不存在的按钮,
-         *    用户按着找一圈只会觉得"点了没反应"。
-         * ⚠️ 同日「停止」改名「暂停」, 于是这句里的键名也必须跟着改 —— 否则用户按着
-         *    "停止"去找, 看到的却是"暂停", 又是一次"点了没反应"。 */
+        /* 悬浮窗的按键表是**建窗时**按模式决定的 ⇒ 换了模式要重建才看得到变化
+         * (PF 模式只剩「开始/暂停」这件事就发生在这里)。位置由 OverlayCtl 存盘恢复。 */
+        if (OverlayCtl.isShown()) {
+            OverlayCtl.hide();
+            OverlayCtl.show(this);
+        }
         feed.setTextColor(Ui.OK);
-        feed.setText((on ? "✓ 已切回常规模式" : "✓ 已切到快速连点模式")
+        feed.setText("✓ 已切到「" + MODE_NAMES[i] + "」"
                 + (BotService.isRunning()
                         ? " — 引擎在跑: 到悬浮窗上点「暂停」再点「继续」才生效"
-                        : " — 下次在悬浮窗上点「开始」就用新模式"));
-        if (fastBtn != null) fastBtn.setText(fastLabel());
+                        : " — 下次点悬浮窗的「开始」就用它"));
+        if (modeBtn != null) for (int k = 0; k < modeBtn.length; k++) {
+            if (modeBtn[k] != null) modeBtn[k].setText(modeLabel(k));
+        }
+    }
+
+    /** PF 设置按钮文案: 带上当前目标场次, 不必点进去才知道现在打哪一场。 */
+    private String pfSetLabel() {
+        String a = PfSettingsActivity.targetArena(this);
+        return a == null || a.isEmpty() ? "PF 设置 (场次 / 能量 / 分数 / 规则) ⇄ 当前: 未指定"
+                : "PF 设置 (场次 / 能量 / 分数 / 规则) ⇄ 当前: " + a;
     }
 
     private void connectShizuku() {
@@ -454,7 +506,10 @@ public class MainActivity extends Activity {
                 : "未显示").append('\n');
         sb.append("所有文件访问 ").append(Paths.legacy() ? "已授" : "未授 (退私有目录)").append('\n');
         sb.append("引擎         ").append(engineText()).append('\n');
-        sb.append("运行模式     ").append(fastOn() ? "快速连点 (fast)" : "常规").append('\n');
+        sb.append("运行模式     ").append(MODE_NAMES[appModeIdx()]).append('\n');
+        String tgtArena = PfSettingsActivity.targetArena(this);
+        sb.append("PF 目标场次  ").append(tgtArena == null ? "未指定 (按卡位保守口径)" : tgtArena)
+                .append(PfArena.targetFile().exists() ? " · 已锁指纹" : " · 无指纹").append('\n');
         Store st = Store.load();
         sb.append("战绩         ").append(st.text(0))
                 .append(" · 累计 ").append(st.totalRounds()).append(" 场 / ")

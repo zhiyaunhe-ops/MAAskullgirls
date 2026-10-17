@@ -31,6 +31,16 @@ public class CtlReceiver extends BroadcastReceiver {
             case "start":
                 BotService.start(ctx, BotService.MODE_SETTLE);
                 break;
+            /* 按 App 内选的「模式」(config app.mode) 启动 —— 悬浮窗 PF 模式只剩的那颗
+             * 「开始」就是发它。见 BotService.MODE_APP_* 。 */
+            case "start_mode": {
+                String am = BotService.appMode(ctx);
+                BotService.start(ctx, BotService.MODE_APP_PF.equals(am)
+                        ? BotService.MODE_NAV_HERE
+                        : BotService.MODE_APP_EVENT_LONG.equals(am)
+                                ? BotService.MODE_EVENT_LONG : BotService.MODE_EVENT_FAST);
+                break;
+            }
             case "stop":
                 BotService.stop(ctx);
                 break;

@@ -102,14 +102,22 @@ public final class OverlayBar {
     public void show() {
         if (root != null) return;
 
-        /* ---- 面板: 按键行 + 统计 ---- */
+        /* ---- 面板: 按键行 + 统计 ----
+         * ⚠️ 2026-10-17 用户: 「切换到 PF 刷的模式之后, 悬浮窗应该只有一个开始,
+         *    然后 (人自己) 切换到 PF 界面, 再点那个开始」。
+         *    所以按键表**按模式变** (BotService.MODE_APP_*) —— 别再摆一堆用不上的键让人犹豫:
+         *      pf        : 开始 / 暂停            (开始 = 就地开始, 不导航; 见 MODE_NAV_HERE)
+         *      event_*   : 开始 / 暂停 / 监控 / 结束
+         *    「暂停」在两种模式下都保留 —— 它是唯一的**停机手段**, 少了它跑起来就没法收
+         *    (「结束」会连服务与悬浮窗一起收掉, 比"暂停"重得多)。 */
+        String appMode = BotService.appMode(ctx);
+        boolean pfMode = BotService.MODE_APP_PF.equals(appMode);
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        btnStart = addBtn(row, startText, "start");     // 暂停后变「继续」, 见 refreshStartLabel
-        addBtn(row, "导航", "start_nav");
-        addBtn(row, "暂停", "stop");                    // 只停循环, 窗口留着可续 (动作名仍是 stop)
-        addBtn(row, "监控", "monitor");                 // 长跑看进度: 当前界面/场次/时长/日志
-        addBtn(row, "结束", "end");                     // 连服务/窗口一起收 = 退出挂机
+        btnStart = addBtn(row, startText, "start_mode");   // 暂停后变「继续」, 见 refreshStartLabel
+        if (!pfMode) addBtn(row, "监控", "monitor");        // 长跑看进度: 当前界面/场次/时长/日志
+        addBtn(row, "暂停", "stop");                        // 只停循环, 窗口留着可续 (动作名仍是 stop)
+        if (!pfMode) addBtn(row, "结束", "end");            // 连服务/窗口一起收 = 退出挂机
         Button fold = new Button(ctx);
         fold.setText("◀");
         fold.setTextSize(12f);
@@ -183,7 +191,10 @@ public final class OverlayBar {
         b.setOnClickListener(v -> {
             /* 悬浮条上点按钮也要有反馈 —— 之前点了没动静让人以为是按钮坏了 */
             String why = Ui.blockReason(null, Ui.NEED_SHIZUKU_SERVER);
-            if ("start".equals(act) || "start_nav".equals(act)) {
+            /* ⚠️ 每个"开始"类键都要前置检查 —— 新加的 start_mode 别忘了挂上, 否则它会
+             *    绕过 Shizuku 检查直接起循环, 再在截屏那一步失败 (表现是"点了没反应")。 */
+            if ("start".equals(act) || "start_nav".equals(act) || "start_here".equals(act)
+                    || "start_mode".equals(act)) {
                 if (why != null) {
                     setText(why);
                     SgmLog.i("overlay", "开始被拦: " + why);

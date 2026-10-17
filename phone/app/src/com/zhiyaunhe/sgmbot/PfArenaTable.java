@@ -108,6 +108,40 @@ final class PfArenaTable {
         return sb.toString();
     }
 
+    /**
+     * 全部场次的**显示名**(按名字排序) —— 给 App 内「PF 设置」页列出来选。
+     *
+     * <p>⚠️⚠️ 2026-10-17: 这张表以前**只 load 不查询**(全项目只有 PfFlow 里一句 load),
+     *    也就是说 22 个场次的条件是死数据、App 里没有任何地方能选它 —— 用户的原话是
+     *    「WebUI 的那些选场次什么能量上限等等条件应该都在 APP 里面配置才对呀,
+     *     你现在完全没有地方配置, 也没有读取场次的那个逻辑」。本方法与
+     *    {@link #spec(String)} 就是给那个设置页用的两个口子。</p>
+     */
+    static java.util.List<String> names() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (JSONObject e : TABLE.values()) {
+            if (e == null) continue;
+            String n = e.optString("name", "");
+            if (!n.isEmpty()) out.add(n);
+        }
+        for (int i = 1; i < out.size(); i++) {                 // 插入排序: 表只有 20 来条, 不值得引排序器
+            String v = out.get(i);
+            int j = i - 1;
+            while (j >= 0 && out.get(j).compareToIgnoreCase(v) > 0) { out.set(j + 1, out.get(j)); j--; }
+            out.set(j + 1, v);
+        }
+        return out;
+    }
+
+    /** 按显示名查场次 (查不到返回 null)。 */
+    static Spec spec(String displayName) {
+        if (displayName == null) return null;
+        JSONObject e = TABLE.get(key(displayName));
+        if (e == null) return null;
+        String n = e.optString("name", displayName);
+        return Spec.of(e, n, e.optBoolean("monthly"));
+    }
+
     /** 一个场次的完整定义 + 取值条件。 */
     static final class Spec {
         final String name;      // hub 上读到的原名 (可能是 null)
