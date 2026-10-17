@@ -453,12 +453,21 @@ public final class OverlayBar {
     /** 建浮标窗口 (只在第一次要显示时跑)。 */
     private void buildFab() {
         final int dp = (int) (52 * ctx.getResources().getDisplayMetrics().density);
-        Button b = new Button(ctx);
+        final Button b = new Button(ctx);
         b.setText("暂停");
         b.setTextSize(9f);
         b.setTextColor(0xFFFFFFFF);
         b.setPadding(0, 0, 0, 0);
         b.setAllCaps(false);
+        /* ⚠️⚠️ 2026-10-17 实栽 (用户: 「我暂停还是没反应, 为啥你的悬浮窗的按钮就有反应？」):
+         * Button **默认 clickable=true** ⇒ 它自己把 DOWN/UP 全消费掉 (只有按下高亮,
+         * 没有任何动作), 父容器 fabRoot 的 OnTouchListener **一个事件都收不到** ——
+         * 而点击判定 (tapPauseFab) 就写在那边。浮标里这个 Button 又铺满整个窗口,
+         * 连一条空白区都没给父容器 ⇒ 表现为"点了完全没反应"。
+         * 主窗的按钮有反应是因为它们带 setOnClickListener, 走 Button 自己的标准点击路径。
+         * 修法: 关掉它的 clickable, 把事件让给父容器的 dragListener (它同时管点击和拖动)。 */
+        b.setClickable(false);
+        b.setFocusable(false);
         /* 圆角红底 —— 用代码画, 不引 drawable 资源 (手工构建没有 res 合并) */
         android.graphics.drawable.GradientDrawable bg =
                 new android.graphics.drawable.GradientDrawable();
@@ -489,7 +498,10 @@ public final class OverlayBar {
             fabLp.x = size.w() - dp - 12;
             fabLp.y = size.h() - dp - 12;
         }
-        f.setOnTouchListener(dragListener(fabLp, f, CLICK_PAUSE));
+        /* ⚠️ 只挂 Button 自己身上 (不重复挂 fabRoot): Button 的 OnTouchListener 一定会被调用
+         * (与 clickable 无关), 而 fabRoot 那条依赖"事件从子 view 冒泡上来" —— 两条都挂会
+         * 让同一次点击触发两遍 tapPauseFab (第二遍被防连点拦下, 但会打出误导性的日志)。 */
+        b.setOnTouchListener(dragListener(fabLp, f, CLICK_PAUSE));
         clampPos(fabLp, f);
     }
 
