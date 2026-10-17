@@ -190,7 +190,7 @@ final class PfTeam {
      * 找最大红色连通域, 并要求<b>角部约束</b> (右缘接近窗右、顶部接近窗顶), 以排除卡内
      * 红色元素的头像/装饰。
      */
-    int[] findFireBadge(Vision.Frame f, int[] search) {
+    static int[] findFireBadge(Vision.Frame f, int[] search) {
         int sx = search[0], sy = search[1], sw = search[2], sh2 = search[3];
         int x1 = Math.min(f.w, sx + sw), y1 = Math.min(f.h, sy + sh2);
         int w = x1 - sx, h = y1 - sy;
@@ -231,9 +231,16 @@ final class PfTeam {
                     }
                 }
             }
-            if (area < 400 || area <= bestArea) continue;
+            /* ⚠️⚠️ 形状约束 (2026-10-17 实栽): 这里原来只有面积 + "右缘/顶部"两条, 而右上角的
+             * **CONTINUE 按钮**是橙色 (r-g=140 也算"红")、又贴着窗右与顶部 ⇒ 每页都被当成
+             * "卡1 有火框" (日志里「对手卡1: 火框=true」几乎页页成立), 且它的 bbox (66x45) 还会被
+             * 当成徽章去取数字带 ⇒ 卡 1 倍率永远读出个 0.2 的垃圾分。
+             * 徽章实测 39~45 宽 / 37~57 高; CONTINUE 在带区里被裁成 66 宽 ⇒ 宽度上限 55 就够分开。 */
+            if (area < 600 || area <= bestArea) continue;
+            int bw = maxX - minX + 1, bh = maxY - minY + 1;
+            if (bw < 24 || bw > 55 || bh < 18 || bh > 70) continue;
             // 角部约束: 右缘接近窗右, 顶部接近窗顶
-            if (sx + maxX + 1 < x1 - 60 || sy + minY > sy + 60) continue;
+            if (sx + maxX + 1 < x1 - 60 || minY > 60) continue;
             bestArea = area;
             bx0 = sx + minX;
             by0 = sy + minY;
@@ -342,21 +349,59 @@ final class PfTeam {
      * 倍率模板 ↔ 数值。
      *
      * <p>⚠️ 倍率取值是小集合 (x1 / x1.5 / x2 / x2.5 / x3 …), 字与底色都固定 ⇒
-     * **不需要 OCR, 整块模板匹配就够**。缺哪个模板就自动跳过那一档 (TplStore.get 返回 null),
+     * **不需要 OCR, 模板匹配就够**。缺哪个模板就自动跳过那一档 (TplStore.get 返回 null),
      * 所以这张表可以按需扩充, 不会因为缺样本而报错。
      *
-     * <p>怎么补模板: 在选对手页截一帧, 从卡右下角的红火苗徽章裁一块
-     * (work 约 60x66), 存成 {@code assets/templates/pf/mult_<档位>.png} 即可。
+     * <p>⚠️⚠️ 2026-10-17 换成「**数字带**」口径 (见 {@link #bandWindow}), 之前是整块 60x66
+     * 徽章模板。换的理由 (真机 206 页 dump 实证):
+     * <ul>
+     *   <li>整块模板里带了**对手卡面美术** —— 每个对手都不一样 ⇒ 同档位在同一卡位会分裂成
+     *       多个簇, 换对手就掉到 0.5~0.65 (当初"3 张卡里 2 张读不出"的真因)。</li>
+     *   <li>三张卡是**透视扇形**, 卡 1/卡 3 的徽章比卡 2 小约 13% ⇒ 整块模板还得按卡位各出一套。</li>
+     * </ul>
+     * 数字带只含「白字 + 红底」, 背景被构造性排除; 再按**白字高度**归一化尺寸 ⇒ 透视与
+     * 入场动画缩放一起消掉, **每档一套模板**就够 (离线实测跨卡位同档位能聚到同一簇)。
      */
     private static final String[] MULT_TPL = {
             "pf/mult_1", "pf/mult_15", "pf/mult_2", "pf/mult_25", "pf/mult_3",
             "pf/mult_35", "pf/mult_4", "pf/mult_5"};
     /* ⚠️ 3.5 是真机实见档位 (2026-10-17 采集时遇到 x3.5 徽章), PC 的候选集没有它;
-     * x1/x4/x5 的模板还没采到, 缺哪个自动跳过那档。 */
+     * x1/x4/x5 的完整徽章模板还没采到, 缺哪个自动跳过那档。 */
     private static final double[] MULT_VAL = {1, 1.5, 2, 2.5, 3, 3.5, 4, 5};
 
-    /** 倍率模板命中阈值 (同一块裁剪自匹配接近 1.0; 不同档位的字差别很大)。 */
-    private static final double TH_MULT = 0.70;
+    /* ---- 数字带口径 (⚠️ 与 tools/pf_mult_band.py 完全一致, 改一边必须改另一边) ---- */
+    /** 窗口尺寸 = 白字 bbox × 该系数 (留出红底上下文, 让 "x1" 这种窄档也有参照)。 */
+    private static final double BAND_WIN = 1.9;
+    /** 归一化后的窗口尺寸 (Python 侧 cv2.resize 到同一个尺寸)。 */
+    private static final int BAND_W = 48, BAND_H = 27;
+    /** 四周边缘复制 padding —— 给匹配留 ±3px 平移容错 (等价 cv2 的 BORDER_REPLICATE)。 */
+    private static final int BAND_PAD = 3;
+
+    /**
+     * 数字带模板表。同档位带有多个变体 (b 后缀) —— 同一档位在不同卡位/不同对手美术下
+     * 会有轻微差异, 分别出模板再**取该档最高分**, 比硬凑一张"平均图"更稳
+     * (离线实测: 单变体时 x1.5 在卡 2 上只到 0.81, 补了变体后回到 0.95+)。
+     */
+    private static final String[] BAND_TPL = {
+            "pf/band_15", "pf/band_15b", "pf/band_15c", "pf/band_15d",
+            "pf/band_2", "pf/band_25", "pf/band_25b",
+            "pf/band_3", "pf/band_3b", "pf/band_35", "pf/band_35b", "pf/band_4", "pf/band_45"};
+    private static final double[] BAND_VAL = {
+            1.5, 1.5, 1.5, 1.5, 2, 2.5, 2.5, 3, 3, 3.5, 3.5, 4, 4.5};
+
+    /**
+     * 倍率命中阈值 —— **0.90 不是拍的**, 是按真机 206 页样本的分布切的:
+     * 正确档实测 0.931~0.977 (中位 0.96), 而**错档最高只到 0.874**
+     * ("x1.5" 与 "x3.5" 共用后两位字形, 交叉分集中在 0.83~0.874)。
+     * ⚠️ 反过来说: 0.90 这条线同时也挡掉了"我们还缺模板的档位"(x1/x5) ——
+     * 那些档位现在会被判不可读并退化, 这是**故意**的 (宁可漏读不可错读)。
+     */
+    private static final double TH_MULT = 0.90;
+    /** 第二道门: 最高分要甩开次高 (正确档的领先实测 0.11~0.22)。 */
+    private static final double MARGIN_MULT = 0.05;
+    /** **高置信豁免**: 绝对分够高时不再强求领先 —— "x1.5 vs x3.5" 这类同尾字形
+     *  会给出薄领先 (实测 0.940 vs 0.874 = 0.066), 但 0.94 的绝对分已经足够说明问题。 */
+    private static final double TH_STRONG = 0.93;
 
     /** 一轮对手页读数: 逐卡测火框 + 倍率 (临时采样 hook 挂在这里)。fire[i] 带回各卡火框状态。 */
     private double[] readPass(Vision.Frame work, boolean[] fire) {
@@ -364,28 +409,77 @@ final class PfTeam {
         PfDump.oppPage(work);
         double[] mults = new double[3];
         for (int i = 0; i < 3; i++) {
-            fire[i] = findFireBadge(work, Pf.FIRE_SEARCH[i]) != null;
-            mults[i] = readMult(work, Pf.FIRE_SEARCH[i]);
+            /* ⚠️ 火焰框只算一次 (flood fill 别跑两遍) —— readMult 要拿它取数字带。 */
+            int[] fb = findFireBadge(work, Pf.FIRE_SEARCH[i]);
+            fire[i] = fb != null;
+            mults[i] = readMult(work, Pf.FIRE_SEARCH[i], fb);
         }
         return mults;
     }
 
     /**
-     * 读倍率 —— 在火框 ROI 里拿各档模板比一遍, 取最高的那档。
+     * 读倍率 —— 先按火焰框取出「数字带」, 再拿各档模板比一遍, 取最高的那档。
      *
      * <p>⚠️⚠️ {@code findScored} 返回 **{x, y, best}**, 分数是 **r[2]** ——
      * 曾经在 PfArena 里写成 r[0] 拿到 x 坐标当分数, 害得判据恒真 (2026-10-16 实栽)。
      */
-    private double readMult(Vision.Frame f, int[] roi) {
-        double b1 = 0, b2 = 0;                 // 最高 / 次高
+    private double readMult(Vision.Frame f, int[] roi, int[] fb) {
+        /* 没有火焰 = 这张卡没倍率徽章 ⇒ 直接判不可读。
+         * ⚠️ 别在这里走老口径兜底: 整块模板扫描是要成本的 (每页 3 张卡 × 8 模板 × 全 ROI),
+         *    而"没徽章"是最常见的情况 (206 页样本里大半卡位没有), 兜底只会白烧时间 + 刷
+         *    「倍率(兜底)不可读」这种误导性日志。 */
+        if (fb == null) return Double.NaN;
+        Vision.Frame band = bandWindow(f, fb);
+        if (band == null) {
+            /* 有火焰但取不出数字带 (白字太小 —— 入场动画帧糊掉) ⇒ 老口径兜底:
+             * 整块徽章模板放在 ROI 里搜, 比直接返回 NaN 多一次机会。 */
+            return readMultLegacy(f, roi);
+        }
+        Vision.Frame padded = pad(band, BAND_PAD);
+
+        /* 同档位多变体: 先按"档位"归并取最高分, 再跨档比 —— 否则同名档位的两个变体会
+         * 互相挤掉 (b1/b2 变成"x1.5 的两个变体", 领先幅度就永远过不了门)。 */
+        java.util.LinkedHashMap<Double, Double> byTier = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < BAND_TPL.length; i++) {
+            Vision.Frame t = tpls.get(BAND_TPL[i]);
+            if (t == null) continue;               // 这一档还没模板, 跳过
+            /* ⚠️ 别传 0.0 指望"阈值 0 自然拿最高分" —— findScored 是命中早退, th=0 会
+             * 返回 ROI 里**第一个非负补丁** (实测 0.0280 vs 真峰值 0.9311, 2026-10-17)。 */
+            double[] r = Vision.findScored(padded, t, null, Vision.SCAN_ALL, -1, 0, 1);
+            if (r == null) continue;
+            double s = r[2];
+            Double prev = byTier.get(BAND_VAL[i]);
+            if (prev == null || s > prev) byTier.put(BAND_VAL[i], s);
+        }
+        if (byTier.isEmpty()) return readMultLegacy(f, roi);
+
+        double b1 = 0, b2 = 0, val = Double.NaN;   // 最高 / 次高 / 对应档位
+        for (java.util.Map.Entry<Double, Double> e : byTier.entrySet()) {
+            double s = e.getValue();
+            if (s > b1) { b2 = b1; b1 = s; val = e.getKey(); }
+            else if (s > b2) { b2 = s; }
+        }
+        /* ⚠️⚠️ 两道门: 阈值 + **领先幅度**。数字带口径下同档位自匹配中位 0.958, 异档最高
+         * 0.827 (离线 163 样本) ⇒ 0.70 + 领先 0.08 落在空档里。留这道门的理由仍是防
+         * **入场动画帧**: 徽章缩水时相邻档位的交叉分会升高, 宁可判不可读也不选错档。 */
+        boolean ok = b1 >= TH_STRONG || (b1 >= TH_MULT && b1 - b2 >= MARGIN_MULT);
+        if (!ok) {
+            flow.log(String.format("倍率不可读: 最高 x%s=%.3f 次高=%.3f 领先=%.3f"
+                    + " (门: ≥%.2f 且领先 ≥%.2f, 或 ≥%.2f 直接采纳)",
+                    fmt(val), b1, b2, b1 - b2, TH_MULT, MARGIN_MULT, TH_STRONG));
+            return Double.NaN;
+        }
+        return val;
+    }
+
+    /** 老口径 (整块徽章模板) —— 只在数字带取不出来时兜底。 */
+    private double readMultLegacy(Vision.Frame f, int[] roi) {
+        double b1 = 0, b2 = 0;
         String bestName = null;
         double val = Double.NaN;
         for (int i = 0; i < MULT_TPL.length; i++) {
             Vision.Frame t = tpls.get(MULT_TPL[i]);
-            if (t == null) continue;               // 这一档还没模板, 跳过
-            /* ⚠️ 别传 0.0 指望"阈值 0 自然拿最高分" —— findScored 是命中早退, th=0 会
-             * 返回 ROI 里**第一个非负补丁** (实测 0.0280 vs 真峰值 0.9311, 2026-10-17)。
-             * 要 peak 必须 SCAN_ALL; 数字笔画高频, 再配 step=1 免粗网格漂开。 */
+            if (t == null) continue;
             double[] r = Vision.findScored(f, t, roi, Vision.SCAN_ALL, -1, 0, 1);
             if (r == null) continue;
             double s = r[2];
@@ -394,20 +488,72 @@ final class PfTeam {
         }
         /* ⚠️ 别把"没模板"和"分数不够"混成一句"不可读" —— 2026-10-17 实栽:
          * 离线 cv2 对同一帧打分 0.93, App 内却恒 NaN, 两种原因的修法完全不同。 */
-        /* ⚠️⚠️ 两道门: 阈值 + **领先幅度**。选对手页有入场动画 (卡片 ~0.9 倍飞入),
-         * 动画中途帧的徽章小一圈, 相邻档位交叉分能到 0.75+ (实测 x2.5 徽章被
-         * mult_35 以 0.756 抢走最高, 而 mult_25 只有 0.643) —— 单看最高分会**错读档位**。
-         * 领先不足 0.08 一律判不可读 (退化按火框/首卡选), 宁可少赚不可选错。 */
         if (b1 < TH_MULT || b1 - b2 < MARGIN_MULT) {
-            flow.log(String.format("倍率不可读: 最高 %s=%.3f 次高=%.3f (门: ≥%.2f 且领先 ≥%.2f)",
-                    bestName == null ? "无模板" : bestName, b1, b2, TH_MULT, MARGIN_MULT));
+            flow.log(String.format("倍率(兜底)不可读: 最高 %s=%.3f 次高=%.3f",
+                    bestName == null ? "无模板" : bestName, b1, b2));
             return Double.NaN;
         }
         return val;
     }
 
-    /** 倍率判档的第二道门: 最高分必须甩开次高这么多, 否则视为不可辨 (防动画帧错读档位)。 */
-    private static final double MARGIN_MULT = 0.08;
+    /**
+     * 从火焰框里取出**归一化的数字带** —— 与 {@code tools/pf_mult_band.py} 同一口径。
+     *
+     * <p>步骤: ① 火焰 bbox 内找**白字 bbox** (r,g,b 都 >150) ② 以字高为尺度, 开一个
+     * {@code 1.9×字宽 × 1.9×字高} 的窗口居中裁出来 ③ 缩放到 48x27。
+     * 这样卡位透视 (±13%)、入场动画缩放、以及各档位文字宽度差异全部归一化。</p>
+     *
+     * @return 归一化后的窗口; 字太小/取不到时返回 null (调用方走老口径兜底)
+     */
+    static Vision.Frame bandWindow(Vision.Frame f, int[] fb) {
+        int x0 = Math.max(0, fb[0]), y0 = Math.max(0, fb[1]);
+        int x1 = Math.min(f.w, fb[2]), y1 = Math.min(f.h, fb[3]);
+        if (x1 - x0 < 8 || y1 - y0 < 8) return null;
+        int mnx = Integer.MAX_VALUE, mny = Integer.MAX_VALUE, mxx = -1, mxy = -1;
+        for (int y = y0; y < y1; y++) {
+            int row = y * f.w;
+            for (int x = x0; x < x1; x++) {
+                int p = f.px[row + x];
+                int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+                if (r > 150 && g > 150 && b > 150) {          // 白字
+                    if (x < mnx) mnx = x;
+                    if (x > mxx) mxx = x;
+                    if (y < mny) mny = y;
+                    if (y > mxy) mxy = y;
+                }
+            }
+        }
+        if (mxx < 0) return null;
+        int tw = mxx - mnx + 1, th = mxy - mny + 1;
+        if (tw < 8 || th < 8) return null;      // 不成比例 (大概把边框认成字了)
+        /* 窗口: 以字 bbox 为中心, 尺寸 = 字宽/字高 × BAND_WIN, 夹到帧内后缩放到 48x27 */
+        int cw = Math.max(8, (int) Math.round(tw * BAND_WIN));
+        int ch = Math.max(8, (int) Math.round(th * BAND_WIN));
+        int cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2;
+        int wx0 = Math.max(0, cx - cw / 2), wy0 = Math.max(0, cy - ch / 2);
+        int wx1 = Math.min(f.w, wx0 + cw), wy1 = Math.min(f.h, wy0 + ch);
+        int ww = wx1 - wx0, wh = wy1 - wy0;
+        if (ww < 8 || wh < 8) return null;
+        int[] px = new int[ww * wh];
+        for (int y = 0; y < wh; y++)
+            System.arraycopy(f.px, (wy0 + y) * f.w + wx0, px, y * ww, ww);
+        Vision.Frame crop = new Vision.Frame(px, ww, wh);
+        return crop.scaleXY(BAND_W / (double) ww, BAND_H / (double) wh);
+    }
+
+    /** 四周边缘复制 padding (等价 cv2.copyMakeBorder BORDER_REPLICATE) —— 给匹配留平移容错。 */
+    static Vision.Frame pad(Vision.Frame f, int n) {
+        int w = f.w + n * 2, h = f.h + n * 2;
+        int[] px = new int[w * h];
+        for (int y = 0; y < h; y++) {
+            int sy = Math.min(f.h - 1, Math.max(0, y - n));
+            for (int x = 0; x < w; x++) {
+                int sx = Math.min(f.w - 1, Math.max(0, x - n));
+                px[y * w + x] = f.px[sy * f.w + sx];
+            }
+        }
+        return new Vision.Frame(px, w, h);
+    }
 
     /** TODO(ocr): 火框内倍率 ('x1.5'/'X2')。读不到返回 NaN。 */
     /** TODO(ocr): 战力 (卡左上数字, '28.1k'/'9,713')。读不到返回 NaN (仍按 PC 的二级排序兜底)。 */
