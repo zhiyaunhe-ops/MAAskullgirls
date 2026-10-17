@@ -78,24 +78,27 @@ public final class OverlayBar {
         this.size = size != null ? size : defaultSize(ctx);
     }
 
-    /** 默认屏幕尺寸 — 用 WindowManager 的显示指标 (不依赖任何 Service 方法) */
+    /**
+     * 默认屏幕尺寸 — {@code getRealSize} (不是 getMetrics)。
+     *
+     * <p>⚠️⚠️ 2026-10-17 实栽 (用户: 「横屏的时候有问题, 不在边角」): getMetrics 返回的是
+     * **应用可用区** (扣除状态栏/导航条), 且**在旋转后不一定跟着转** —— 竖屏时创建的悬浮窗,
+     * 拿到横屏 display 上会算出竖屏尺寸 ⇒ 右下角坐标直接飞出屏幕, 或者 clamp 到一个
+     * 莫名其妙的位置 (用户看到的就是"不在边角")。
+     * getRealSize 返回**当前旋转下的真实显示尺寸** (不含窗口装饰扣除), 横竖屏都对。 */
     private static Size defaultSize(final Context c) {
         return new Size() {
-            @Override public int w() {
+            private void real(android.graphics.Point p) {
                 try {
-                    android.util.DisplayMetrics m = new android.util.DisplayMetrics();
                     ((WindowManager) c.getSystemService(Context.WINDOW_SERVICE))
-                            .getDefaultDisplay().getMetrics(m);
-                    return m.widthPixels;
-                } catch (Throwable t) { return 1080; }
+                            .getDefaultDisplay().getRealSize(p);
+                } catch (Throwable t) { p.set(1080, 2340); }
+            }
+            @Override public int w() {
+                android.graphics.Point p = new android.graphics.Point(); real(p); return p.x;
             }
             @Override public int h() {
-                try {
-                    android.util.DisplayMetrics m = new android.util.DisplayMetrics();
-                    ((WindowManager) c.getSystemService(Context.WINDOW_SERVICE))
-                            .getDefaultDisplay().getMetrics(m);
-                    return m.heightPixels;
-                } catch (Throwable t) { return 2340; }
+                android.graphics.Point p = new android.graphics.Point(); real(p); return p.y;
             }
         };
     }
@@ -259,7 +262,10 @@ public final class OverlayBar {
                     return true;
                 case MotionEvent.ACTION_MOVE: {
                     int nx = (int) e.getRawX() - down[0], ny = (int) e.getRawY() - down[1];
-                    if (Math.abs(nx - targetLp.x) + Math.abs(ny - targetLp.y) > 4) moved[0] = 1;
+                    /* ⚠️ 阈值 12 不是 4 (2026-10-17 用户: 「点不了」): 4px 时手指微抖就被
+                     * 判成"拖动", 松手不触发点击 —— 52dp 的小浮标上极易发生, 表现为
+                     * "点了没反应"。12px 仍远小于"真的想拖"的幅度 (拖动通常 >30px)。 */
+                    if (Math.abs(nx - targetLp.x) + Math.abs(ny - targetLp.y) > 12) moved[0] = 1;
                     targetLp.x = nx; targetLp.y = ny;
                     try { wm.updateViewLayout(targetRoot, targetLp); } catch (Exception ignored) { }
                     return true;
@@ -401,13 +407,18 @@ public final class OverlayBar {
                 try {
                     if (fabRoot == null) buildFab();
                     if (fabRoot == null) return;          // 建失败 (极少见: 权限被收回)
+                    /* ⚠️ 每次显示都按**当前**屏幕尺寸重算默认位置 (用户没拖过时):
+                     *   竖屏建的窗拿到横屏 display 上, 旧坐标会飞出屏幕 —— 2026-10-17
+                     *   用户报「横屏的时候有问题, 不在边角」就是这么来的。 */
+                    refreshFabPos();
                     wm.addView(fabRoot, fabLp);
                     /* 兜底 clamp: buildFab 时 root 还没布局 (getWidth()=0) ⇒ 那次 clamp 是
                      * 空转; 这里尺寸有了, 再夹一次保证浮标一定在屏内 (横竖屏/metrics 取错
                      * 值时不会飞到屏幕外面去)。 */
                     clampPos(fabLp, fabRoot);
                     try { wm.updateViewLayout(fabRoot, fabLp); } catch (Exception ignored) { }
-                    SgmLog.i("overlay", "暂停浮标已挂载 @(" + fabLp.x + "," + fabLp.y + ")");
+                    SgmLog.i("overlay", "暂停浮标已挂载 @(" + fabLp.x + "," + fabLp.y + ") 屏幕 "
+                            + size.w() + "x" + size.h());
                 } catch (Throwable t) {
                     fabShown = false;
                     SgmLog.i("overlay", "暂停浮标挂载失败 (不影响主链): " + t);
@@ -424,6 +435,19 @@ public final class OverlayBar {
     private void main(Runnable r) {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) { r.run(); return; }
         new android.os.Handler(android.os.Looper.getMainLooper()).post(r);
+    }
+
+    /**
+     * 浮标默认位置 = 右下角, 但**离底留一条手势带** (MIUI 全面屏手势)。
+     * ⚠️ 2026-10-17 用户: 「不仅点不了」—— 贴死底边时手指按在系统手势区里,
+     *   轻触会被"上滑回桌面"吃掉, 表现为"点了没反应"。留 56dp 就落在可点区。
+     * 用户拖过的位置 (savedFabPos) 不动; 只有从没拖过才重算。 */
+    private void refreshFabPos() {
+        if (OverlayCtl.savedFabPos() != null) return;
+        int dp = (int) (52 * ctx.getResources().getDisplayMetrics().density);
+        int pad = (int) (56 * ctx.getResources().getDisplayMetrics().density);
+        fabLp.x = size.w() - dp - (int) (12 * ctx.getResources().getDisplayMetrics().density);
+        fabLp.y = size.h() - dp - pad;
     }
 
     /** 建浮标窗口 (只在第一次要显示时跑)。 */
