@@ -1,879 +1,889 @@
 {
- "meta": {
-  "config_version": 3,
-  "bundle_version": "0",
-  "note": "bundle_version 由 GitHub 更新包写入 (Update.applyBundle); 本地手改无效"
- },
- "thresholds": {
-  "min_sim": 0.72,
-  "ev_play": 0.78,
-  "target": 0.75,
-  "spd": 0.95,
-  "x": 0.8,
-  "modal": 0.9,
-  "srv": 0.75,
-  "hall": 0.72
- },
- "timing": {
-  "battle_ms": 800,
-  "result_ms": 350,
-  "tap_delay_ms": 1200,
-  "stall_sec": 30,
-  "battle_stall_sec": 180,
-  "launch_timeout_s": 300,
-  "hub_timeout_s": 120
- },
- "scan": {
-  "battle_ms": 800,
-  "result_ms": 350,
-  "stall_ms": 1000,
-  "adaptive": {
-   "on": true,
-   "min_ms": 250,
-   "max_ms": 2000,
-   "hit_ms": 350,
-   "miss_ms": 900
-  }
- },
- "matcher": {
-  "chan": "blue",
-  "step": 3,
-  "_step_note": "⚠️ 粗搜步距 (搜索位置数 ∝ 1/step², 影响**所有**匹配)。2026-10-14 升 2→3: tools/VisionBench 跨 5 帧 x 11 个真实调用点实测合计 **2.06x**, 且全搜站点的峰值分**逐位相同**、命中判定 **0 处变化** —— 推导: 粗网格相对真峰值最大偏移 (step-1)/2 = 1.0px, 而收尾 refineBest 邻域 ±refine(=2) 必然覆盖真峰值。⚠️ 这条推导**依赖 refine ≥ (step-1)/2**, 别把 refine 调到 0/1。别用 4: defeat@title 0.3758→0.3682、continue@slot0 0.5224→0.4600 峰值开始掉。唯一例外是全屏搜+金字塔的 srv_ok/srv_retry —— 它们在 escape.items 里被按条目钉回 step=2",
-  "refine": 2,
-  "work_h": 576,
-  "pyramid": {
-   "level": 2,
-   "cost": 200000000,
-   "relax": 0.3,
-   "floor": 0.5,
-   "top": 16,
-   "_scope": "⚠️ 本段只对 escape 链里 roi=null 的 srv_ok/srv_retry 有效（全屏搜大按钮 3.27e4ms → 33ms）。大字计场/FIGHT追踪/大保底/结算三槽一律走 SettleLoop.findExact() 强制全搜，不受本段影响 —— 真帧实测：victory/defeat 走金字塔峰值只剩 0.15~0.18（全搜 1.0000），btn_rematch 甚至 -0.04 且慢 3~4 倍，粗搜分还与真相反相（漏检帧 0.33~0.47 > 命中帧 0.07~0.18）。见 docs/phone-app.md「金字塔只对全屏搜大按钮成立」"
-  }
- },
- "screen": {
-  "roi_mode": "abs",
-  "profiles": [
-   {
-    "name": "tablet_4x3",
-    "ar_min": 1.2,
-    "ar_max": 1.7,
-    "roi_mode": "fit"
-   },
-   {
-    "name": "std_16x9",
-    "ar_min": 1.7,
-    "ar_max": 2.0,
-    "roi_mode": "fit"
-   },
-   {
-    "name": "tall_20x9",
-    "ar_min": 2.0,
-    "ar_max": 2.5,
-    "roi_mode": "abs"
-   },
-   {
-    "name": "wide_21x9",
-    "ar_min": 2.5,
-    "ar_max": 3.4,
-    "roi_mode": "fit"
-   }
-  ]
- },
- "popup": {
-  "guard": true,
-  "after_sec": 5,
-  "every_sec": 15,
-  "_every_sec_note": "剥弹窗**重试**间隔 (fast 观察线程; 常规模式=周期性剥弹窗间隔)。2026-10-14 由 5 抬到 15: escape 链是每帧匹配里最大的一块 (约 60%), 而触发条件本身 (距上次有效动作 > after_sec=5s) 就是 5 秒尺度的启发式 —— 比它更密地重试没有额外信息量, 只是把同一条链重复跑。抬到 15 即 escape 成本 ÷3; 代价是最坏情况下弹窗多留 10s (它本身有 2s 的 popup_pause 与三槽兜底, 不影响正确性)"
- },
- "map_check": {
-  "on": true,
-  "every_s": 300,
-  "tpl": "home",
-  "th": 0.85,
-  "roi": [0, 0, 180, 70],
-  "note": "大保底: 每 every_s 在左上角找 home 房子图标 = 已退到大地图/大厅 → 复检一帧确认后停车。th 默认 0.85 (36x36 小图标 NCC 易虚高); 日志每次都带峰值, 误停调高 th / 漏报调低"
- },
- "fast": {
-  "enable": false,
-  "xy": null,
-  "tap_ms": 300,
-  "observe_ms": 3000,
-  "round_gap_s": 5,
-  "idle_stop_s": 300,
-  "popup_pause_ms": 2000,
-  "fight_wait_s": 15,
-  "fight_scan_ms": 500,
-  "tap_check": false,
-  "_tap_check": "落点体检是否拦车: false=只记一条提示日志 (默认, fast 的契约是盲点, 只管弹窗+大保底); true=落点那格没匹配到结算按钮而别格有就立刻停车",
-  "diag_ms": 2000,
-  "_diag_ms": "三槽峰值 (纯诊断: 只喂 [观] 日志 + 上面的 tap_check) 的计算间隔 ms, 0=每帧; tap_check=true 时强制每帧 (它是停车判据, 不吃陈旧值)",
-  "_cost_note": "⚠️ 观察线程周期 = max(每帧耗时, observe_ms) (SettleLoop.observeFast 尾部)。CPU/秒 = 每帧耗时/周期 ⇒ 每帧耗时 > observe_ms 时 CPU 被钉死在 1 核 (只调本值无效), 反之时才 = 每帧耗时/observe_ms。2026-10-14 K70 Pro 实测: 每帧 ~2.5 核秒 ⇒ 恒定 ~1 核; 已把每帧降到 ~0.9 核秒 + 本值 1000→3000 ⇒ 约 0.3 核。⚠️ 抬本值前先核对计场数有没有掉 (3s 采样可能漏掉一闪而过的大字; fight_scan_ms=500 那条独立窗口不受影响)",
-  "_popup_note": "popup.every_sec 两个模式都用: 常规模式=周期性剥弹窗间隔; fast 观察线程=剥弹窗**重试**间隔 (原来 guard 一过期就每帧重跑整条 escape 链, 失败不更新 lastAct ⇒ 稳态每帧白跑)",
-  "fight": {
-   "tpl": "vs_fight",
-   "note": "剥弹窗后 fight_wait_s 内持续找这个模板; th/roi 缺省继承 escape.items 同名项 (vs_fight: th=0.75, roi=[1020,0,260,130]) — 要覆盖就在这里显式写 th/roi"
+  "meta": {
+    "config_version": 3,
+    "bundle_version": "0",
+    "note": "bundle_version 由 GitHub 更新包写入 (Update.applyBundle); 本地手改无效"
   },
-  "note": "快速连点模式: 主线程盲点 xy (缺省 = btn_rois 中槽中心, 再绕开 avoid 挡块), 独立观察线程负责弹窗/FIGHT追踪/计场/停车",
-  "avoid": [
-   [
-    604,
-    446,
-    72,
-    76
-   ]
-  ],
-  "avoid_gap": 24,
-  "avoid_note": "要绕开的 HUD 挡块 (work 坐标, 每项 [x,y,w,h]) —— 实测: 战斗界面的 1x/3x 速度泡; 见 WorkPoint.DEFAULT_AVOID"
- },
- "run": {
-  "max_minutes": 0,
-  "pause_from": "",
-  "pause_to": ""
- },
- "log": {
-  "trace_size": 200
- },
- "graph": {
-   "layout": "lane",
-   "lanes": [
-     {
-       "id": 0,
-       "name": "开跑门槛"
-     },
-     {
-       "id": 1,
-       "name": "主循环守卫"
-     },
-     {
-       "id": 2,
-       "name": "取帧 / ROI 映射"
-     },
-     {
-       "id": 3,
-       "name": "战斗阶段 (phase 0)"
-     },
-     {
-       "id": 4,
-       "name": "结算阶段 (phase 1)"
-     },
-     {
-       "id": 5,
-       "name": "stall 逃生 / 自愈"
-     },
-     {
-       "id": 6,
-       "name": "计场与落盘"
-     },
-     {
-       "id": 7,
-       "name": "快速连点 (fast)"
-     }
-   ],
-   "nodes": [
-     {
-       "id": "tpl",
-       "label": "模板就绪",
-       "kind": "guard",
-       "lane": 0,
-       "cond": "victory/defeat 都取到才开跑",
-       "src": "assets/templates"
-     },
-     {
-       "id": "roisc",
-       "label": "模板按屏幕缩放",
-       "kind": "roi",
-       "lane": 0,
-       "cond": "按当前屏幕取 x/y 缩放倍数",
-       "cfg": "screen.roi_mode"
-     },
-     {
-       "id": "cap0",
-       "label": "每日上限",
-       "kind": "guard",
-       "lane": 0,
-       "cond": "今日场数已达上限则不开跑",
-       "cfg": "daily_cap",
-       "note": "0 = 不限"
-     },
-     {
-       "id": "fmode",
-       "label": "模式选择",
-       "kind": "branch",
-       "lane": 0,
-       "cond": "fast.enable 为真则走快速连点, 否则走常规判定",
-       "cfg": "fast.enable",
-       "note": "快速连点 = 盲点固定坐标换速度, 前提是「一直胜利 + 无额外奖励页」; 默认关"
-     },
-     {
-       "id": "run",
-       "label": "循环运行中",
-       "kind": "loop",
-       "lane": 1,
-       "cond": "run 标志为真"
-     },
-     {
-       "id": "pause",
-       "label": "夜间暂停",
-       "kind": "loop",
-       "lane": 1,
-       "cond": "当前时间在暂停时段内则不截屏不点击",
-       "cfg": "run.pause_from~pause_to",
-       "note": "跨夜也支持"
-     },
-     {
-       "id": "maxmin",
-       "label": "单次最长",
-       "kind": "loop",
-       "lane": 1,
-       "cond": "已跑超过单次上限则停",
-       "cfg": "run.max_minutes",
-       "note": "0 = 不限"
-     },
-     {
-       "id": "shot",
-       "label": "截屏",
-       "kind": "scan",
-       "lane": 2,
-       "cond": "Shizuku shell 截屏; 失败下一轮重试"
-     },
-     {
-       "id": "roimap",
-       "label": "ROI 多分辨率映射",
-       "kind": "roi",
-       "lane": 2,
-       "cond": "work 宽高变了才重算 ROI",
-       "cfg": "screen.profiles",
-       "note": "abs/center/rel/fit 四选一"
-     },
-     {
-       "id": "popup",
-       "label": "弹窗守卫",
-       "kind": "chain",
-       "lane": 2,
-       "cond": "距上次动作 > after_sec 就周期性剥弹窗 (任何相位都跑)",
-       "cfg": "popup.after_sec",
-       "note": "间隔 every_sec; guard=false 可关。JS 版这条逻辑在 pf_nav.waitHall 里每帧跑, 这里挂在结算循环上 (没有导航链)"
-     },
-     {
-       "id": "phase",
-       "label": "相位选择",
-       "kind": "branch",
-       "lane": 2,
-       "cond": "phase==0 走战斗监测, 否则走结算页"
-     },
-     {
-       "id": "battle",
-       "label": "战斗监测",
-       "kind": "scan",
-       "lane": 3,
-       "cond": "在 title_roi 内查 VICTORY/DEFEAT 大字",
-       "cfg": "thresholds.min_sim",
-       "roi": "title_roi",
-       "tpl": [
-         "victory",
-         "defeat"
-       ]
-     },
-     {
-       "id": "bigword",
-       "label": "大字出现",
-       "kind": "match",
-       "lane": 3,
-       "cond": "见到大字 → 记胜负(本局首次)并转结算; 点哪个按钮交给 phase 1 匹配",
-       "note": "大字不计场, 计场在 phase 1 点 REMATCH 那一刻"
-     },
-     {
-       "id": "result",
-       "label": "结算页",
-       "kind": "scan",
-       "lane": 4,
-       "cond": "在 btn_rois 三槽内查 REMATCH/CONTINUE",
-       "cfg": "thresholds.min_sim",
-       "roi": "btn_rois",
-       "tpl": [
-         "btn_rematch",
-         "btn_continue"
-       ]
-     },
-     {
-       "id": "rematch",
-       "label": "REMATCH 命中",
-       "kind": "tap",
-       "lane": 4,
-       "cond": "REMATCH 峰值过阈 → 点它并计一场",
-       "note": "一局恰计一次"
-     },
-     {
-       "id": "continue",
-       "label": "CONTINUE 命中",
-       "kind": "tap",
-       "lane": 4,
-       "cond": "CONTINUE 峰值过阈 → 点它略过这一页",
-       "note": "留在结算阶段, 可能还有下一页"
-     },
-     {
-       "id": "fallbk",
-       "label": "连续未命中",
-       "kind": "heal",
-       "lane": 4,
-       "cond": "连续无命中到上限 → 转回战斗监测",
-       "cfg": "result_fallback"
-     },
-     {
-      "id": "stall",
-      "label": "无动作超时",
-      "kind": "heal",
-      "lane": 5,
-      "cond": "距上次有效动作超过阈值 → 走逃生链",
-      "cfg": "timing.stall_sec"
-    },
-    {
-      "id": "mapchk",
-      "label": "大保底 (map_check)",
-      "kind": "heal",
-      "lane": 5,
-      "cond": "每 every_s 在左上角 home_roi 找 home 图标; 连续两帧命中 = 已退到大地图/大厅 → 停车",
-      "cfg": "map_check.every_s",
-      "roi": "map_check.roi [0,0,180,70]",
-      "tpl": "home",
-      "note": "两个模式都挂 (fast 观察线程 / 常规主循环)。防误停: 单帧命中先复检一帧; 不命中绝不停车, 只记峰值日志。只停不点 — 重进要等 NavChain (M2)"
-    },
-     {
-       "id": "escape",
-       "label": "弹窗逃生链",
-       "kind": "chain",
-       "lane": 5,
-       "cond": "按配置顺序逐个试; 命中即点",
-       "expand": "escape",
-       "note": "每项的 th 各不相同, 见链上标注"
-     },
-     {
-       "id": "escfb",
-       "label": "三槽兜底",
-       "kind": "heal",
-       "lane": 5,
-       "cond": "链上全不中 → 用结算按钮位置兜底点一下",
-       "cfg": "btn_rois"
-     },
-     {
-       "id": "bstl",
-       "label": "战斗超时",
-       "kind": "heal",
-       "lane": 5,
-       "cond": "入战斗起超过阈值仍无结果 → 计一次超时跳",
-       "cfg": "timing.battle_stall_sec"
-     },
-     {
-       "id": "heal",
-       "label": "自愈",
-       "kind": "heal",
-       "lane": 5,
-       "cond": "连续 3 次同类超时 → selfHeal()",
-       "note": "PLAY 拉回待 NavChain (M2), 缺它不盲点"
-     },
-     {
-       "id": "count",
-       "label": "计一场",
-       "kind": "count",
-       "lane": 6,
-       "cond": "胜负按上一局记下的 VICTORY/DEFEAT"
-     },
-     {
-       "id": "save",
-       "label": "落盘",
-       "kind": "count",
-       "lane": 6,
-       "cond": "每场写完 store.json — 崩溃/被杀不丢"
-     },
-     {
-       "id": "capend",
-       "label": "到上限停车",
-       "kind": "guard",
-       "lane": 6,
-       "cond": "计完这场打到上限 → run=false"
-     },
-     {
-       "id": "fxpt",
-       "label": "落点解析",
-       "kind": "entry",
-       "lane": 7,
-       "cond": "中槽中心 + **绕开 HUD 挡块** (config.fast.avoid) → 可点坐标",
-       "cfg": "fast.avoid",
-       "note": "2026-10-11 用户报障「会点到 x3 那里」: 战斗界面的 1x/3x 速度泡 (work x608~672/y450~518) 正好压在中槽中心 ⇒ 落点右移出挡块 (WorkPoint.pick)"
-     },
-     {
-       "id": "fxtap",
-       "label": "连点器 (主线程)",
-       "kind": "tap",
-       "lane": 7,
-       "cond": "按 tap_ms 盲点落点",
-       "cfg": "fast.tap_ms",
-       "note": "不截屏不匹配 —— 这是快的地方。战斗中点到那里无害"
-     },
-     {
-       "id": "fxobs",
-       "label": "观察线程",
-       "kind": "loop",
-       "lane": 7,
-       "cond": "独立线程每 observe_ms 截一帧, 干弹窗/计场/停车三件事",
-       "cfg": "fast.observe_ms",
-       "note": "与连点器并行; 只有它在截屏"
-     },
-     {
-      "id": "fxpop",
-      "label": "弹窗逃生",
-      "kind": "chain",
-      "lane": 7,
-      "cond": "复用同一条 escape 链; 命中后连点暂停让画面稳定",
-      "cfg": "fast.popup_pause_ms",
-      "note": "保留弹窗检测, 但搬出热路径"
-    },
-    {
-      "id": "fxfight",
-      "label": "FIGHT 追踪窗口",
-      "kind": "tap",
-      "lane": 7,
-      "cond": "剥完弹窗后 fight_wait_s 内持续找 vs_fight; 命中即点并立刻恢复连点; 超时未命中也恢复 (不停车)",
-      "cfg": "fast.fight_wait_s",
-      "roi": "fast.fight.roi (缺省继承 escape 链同名项)",
+  "thresholds": {
+    "min_sim": 0.72,
+    "ev_play": 0.78,
+    "target": 0.75,
+    "spd": 0.95,
+    "x": 0.8,
+    "modal": 0.9,
+    "srv": 0.75,
+    "hall": 0.72
+  },
+  "timing": {
+    "battle_ms": 800,
+    "result_ms": 350,
+    "tap_delay_ms": 1200,
+    "stall_sec": 30,
+    "battle_stall_sec": 180,
+    "launch_timeout_s": 300,
+    "hub_timeout_s": 120
+  },
+  "scan": {
+    "battle_ms": 800,
+    "result_ms": 350,
+    "stall_ms": 1000,
+    "adaptive": {
+      "on": true,
+      "min_ms": 250,
+      "max_ms": 2000,
+      "hit_ms": 350,
+      "miss_ms": 900
+    }
+  },
+  "matcher": {
+    "chan": "blue",
+    "step": 3,
+    "_step_note": "⚠️ 粗搜步距 (搜索位置数 ∝ 1/step², 影响**所有**匹配)。2026-10-14 升 2→3: tools/VisionBench 跨 5 帧 x 11 个真实调用点实测合计 **2.06x**, 且全搜站点的峰值分**逐位相同**、命中判定 **0 处变化** —— 推导: 粗网格相对真峰值最大偏移 (step-1)/2 = 1.0px, 而收尾 refineBest 邻域 ±refine(=2) 必然覆盖真峰值。⚠️ 这条推导**依赖 refine ≥ (step-1)/2**, 别把 refine 调到 0/1。别用 4: defeat@title 0.3758→0.3682、continue@slot0 0.5224→0.4600 峰值开始掉。唯一例外是全屏搜+金字塔的 srv_ok/srv_retry —— 它们在 escape.items 里被按条目钉回 step=2",
+    "refine": 2,
+    "work_h": 576,
+    "pyramid": {
+      "level": 2,
+      "cost": 200000000,
+      "relax": 0.3,
+      "floor": 0.5,
+      "top": 16,
+      "_scope": "⚠️ 本段只对 escape 链里 roi=null 的 srv_ok/srv_retry 有效（全屏搜大按钮 3.27e4ms → 33ms）。大字计场/FIGHT追踪/大保底/结算三槽一律走 SettleLoop.findExact() 强制全搜，不受本段影响 —— 真帧实测：victory/defeat 走金字塔峰值只剩 0.15~0.18（全搜 1.0000），btn_rematch 甚至 -0.04 且慢 3~4 倍，粗搜分还与真相反相（漏检帧 0.33~0.47 > 命中帧 0.07~0.18）。见 docs/phone-app.md「金字塔只对全屏搜大按钮成立」"
+    }
+  },
+  "screen": {
+    "roi_mode": "abs",
+    "profiles": [
+      {
+        "name": "tablet_4x3",
+        "ar_min": 1.2,
+        "ar_max": 1.7,
+        "roi_mode": "fit"
+      },
+      {
+        "name": "std_16x9",
+        "ar_min": 1.7,
+        "ar_max": 2.0,
+        "roi_mode": "fit"
+      },
+      {
+        "name": "tall_20x9",
+        "ar_min": 2.0,
+        "ar_max": 2.5,
+        "roi_mode": "abs"
+      },
+      {
+        "name": "wide_21x9",
+        "ar_min": 2.5,
+        "ar_max": 3.4,
+        "roi_mode": "fit"
+      }
+    ]
+  },
+  "popup": {
+    "guard": true,
+    "after_sec": 5,
+    "every_sec": 15,
+    "_every_sec_note": "剥弹窗**重试**间隔 (fast 观察线程; 常规模式=周期性剥弹窗间隔)。2026-10-14 由 5 抬到 15: escape 链是每帧匹配里最大的一块 (约 60%), 而触发条件本身 (距上次有效动作 > after_sec=5s) 就是 5 秒尺度的启发式 —— 比它更密地重试没有额外信息量, 只是把同一条链重复跑。抬到 15 即 escape 成本 ÷3; 代价是最坏情况下弹窗多留 10s (它本身有 2s 的 popup_pause 与三槽兜底, 不影响正确性)"
+  },
+  "map_check": {
+    "on": true,
+    "every_s": 300,
+    "tpl": "home",
+    "th": 0.85,
+    "roi": [
+      0,
+      0,
+      180,
+      70
+    ],
+    "note": "大保底: 每 every_s 在左上角找 home 房子图标 = 已退到大地图/大厅 → 复检一帧确认后停车。th 默认 0.85 (36x36 小图标 NCC 易虚高); 日志每次都带峰值, 误停调高 th / 漏报调低"
+  },
+  "fast": {
+    "enable": false,
+    "xy": null,
+    "tap_ms": 300,
+    "observe_ms": 3000,
+    "round_gap_s": 5,
+    "idle_stop_s": 300,
+    "popup_pause_ms": 2000,
+    "fight_wait_s": 15,
+    "fight_scan_ms": 500,
+    "tap_check": false,
+    "_tap_check": "落点体检是否拦车: false=只记一条提示日志 (默认, fast 的契约是盲点, 只管弹窗+大保底); true=落点那格没匹配到结算按钮而别格有就立刻停车",
+    "diag_ms": 2000,
+    "_diag_ms": "三槽峰值 (纯诊断: 只喂 [观] 日志 + 上面的 tap_check) 的计算间隔 ms, 0=每帧; tap_check=true 时强制每帧 (它是停车判据, 不吃陈旧值)",
+    "_cost_note": "⚠️ 观察线程周期 = max(每帧耗时, observe_ms) (SettleLoop.observeFast 尾部)。CPU/秒 = 每帧耗时/周期 ⇒ 每帧耗时 > observe_ms 时 CPU 被钉死在 1 核 (只调本值无效), 反之时才 = 每帧耗时/observe_ms。2026-10-14 K70 Pro 实测: 每帧 ~2.5 核秒 ⇒ 恒定 ~1 核; 已把每帧降到 ~0.9 核秒 + 本值 1000→3000 ⇒ 约 0.3 核。⚠️ 抬本值前先核对计场数有没有掉 (3s 采样可能漏掉一闪而过的大字; fight_scan_ms=500 那条独立窗口不受影响)",
+    "_popup_note": "popup.every_sec 两个模式都用: 常规模式=周期性剥弹窗间隔; fast 观察线程=剥弹窗**重试**间隔 (原来 guard 一过期就每帧重跑整条 escape 链, 失败不更新 lastAct ⇒ 稳态每帧白跑)",
+    "fight": {
       "tpl": "vs_fight",
-      "note": "弹窗剥完常正落在战斗准备界面, 连点器不知道该按谁; 窗口内采样提到 fight_scan_ms"
+      "note": "剥弹窗后 fight_wait_s 内持续找这个模板; th/roi 缺省继承 escape.items 同名项 (vs_fight: th=0.75, roi=[1020,0,260,130]) — 要覆盖就在这里显式写 th/roi"
     },
-     {
-       "id": "fxbig",
-       "label": "大字计场",
-       "kind": "count",
-       "lane": 7,
-       "cond": "大字 + latch + 时间下限 round_gap_s → 一局恰计一次",
-       "cfg": "fast.round_gap_s",
-       "note": "1s 采样下换页闪断一般采不到; 双保险防重复计场"
-     },
-     {
-       "id": "fxidle",
-       "label": "无进展停车",
-       "kind": "heal",
-       "lane": 7,
-       "cond": "idle_stop_s 内一次都没计到场 → 停车 (多半已脱离战斗流程)",
-       "cfg": "fast.idle_stop_s",
-       "note": "0 = 关"
-     },
-     {
-      "id": "fxchk",
-      "label": "落点体检 (默认关)",
-      "kind": "heal",
-      "lane": 7,
-      "cond": "落点那格没匹配到结算按钮、而别格有 → **默认只记一条提示**; fast.tap_check=true 才停车",
-      "cfg": "fast.tap_check",
-      "note": "2026-10-14 改为默认只提示: 带 FAVORITE 的三按钮结算页里 CONTINUE 被挤到第 3 格, 落点那格其实是 REMATCH (按钮变窄 ⇒ 模板只有 0.39), 盲点它一样是再打一场 —— 停车才是误杀。要拦车得确认落点是 SELL ALL 那类有害按钮"
-     }
-   ],
-   "edges": [
-     {
-       "from": "tpl",
-       "to": "roisc"
-     },
-     {
-       "from": "roisc",
-       "to": "cap0"
-     },
-     {
-       "from": "cap0",
-       "to": "fmode"
-     },
-     {
-       "from": "fmode",
-       "to": "run",
-       "on": "否 (常规)"
-     },
-     {
-       "from": "fmode",
-       "to": "fxpt",
-       "on": "是 (fast)"
-     },
-     {
-       "from": "fxpt",
-       "to": "fxtap"
-     },
-     {
-       "from": "fxtap",
-       "to": "fxobs",
-       "on": "并行"
-     },
-     {
-       "from": "fxobs",
-       "to": "fxtap",
-       "on": "循环"
-     },
-     {
-      "from": "fxobs",
-      "to": "fxpop"
-    },
-    {
-      "from": "fxpop",
-      "to": "fxfight",
-      "on": "剥完开窗口"
-    },
-    {
-      "from": "fxfight",
-      "to": "fxtap",
-      "on": "命中即点 / 超时恢复"
-    },
-    {
-      "from": "fxfight",
-      "to": "fxbig"
-    },
-     {
-       "from": "fxbig",
-       "to": "fxchk"
-     },
-     {
-       "from": "fxchk",
-       "to": "fxidle",
-       "on": "默认只提示, 继续"
-     },
-     {
-       "from": "fxidle",
-       "to": "fxobs",
-       "on": "继续"
-     },
-     {
-       "from": "fxidle",
-       "to": "capend",
-       "on": "停车"
-     },
-     {
-       "from": "run",
-       "to": "pause",
-       "on": "是"
-     },
-     {
-       "from": "pause",
-       "to": "run",
-       "on": "不在暂停时段"
-     },
-     {
-       "from": "run",
-       "to": "maxmin",
-       "on": "是"
-     },
-     {
-       "from": "maxmin",
-       "to": "shot",
-       "on": "未超时"
-     },
-     {
-       "from": "shot",
-       "to": "roimap"
-     },
-     {
-      "from": "roimap",
-      "to": "mapchk"
-    },
-    {
-      "from": "mapchk",
-      "to": "popup",
-      "on": "未退图"
-    },
-    {
-      "from": "mapchk",
-      "to": "fxobs",
-      "on": "fast 模式在观察线程跑"
-    },
-    {
-      "from": "mapchk",
-      "to": "capend",
-      "on": "两帧确认 = 已退大地图 → 停车"
-    },
-    {
-      "from": "popup",
-      "to": "phase"
-    },
-     {
-       "from": "popup",
-       "to": "escape",
-       "on": "命中即点"
-     },
-     {
-       "from": "phase",
-       "to": "battle",
-       "on": "phase=0"
-     },
-     {
-       "from": "phase",
-       "to": "result",
-       "on": "phase=1"
-     },
-     {
-       "from": "battle",
-       "to": "bigword",
-       "on": "命中"
-     },
-     {
-       "from": "battle",
-       "to": "stall",
-       "on": "未命中"
-     },
-     {
-       "from": "bigword",
-       "to": "result",
-       "on": "进结算 (不盲点)"
-     },
-     {
-       "from": "result",
-       "to": "rematch",
-       "on": "REMATCH 过阈"
-     },
-     {
-       "from": "result",
-       "to": "continue",
-       "on": "CONTINUE 过阈"
-     },
-     {
-       "from": "result",
-       "to": "fallbk",
-       "on": "两者都不过阈"
-     },
-     {
-       "from": "rematch",
-       "to": "count"
-     },
-     {
-       "from": "continue",
-       "to": "stall",
-       "on": "略过这页"
-     },
-     {
-       "from": "fallbk",
-       "to": "battle",
-       "on": "转回战斗"
-     },
-     {
-       "from": "stall",
-       "to": "escape"
-     },
-     {
-       "from": "escape",
-       "to": "escfb",
-       "on": "全不中"
-     },
-     {
-       "from": "escfb",
-       "to": "stall"
-     },
-     {
-       "from": "stall",
-       "to": "bstl",
-       "on": "phase=0"
-     },
-     {
-       "from": "bstl",
-       "to": "heal",
-       "on": "连 3 次"
-     },
-     {
-       "from": "heal",
-       "to": "run"
-     },
-     {
-       "from": "count",
-       "to": "save"
-     },
-     {
-       "from": "save",
-       "to": "capend",
-       "on": "达上限"
-     },
-     {
-       "from": "save",
-       "to": "run",
-       "on": "未达"
-     }
-   ],
-   "title": "SGM 结算循环 — 全程序判定图",
-   "note": "阈值按 cfg 路径从当前 config 实时回填; 改了 config 图跟着变。escape 链节点由 Graph.load 按 escape.items 动态展开。"
- },
- "update": {
-  "repo": "zhiyaunhe-ops/MAAskullgirls",
-  "bundle_asset": "bundle.zip",
-  "apk_asset": "sgmbot.apk",
-  "auto_check_h": 12,
-  "allow_apk": true,
-  "system_installer_fallback": true,
-  "_system_installer_fallback": "pm install(Shizuku) 装不上时, 是否改把 APK 交给系统安装器让用户点一下「安装」"
- },
- "title_roi": [
-  400,
-  20,
-  480,
-  100
- ],
- "result_fallback": 3,
- "escape": {
-  "ok_offset": [
-   210,
-   188
+    "note": "快速连点模式: 主线程盲点 xy (缺省 = btn_rois 中槽中心, 再绕开 avoid 挡块), 独立观察线程负责弹窗/FIGHT追踪/计场/停车",
+    "avoid": [
+      [
+        604,
+        446,
+        72,
+        76
+      ]
+    ],
+    "avoid_gap": 24,
+    "avoid_note": "要绕开的 HUD 挡块 (work 坐标, 每项 [x,y,w,h]) —— 实测: 战斗界面的 1x/3x 速度泡; 见 WorkPoint.DEFAULT_AVOID"
+  },
+  "run": {
+    "max_minutes": 0,
+    "pause_from": "",
+    "pause_to": ""
+  },
+  "log": {
+    "trace_size": 200,
+    "_shots": "带图日志: 关键事件在日志行尾挂一张缩小 JPEG (logs/shots/YYYY-MM-DD/HHmmss_SSS_tag.jpg); 总量超上限就从最旧的删。",
+    "shots_on": true,
+    "shots_max_gb": 2.0,
+    "shots_w": 640,
+    "shots_quality": 60
+  },
+  "graph": {
+    "layout": "lane",
+    "lanes": [
+      {
+        "id": 0,
+        "name": "开跑门槛"
+      },
+      {
+        "id": 1,
+        "name": "主循环守卫"
+      },
+      {
+        "id": 2,
+        "name": "取帧 / ROI 映射"
+      },
+      {
+        "id": 3,
+        "name": "战斗阶段 (phase 0)"
+      },
+      {
+        "id": 4,
+        "name": "结算阶段 (phase 1)"
+      },
+      {
+        "id": 5,
+        "name": "stall 逃生 / 自愈"
+      },
+      {
+        "id": 6,
+        "name": "计场与落盘"
+      },
+      {
+        "id": 7,
+        "name": "快速连点 (fast)"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "tpl",
+        "label": "模板就绪",
+        "kind": "guard",
+        "lane": 0,
+        "cond": "victory/defeat 都取到才开跑",
+        "src": "assets/templates"
+      },
+      {
+        "id": "roisc",
+        "label": "模板按屏幕缩放",
+        "kind": "roi",
+        "lane": 0,
+        "cond": "按当前屏幕取 x/y 缩放倍数",
+        "cfg": "screen.roi_mode"
+      },
+      {
+        "id": "cap0",
+        "label": "每日上限",
+        "kind": "guard",
+        "lane": 0,
+        "cond": "今日场数已达上限则不开跑",
+        "cfg": "daily_cap",
+        "note": "0 = 不限"
+      },
+      {
+        "id": "fmode",
+        "label": "模式选择",
+        "kind": "branch",
+        "lane": 0,
+        "cond": "fast.enable 为真则走快速连点, 否则走常规判定",
+        "cfg": "fast.enable",
+        "note": "快速连点 = 盲点固定坐标换速度, 前提是「一直胜利 + 无额外奖励页」; 默认关"
+      },
+      {
+        "id": "run",
+        "label": "循环运行中",
+        "kind": "loop",
+        "lane": 1,
+        "cond": "run 标志为真"
+      },
+      {
+        "id": "pause",
+        "label": "夜间暂停",
+        "kind": "loop",
+        "lane": 1,
+        "cond": "当前时间在暂停时段内则不截屏不点击",
+        "cfg": "run.pause_from~pause_to",
+        "note": "跨夜也支持"
+      },
+      {
+        "id": "maxmin",
+        "label": "单次最长",
+        "kind": "loop",
+        "lane": 1,
+        "cond": "已跑超过单次上限则停",
+        "cfg": "run.max_minutes",
+        "note": "0 = 不限"
+      },
+      {
+        "id": "shot",
+        "label": "截屏",
+        "kind": "scan",
+        "lane": 2,
+        "cond": "Shizuku shell 截屏; 失败下一轮重试"
+      },
+      {
+        "id": "roimap",
+        "label": "ROI 多分辨率映射",
+        "kind": "roi",
+        "lane": 2,
+        "cond": "work 宽高变了才重算 ROI",
+        "cfg": "screen.profiles",
+        "note": "abs/center/rel/fit 四选一"
+      },
+      {
+        "id": "popup",
+        "label": "弹窗守卫",
+        "kind": "chain",
+        "lane": 2,
+        "cond": "距上次动作 > after_sec 就周期性剥弹窗 (任何相位都跑)",
+        "cfg": "popup.after_sec",
+        "note": "间隔 every_sec; guard=false 可关。JS 版这条逻辑在 pf_nav.waitHall 里每帧跑, 这里挂在结算循环上 (没有导航链)"
+      },
+      {
+        "id": "phase",
+        "label": "相位选择",
+        "kind": "branch",
+        "lane": 2,
+        "cond": "phase==0 走战斗监测, 否则走结算页"
+      },
+      {
+        "id": "battle",
+        "label": "战斗监测",
+        "kind": "scan",
+        "lane": 3,
+        "cond": "在 title_roi 内查 VICTORY/DEFEAT 大字",
+        "cfg": "thresholds.min_sim",
+        "roi": "title_roi",
+        "tpl": [
+          "victory",
+          "defeat"
+        ]
+      },
+      {
+        "id": "bigword",
+        "label": "大字出现",
+        "kind": "match",
+        "lane": 3,
+        "cond": "见到大字 → 记胜负(本局首次)并转结算; 点哪个按钮交给 phase 1 匹配",
+        "note": "大字不计场, 计场在 phase 1 点 REMATCH 那一刻"
+      },
+      {
+        "id": "result",
+        "label": "结算页",
+        "kind": "scan",
+        "lane": 4,
+        "cond": "在 btn_rois 三槽内查 REMATCH/CONTINUE",
+        "cfg": "thresholds.min_sim",
+        "roi": "btn_rois",
+        "tpl": [
+          "btn_rematch",
+          "btn_continue"
+        ]
+      },
+      {
+        "id": "rematch",
+        "label": "REMATCH 命中",
+        "kind": "tap",
+        "lane": 4,
+        "cond": "REMATCH 峰值过阈 → 点它并计一场",
+        "note": "一局恰计一次"
+      },
+      {
+        "id": "continue",
+        "label": "CONTINUE 命中",
+        "kind": "tap",
+        "lane": 4,
+        "cond": "CONTINUE 峰值过阈 → 点它略过这一页",
+        "note": "留在结算阶段, 可能还有下一页"
+      },
+      {
+        "id": "fallbk",
+        "label": "连续未命中",
+        "kind": "heal",
+        "lane": 4,
+        "cond": "连续无命中到上限 → 转回战斗监测",
+        "cfg": "result_fallback"
+      },
+      {
+        "id": "stall",
+        "label": "无动作超时",
+        "kind": "heal",
+        "lane": 5,
+        "cond": "距上次有效动作超过阈值 → 走逃生链",
+        "cfg": "timing.stall_sec"
+      },
+      {
+        "id": "mapchk",
+        "label": "大保底 (map_check)",
+        "kind": "heal",
+        "lane": 5,
+        "cond": "每 every_s 在左上角 home_roi 找 home 图标; 连续两帧命中 = 已退到大地图/大厅 → 停车",
+        "cfg": "map_check.every_s",
+        "roi": "map_check.roi [0,0,180,70]",
+        "tpl": "home",
+        "note": "两个模式都挂 (fast 观察线程 / 常规主循环)。防误停: 单帧命中先复检一帧; 不命中绝不停车, 只记峰值日志。只停不点 — 重进要等 NavChain (M2)"
+      },
+      {
+        "id": "escape",
+        "label": "弹窗逃生链",
+        "kind": "chain",
+        "lane": 5,
+        "cond": "按配置顺序逐个试; 命中即点",
+        "expand": "escape",
+        "note": "每项的 th 各不相同, 见链上标注"
+      },
+      {
+        "id": "escfb",
+        "label": "三槽兜底",
+        "kind": "heal",
+        "lane": 5,
+        "cond": "链上全不中 → 用结算按钮位置兜底点一下",
+        "cfg": "btn_rois"
+      },
+      {
+        "id": "bstl",
+        "label": "战斗超时",
+        "kind": "heal",
+        "lane": 5,
+        "cond": "入战斗起超过阈值仍无结果 → 计一次超时跳",
+        "cfg": "timing.battle_stall_sec"
+      },
+      {
+        "id": "heal",
+        "label": "自愈",
+        "kind": "heal",
+        "lane": 5,
+        "cond": "连续 3 次同类超时 → selfHeal()",
+        "note": "PLAY 拉回待 NavChain (M2), 缺它不盲点"
+      },
+      {
+        "id": "count",
+        "label": "计一场",
+        "kind": "count",
+        "lane": 6,
+        "cond": "胜负按上一局记下的 VICTORY/DEFEAT"
+      },
+      {
+        "id": "save",
+        "label": "落盘",
+        "kind": "count",
+        "lane": 6,
+        "cond": "每场写完 store.json — 崩溃/被杀不丢"
+      },
+      {
+        "id": "capend",
+        "label": "到上限停车",
+        "kind": "guard",
+        "lane": 6,
+        "cond": "计完这场打到上限 → run=false"
+      },
+      {
+        "id": "fxpt",
+        "label": "落点解析",
+        "kind": "entry",
+        "lane": 7,
+        "cond": "中槽中心 + **绕开 HUD 挡块** (config.fast.avoid) → 可点坐标",
+        "cfg": "fast.avoid",
+        "note": "2026-10-11 用户报障「会点到 x3 那里」: 战斗界面的 1x/3x 速度泡 (work x608~672/y450~518) 正好压在中槽中心 ⇒ 落点右移出挡块 (WorkPoint.pick)"
+      },
+      {
+        "id": "fxtap",
+        "label": "连点器 (主线程)",
+        "kind": "tap",
+        "lane": 7,
+        "cond": "按 tap_ms 盲点落点",
+        "cfg": "fast.tap_ms",
+        "note": "不截屏不匹配 —— 这是快的地方。战斗中点到那里无害"
+      },
+      {
+        "id": "fxobs",
+        "label": "观察线程",
+        "kind": "loop",
+        "lane": 7,
+        "cond": "独立线程每 observe_ms 截一帧, 干弹窗/计场/停车三件事",
+        "cfg": "fast.observe_ms",
+        "note": "与连点器并行; 只有它在截屏"
+      },
+      {
+        "id": "fxpop",
+        "label": "弹窗逃生",
+        "kind": "chain",
+        "lane": 7,
+        "cond": "复用同一条 escape 链; 命中后连点暂停让画面稳定",
+        "cfg": "fast.popup_pause_ms",
+        "note": "保留弹窗检测, 但搬出热路径"
+      },
+      {
+        "id": "fxfight",
+        "label": "FIGHT 追踪窗口",
+        "kind": "tap",
+        "lane": 7,
+        "cond": "剥完弹窗后 fight_wait_s 内持续找 vs_fight; 命中即点并立刻恢复连点; 超时未命中也恢复 (不停车)",
+        "cfg": "fast.fight_wait_s",
+        "roi": "fast.fight.roi (缺省继承 escape 链同名项)",
+        "tpl": "vs_fight",
+        "note": "弹窗剥完常正落在战斗准备界面, 连点器不知道该按谁; 窗口内采样提到 fight_scan_ms"
+      },
+      {
+        "id": "fxbig",
+        "label": "大字计场",
+        "kind": "count",
+        "lane": 7,
+        "cond": "大字 + latch + 时间下限 round_gap_s → 一局恰计一次",
+        "cfg": "fast.round_gap_s",
+        "note": "1s 采样下换页闪断一般采不到; 双保险防重复计场"
+      },
+      {
+        "id": "fxidle",
+        "label": "无进展停车",
+        "kind": "heal",
+        "lane": 7,
+        "cond": "idle_stop_s 内一次都没计到场 → 停车 (多半已脱离战斗流程)",
+        "cfg": "fast.idle_stop_s",
+        "note": "0 = 关"
+      },
+      {
+        "id": "fxchk",
+        "label": "落点体检 (默认关)",
+        "kind": "heal",
+        "lane": 7,
+        "cond": "落点那格没匹配到结算按钮、而别格有 → **默认只记一条提示**; fast.tap_check=true 才停车",
+        "cfg": "fast.tap_check",
+        "note": "2026-10-14 改为默认只提示: 带 FAVORITE 的三按钮结算页里 CONTINUE 被挤到第 3 格, 落点那格其实是 REMATCH (按钮变窄 ⇒ 模板只有 0.39), 盲点它一样是再打一场 —— 停车才是误杀。要拦车得确认落点是 SELL ALL 那类有害按钮"
+      }
+    ],
+    "edges": [
+      {
+        "from": "tpl",
+        "to": "roisc"
+      },
+      {
+        "from": "roisc",
+        "to": "cap0"
+      },
+      {
+        "from": "cap0",
+        "to": "fmode"
+      },
+      {
+        "from": "fmode",
+        "to": "run",
+        "on": "否 (常规)"
+      },
+      {
+        "from": "fmode",
+        "to": "fxpt",
+        "on": "是 (fast)"
+      },
+      {
+        "from": "fxpt",
+        "to": "fxtap"
+      },
+      {
+        "from": "fxtap",
+        "to": "fxobs",
+        "on": "并行"
+      },
+      {
+        "from": "fxobs",
+        "to": "fxtap",
+        "on": "循环"
+      },
+      {
+        "from": "fxobs",
+        "to": "fxpop"
+      },
+      {
+        "from": "fxpop",
+        "to": "fxfight",
+        "on": "剥完开窗口"
+      },
+      {
+        "from": "fxfight",
+        "to": "fxtap",
+        "on": "命中即点 / 超时恢复"
+      },
+      {
+        "from": "fxfight",
+        "to": "fxbig"
+      },
+      {
+        "from": "fxbig",
+        "to": "fxchk"
+      },
+      {
+        "from": "fxchk",
+        "to": "fxidle",
+        "on": "默认只提示, 继续"
+      },
+      {
+        "from": "fxidle",
+        "to": "fxobs",
+        "on": "继续"
+      },
+      {
+        "from": "fxidle",
+        "to": "capend",
+        "on": "停车"
+      },
+      {
+        "from": "run",
+        "to": "pause",
+        "on": "是"
+      },
+      {
+        "from": "pause",
+        "to": "run",
+        "on": "不在暂停时段"
+      },
+      {
+        "from": "run",
+        "to": "maxmin",
+        "on": "是"
+      },
+      {
+        "from": "maxmin",
+        "to": "shot",
+        "on": "未超时"
+      },
+      {
+        "from": "shot",
+        "to": "roimap"
+      },
+      {
+        "from": "roimap",
+        "to": "mapchk"
+      },
+      {
+        "from": "mapchk",
+        "to": "popup",
+        "on": "未退图"
+      },
+      {
+        "from": "mapchk",
+        "to": "fxobs",
+        "on": "fast 模式在观察线程跑"
+      },
+      {
+        "from": "mapchk",
+        "to": "capend",
+        "on": "两帧确认 = 已退大地图 → 停车"
+      },
+      {
+        "from": "popup",
+        "to": "phase"
+      },
+      {
+        "from": "popup",
+        "to": "escape",
+        "on": "命中即点"
+      },
+      {
+        "from": "phase",
+        "to": "battle",
+        "on": "phase=0"
+      },
+      {
+        "from": "phase",
+        "to": "result",
+        "on": "phase=1"
+      },
+      {
+        "from": "battle",
+        "to": "bigword",
+        "on": "命中"
+      },
+      {
+        "from": "battle",
+        "to": "stall",
+        "on": "未命中"
+      },
+      {
+        "from": "bigword",
+        "to": "result",
+        "on": "进结算 (不盲点)"
+      },
+      {
+        "from": "result",
+        "to": "rematch",
+        "on": "REMATCH 过阈"
+      },
+      {
+        "from": "result",
+        "to": "continue",
+        "on": "CONTINUE 过阈"
+      },
+      {
+        "from": "result",
+        "to": "fallbk",
+        "on": "两者都不过阈"
+      },
+      {
+        "from": "rematch",
+        "to": "count"
+      },
+      {
+        "from": "continue",
+        "to": "stall",
+        "on": "略过这页"
+      },
+      {
+        "from": "fallbk",
+        "to": "battle",
+        "on": "转回战斗"
+      },
+      {
+        "from": "stall",
+        "to": "escape"
+      },
+      {
+        "from": "escape",
+        "to": "escfb",
+        "on": "全不中"
+      },
+      {
+        "from": "escfb",
+        "to": "stall"
+      },
+      {
+        "from": "stall",
+        "to": "bstl",
+        "on": "phase=0"
+      },
+      {
+        "from": "bstl",
+        "to": "heal",
+        "on": "连 3 次"
+      },
+      {
+        "from": "heal",
+        "to": "run"
+      },
+      {
+        "from": "count",
+        "to": "save"
+      },
+      {
+        "from": "save",
+        "to": "capend",
+        "on": "达上限"
+      },
+      {
+        "from": "save",
+        "to": "run",
+        "on": "未达"
+      }
+    ],
+    "title": "SGM 结算循环 — 全程序判定图",
+    "note": "阈值按 cfg 路径从当前 config 实时回填; 改了 config 图跟着变。escape 链节点由 Graph.load 按 escape.items 动态展开。"
+  },
+  "update": {
+    "repo": "zhiyaunhe-ops/MAAskullgirls",
+    "bundle_asset": "bundle.zip",
+    "apk_asset": "sgmbot.apk",
+    "auto_check_h": 12,
+    "allow_apk": true,
+    "system_installer_fallback": true,
+    "_system_installer_fallback": "pm install(Shizuku) 装不上时, 是否改把 APK 交给系统安装器让用户点一下「安装」"
+  },
+  "title_roi": [
+    400,
+    20,
+    480,
+    100
   ],
-  "items": [
-   {
-    "tpl": "srv_ok",
-    "th": 0.75,
-    "step": 2
-   },
-   {
-    "tpl": "ok_btn",
-    "th": 0.8,
-    "roi": [
-     480,
-     300,
-     320,
-     180
+  "result_fallback": 3,
+  "escape": {
+    "ok_offset": [
+      210,
+      188
+    ],
+    "items": [
+      {
+        "tpl": "srv_ok",
+        "th": 0.75,
+        "step": 2
+      },
+      {
+        "tpl": "ok_btn",
+        "th": 0.8,
+        "roi": [
+          480,
+          300,
+          320,
+          180
+        ]
+      },
+      {
+        "tpl": "srv_retry",
+        "th": 0.75,
+        "step": 2
+      },
+      {
+        "tpl": "scene_x",
+        "th": 0.8,
+        "roi": [
+          600,
+          0,
+          560,
+          180
+        ]
+      },
+      {
+        "tpl": "modal_x",
+        "th": 0.9,
+        "roi": [
+          480,
+          0,
+          480,
+          280
+        ]
+      },
+      {
+        "tpl": "vs_fight",
+        "th": 0.75,
+        "roi": [
+          1020,
+          0,
+          260,
+          130
+        ]
+      }
     ]
-   },
-   {
-    "tpl": "srv_retry",
-    "th": 0.75,
-    "step": 2
-   },
-   {
-    "tpl": "scene_x",
-    "th": 0.8,
+  },
+  "daily_cap": 0,
+  "target_card": "ev_target",
+  "max_swipes": 18,
+  "home_roi": [
+    0,
+    0,
+    180,
+    70
+  ],
+  "boss_anchor": {
+    "color": "#FF7AC241",
+    "tol": 50,
     "roi": [
-     600,
-     0,
-     560,
-     180
-    ]
-   },
-   {
-    "tpl": "modal_x",
-    "th": 0.9,
+      640,
+      40,
+      640,
+      500
+    ],
+    "offset": [
+      -72,
+      2
+    ],
+    "band": 28
+  },
+  "map_pan": {
+    "swipe": [
+      960,
+      288,
+      320,
+      288,
+      700
+    ],
+    "times": 2,
+    "wait_ms": 2200
+  },
+  "vs_fight_xy": [
+    1175,
+    54
+  ],
+  "brain": {
+    "box": [
+      608,
+      536,
+      64,
+      36
+    ],
+    "xy": [
+      640,
+      552
+    ],
+    "on_v": 75
+  },
+  "spd": {
     "roi": [
-     480,
-     0,
-     480,
-     280
+      580,
+      440,
+      120,
+      110
+    ],
+    "xy": [
+      640,
+      482
     ]
-   },
-   {
-    "tpl": "vs_fight",
-    "th": 0.75,
-    "roi": [
-     1020,
-     0,
-     260,
-     130
+  },
+  "btn_rois": [
+    [
+      265,
+      478,
+      220,
+      68
+    ],
+    [
+      530,
+      478,
+      220,
+      68
+    ],
+    [
+      793,
+      478,
+      220,
+      68
     ]
-   }
-  ]
- },
- "daily_cap": 0,
- "target_card": "ev_target",
- "max_swipes": 18,
- "home_roi": [
-  0,
-  0,
-  180,
-  70
- ],
- "boss_anchor": {
-  "color": "#FF7AC241",
-  "tol": 50,
-  "roi": [
-   640,
-   40,
-   640,
-   500
   ],
-  "offset": [
-   -72,
-   2
-  ],
-  "band": 28
- },
- "map_pan": {
-  "swipe": [
-   960,
-   288,
-   320,
-   288,
-   700
-  ],
-  "times": 2,
-  "wait_ms": 2200
- },
- "vs_fight_xy": [
-  1175,
-  54
- ],
- "brain": {
-  "box": [
-   608,
-   536,
-   64,
-   36
-  ],
-  "xy": [
-   640,
-   552
-  ],
-  "on_v": 75
- },
- "spd": {
-  "roi": [
-   580,
-   440,
-   120,
-   110
-  ],
-  "xy": [
-   640,
-   482
-  ]
- },
- "btn_rois": [
-  [
-   265,
-   478,
-   220,
-   68
-  ],
-  [
-   530,
-   478,
-   220,
-   68
-  ],
-  [
-   793,
-   478,
-   220,
-   68
-  ]
- ],
- "shizuku": {
-  "download_url": "https://github.com/RikkaApps/Shizuku/releases/latest",
-  "release_api": "https://api.github.com/repos/RikkaApps/Shizuku/releases/latest",
-  "homepage": "https://shizuku.rikka.app/",
-  "play_url": "https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api"
- },
- "stats": {
-  "weeks": 26,
-  "levels": [
-   1,
-   3,
-   6,
-   11
-  ]
- },
- "store": {
-  "keep_days": 400
- },
- "pf": {
-  "energy_cost": 4,
-  "favorite": true,
-  "rule": null,
-  "tap_delay_ms": 400,
-  "pages_max": 30,
-  "_note": "PF 全链 (nav 模式) 配置。energy_cost=每个出战槽角色需要的黄钉能量; favorite=编队筛选勾喜爱; rule=场次条件 {type:element|class,value:...} 或 null (element 规则会触发筛选替换, class 只约束防守队、不进出战队编队路径); tap_delay_ms=主循环每步间隔; pages_max=候选区翻页上限。⚠️ 几何/阈值不在这里 —— 见 Pf.java (PC 值 + 换算, 便于与 tools/pf_bot.py 逐条对照)"
- }
+  "shizuku": {
+    "download_url": "https://github.com/RikkaApps/Shizuku/releases/latest",
+    "release_api": "https://api.github.com/repos/RikkaApps/Shizuku/releases/latest",
+    "homepage": "https://shizuku.rikka.app/",
+    "play_url": "https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api"
+  },
+  "stats": {
+    "weeks": 26,
+    "levels": [
+      1,
+      3,
+      6,
+      11
+    ]
+  },
+  "store": {
+    "keep_days": 400
+  },
+  "pf": {
+    "energy_cost": 4,
+    "favorite": true,
+    "rule": null,
+    "tap_delay_ms": 400,
+    "pages_max": 30,
+    "_note": "PF 全链 (nav 模式) 配置。energy_cost=每个出战槽角色需要的黄钉能量; favorite=编队筛选勾喜爱; rule=场次条件 {type:element|class,value:...} 或 null (element 规则会触发筛选替换, class 只约束防守队、不进出战队编队路径); tap_delay_ms=主循环每步间隔; pages_max=候选区翻页上限。⚠️ 几何/阈值不在这里 —— 见 Pf.java (PC 值 + 换算, 便于与 tools/pf_bot.py 逐条对照)"
+  }
 }

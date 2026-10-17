@@ -317,13 +317,14 @@ final class PfTeam {
             }
         }
         if (chosen >= 0) {
-            flow.log("选对手: 卡" + (chosen + 1) + " 倍率最大 = " + fmt(bestMult));
+            /* 选对手结果**带图**: 三张卡的倍率读数 + 最终选了谁, 一张图就能复盘 */
+            SgmLog.i("pf", "选对手: 卡" + (chosen + 1) + " 倍率最大 = " + fmt(bestMult), bmp);
         } else if (fireCount > 0) {
             chosen = firstFire;
-            flow.log("选对手: 倍率不可读 (缺 mult_* 模板) — 退化取首个火框卡 " + (chosen + 1));
+            SgmLog.i("pf", "选对手: 倍率不可读 — 退化取首个火框卡 " + (chosen + 1), bmp);
         } else {
             chosen = 0;
-            flow.log("选对手: 无火框 — 退化取第 1 张 (战力不可读)");
+            SgmLog.i("pf", "选对手: 无火框 — 退化取第 1 张 (战力不可读)", bmp);
         }
         int[] p = Pf.OPP_CLICK[chosen];
         flow.tap(bmp, p[0], p[1]);

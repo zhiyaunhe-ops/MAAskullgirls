@@ -140,6 +140,7 @@ public final class SettleLoop {
         JSONObject c = cfg.read();
         cfgRef = c;
         Vision.configure(c);                                  // 匹配口径可配
+        Shots.configure(c);                                   // 带图日志的开关/上限 (log.shots_*)
         Graph.load(c);                                        // 判定图结构可配
         Trace.configure(sub(c, "log").optInt("trace_size", 200));
 

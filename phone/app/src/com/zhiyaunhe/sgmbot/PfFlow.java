@@ -186,6 +186,7 @@ public final class PfFlow {
     public void run(AtomicBoolean run, Config cfg, boolean quiet) {
         JSONObject c = cfg.read();
         Vision.configure(c);
+        Shots.configure(c);          // 带图日志的开关/上限 (log.shots_*)
 
         team.configure(c);
         if (!team.loadTemplates()) {
@@ -238,12 +239,6 @@ public final class PfFlow {
              * 现在: 超过 STUCK_MS 没进展就按 返回键 → 重拉游戏 → 重新导航 逐级升级,
              * 每级之间重新计时, 不让它停在同一级。 */
             long nowMs = System.currentTimeMillis();
-            /* 起步阶段不算卡住: 第一场还没开打时, 导航本身就要花时间 (冷启动/结算残留),
-             * 那时按返回键只是噪声。第一场开打之后才开始计时。 */
-            if (roundsDone > 0 && nowMs - lastProgressMs > STUCK_MS) {
-                escalateStuck(run, c);
-                lastProgressMs = System.currentTimeMillis();
-            }
             if (System.currentTimeMillis() - lastUiMs > 2000) {
                 lastUiMs = System.currentTimeMillis();
                 pushUi();
@@ -255,6 +250,15 @@ public final class PfFlow {
                 continue;
             }
             Vision.Frame work = Vision.toWork(bmp);
+            /* 起步阶段不算卡住: 第一场还没开打时, 导航本身就要花时间 (冷启动/结算残留),
+             * 那时按返回键只是噪声。第一场开打之后才开始计时。
+             * ⚠️ 这条检查放在**截图之后**: 升级脱困时要把"卡住那一刻的画面"存进日志。 */
+            if (roundsDone > 0 && nowMs - lastProgressMs > STUCK_MS) {
+                SgmLog.i("pf", "看门狗: 超 " + (nowMs - lastProgressMs) / 1000
+                        + "s 无进展 — 升级脱困", bmp);
+                escalateStuck(run, c);
+                lastProgressMs = System.currentTimeMillis();
+            }
             step(work, bmp, run, c);
             sleep_(team.tapDelayMs());
         }
@@ -310,7 +314,7 @@ public final class PfFlow {
          * ⚠️ 点完要 noteProgress(): 弹窗不消失时界面不变, 看门狗会以为卡死然后去重拉游戏。 */
         if (PfScene.serverPopup(work)) {
             unknownTries = 0;
-            log("服务器错误弹窗 (CANCEL/RETRY) — 点 RETRY");
+            SgmLog.i("pf", "服务器错误弹窗 (CANCEL/RETRY) — 点 RETRY", bmp);
             tap(bmp, PfScene.serverRetryAt());
             sleep_(2500);
             noteProgress();
@@ -337,7 +341,7 @@ public final class PfFlow {
             if (justFoughtTicks > 0 || System.currentTimeMillis() - lastFightTapMs < 20_000) {
                 team.bumpEnergyCost();
             }
-            log("弹窗 (能量/streak/OPTIONS), 关闭");
+            SgmLog.i("pf", "弹窗 (能量/streak/OPTIONS), 关闭", bmp);
             tap(bmp, px0);
             sleep_(1500);
             return;
@@ -355,6 +359,8 @@ public final class PfFlow {
         /* 界面一变就是进展 (看门狗的计时基准) —— 卡死时界面是不变的。 */
         if (sc != lastSceneSeen) {
             if (lastSceneSeen != null && sc != PfScene.S.UNKNOWN) noteProgress();
+            /* 界面切换 = **最该带图**的一刻: 排查时一眼看出"当时到底停在哪一页、长什么样"。 */
+            SgmLog.i("pf", "界面 " + (lastSceneSeen == null ? "?" : lastSceneSeen) + " → " + sc, bmp);
             lastSceneSeen = sc;
         }
         if (sc != PfScene.S.UNKNOWN) {
@@ -432,7 +438,7 @@ public final class PfFlow {
         int[] x = findPopupX(work);
         if (x != null) {
             unknownTries = 0;
-            log("弹窗 (能量/streak/OPTIONS), 关闭");
+            SgmLog.i("pf", "弹窗 (能量/streak/OPTIONS), 关闭", bmp);
             tap(bmp, x);
             sleep_(1500);
             return;
@@ -574,7 +580,13 @@ public final class PfFlow {
         //    (某些界面左上是设置齿轮, 只按返回键会打开 OPTIONS 卡死)。
         setStep("等待已知界面");
         unknownTries++;
-        log("未知界面, 等待 3s (第 " + unknownTries + " 次)");
+        /* ⚠️ 未知界面每 3 秒就来一次 ⇒ 只在**第 1 次和每第 5 次**存图, 否则光是它就能把
+         * 图片量刷爆 (一个卡死的小时 = 1200 张)。 */
+        if (unknownTries <= 1 || unknownTries % 5 == 0) {
+            SgmLog.i("pf", "未知界面, 等待 3s (第 " + unknownTries + " 次)", bmp);
+        } else {
+            log("未知界面, 等待 3s (第 " + unknownTries + " 次)");
+        }
         sleep_(3000);
         Bitmap b2 = sh.capture();
         if (b2 != null) {

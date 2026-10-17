@@ -130,6 +130,19 @@ public class ConfigActivity extends Activity {
         intEdit("log.trace_size", "保留条数", sec("log", "trace_size", 200), 20, 2000);
         hint("判定图右侧那张表保留多少条; 调大更占内存。");
 
+        /* ---- 带图日志 ---- */
+        section("带图日志 (调试)");
+        hint("关键事件在日志行尾挂一张缩小 JPEG, 形如 "
+                + "「… 选对手: 卡2 倍率最大 = 2.0 | 图=shots/2026-10-17/124633_512_pf.jpg」。"
+                + "图存在 " + Paths.shotsDir() + " (按天分目录), **总量超上限就从最旧的删**。\n"
+                + "哪几类事件带图: 界面切换 / 弹窗 / 看门狗 / 未知界面 (节流) / 选对手结果。");
+        boolEdit("log.shots_on", "开关", bool("log", "shots_on", true));
+        textEdit("log.shots_max_gb", "总量上限 (GB)", str("log", "shots_max_gb", "2.0"));
+        intEdit("log.shots_w", "图宽 (px, 高按比例)", sec("log", "shots_w", 640), 240, 1280);
+        intEdit("log.shots_quality", "JPEG 质量", sec("log", "shots_quality", 60), 20, 90);
+        hint("⚠️ 改这两项只影响**以后存的图**; 已在盘上的图按原样保留, 直到被滚动清理。\n"
+                + "粗算: 640x288 / 质量 60 ≈ 20~35 KB/张, 一轮约 8~12 张 ⇒ 2 GB 能存几千轮。");
+
         /* ---- 更新 ---- */
         section("GitHub 更新");
         textEdit("update.repo", "仓库 (owner/name)", str("update", "repo", ""));

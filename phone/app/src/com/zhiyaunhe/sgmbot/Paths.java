@@ -78,6 +78,9 @@ public final class Paths {
     public static String config() { return root + "/config.json"; }
     public static String tplDir() { return root + "/templates/"; }
     public static String logDir() { return root + "/logs/"; }
+
+    /** 带图日志的图片目录 (按天分子目录, 总量由 Shots 滚动清理)。 */
+    public static String shotsDir() { return root + "/logs/shots/"; }
     /** GitHub 热更包落点 (bundle.zip / sgmbot.apk) — 见 Update */
     public static String updateDir() { return root + "/update/"; }
 }

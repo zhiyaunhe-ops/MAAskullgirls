@@ -251,6 +251,7 @@ public class BotService extends Service {
             if (tpls != null) tpls.clear();     // 模板热更: 下次取模板重新解码
             JSONObject c = cfg.read();
             Vision.configure(c);                // 匹配口径可能改了
+            Shots.configure(c);                 // 带图日志的开关/上限可能改了
             Graph.load(c);                      // 判定图结构可能改了
             SgmLog.i("ctl", "reloaded, target=" + c.optString("target_card")
                     + " | 匹配=" + Vision.modeText());

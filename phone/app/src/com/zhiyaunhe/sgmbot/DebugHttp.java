@@ -106,6 +106,24 @@ public final class DebugHttp {
             } else if (path.startsWith("/pf")) {
                 replyHtml(s, PF_HTML);
                 return;
+            } else if (path.startsWith("/shots_flood")) {
+                /* 自检: 连续存 n 张当前帧, 用来验证「总量封顶 → 从最旧删」真的会触发。
+                 * ⚠️ 只在 adb/本机可达, 且不影响主循环 (走懒加载的那条 ctl())。 */
+                int n = 200;
+                try { n = Math.max(10, Math.min(5000, Integer.parseInt(query(path, "n")))); }
+                catch (Exception ignored) { }
+                final int nn = n;
+                new Thread(() -> {
+                    int ok = 0;
+                    for (int i = 0; i < nn; i++) {
+                        Bitmap b = ctl().capture();
+                        if (b == null) continue;
+                        if (Shots.save(b, "flood") != null) ok++;
+                    }
+                    SgmLog.i("shot", "自检连存完成 " + ok + "/" + nn
+                            + " 张, 当前占用 " + (Shots.usedBytes() / 1048576) + " MB");
+                }, "shots-flood").start();
+                body = "flooding " + n + " frames (压上限用)";
             } else if (path.startsWith("/dump")) {
                 /* 临时采集 hook 开关 (PfDump) — WebUI 的采集开关走这里 */
                 String on = query(path, "on");
@@ -300,6 +318,9 @@ public final class DebugHttp {
             }
             o.put("dump_on", PfDump.enabled());
             o.put("dump_count", PfDump.count());
+            /* 带图日志的余量 (调试时一眼看出还能存多少张) */
+            o.put("shots_on", Shots.enabled());
+            o.put("shots_mb", Math.round(Shots.usedBytes() / 107374.18) / 10.0);  // 一位小数, 免得几十 KB 显示成 0
             o.put("dump_max", PfDump.MAX);
             o.put("dump_dir", PfDump.dir());
             o.put("ts", System.currentTimeMillis());
