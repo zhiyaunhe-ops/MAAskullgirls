@@ -13,6 +13,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
 /**
  * 悬浮控制条 — 移植自 autojs settle_bot.js 最新悬浮面板 (2026-10-07 口径):
  *   五键一行 (开始/导航/暂停/结束/◀) + 三行统计; ◀ 折成贴边小箭头, 点箭头展开;
@@ -263,7 +265,7 @@ public final class OverlayBar {
                 case MotionEvent.ACTION_MOVE: {
                     int nx = (int) e.getRawX() - down[0], ny = (int) e.getRawY() - down[1];
                     /* ⚠️ 阈值 12 不是 4 (2026-10-17 用户: 「点不了」): 4px 时手指微抖就被
-                     * 判成"拖动", 松手不触发点击 —— 52dp 的小浮标上极易发生, 表现为
+                     * 判成"拖动", 松手不触发点击 —— 小浮标上极易发生, 表现为
                      * "点了没反应"。12px 仍远小于"真的想拖"的幅度 (拖动通常 >30px)。 */
                     if (Math.abs(nx - targetLp.x) + Math.abs(ny - targetLp.y) > 12) moved[0] = 1;
                     targetLp.x = nx; targetLp.y = ny;
@@ -389,10 +391,11 @@ public final class OverlayBar {
      * 为什么非要它 (2026-10-17 用户: 「你做一个自定义键, 我可以快速暂停」):
      *   主窗挂机时被 setHidden 缩成 1x1 alpha=0 (为了不被 MIUI 冻住), **人点不到**
      *   ⇒ 想暂停只能切回 App 主页, 而游戏切出去再切回来要好几秒, 挂机时很不顺手。
-     * 做法: 另开一个 52dp 的小窗口 (主窗藏起来时它可见, 主窗回来时它消失), 点一下
+     * 做法: 另开一个小窗口 (默认 **36dp**, 大小可在主页 PF 配置里设 24~96dp;
+     * 主窗藏起来时它可见, 主窗回来时它消失), 点一下
      *   = trigger("stop"), 与悬浮条上那颗「暂停」键**走同一个动作名**, 不造第二套协议。
      * ⚠️ 位置默认贴**右下角底部**: 游戏 HUD (FIGHT!/倍率徽章/CONTINUE) 全在右侧中上部,
-     *   work y≥540 (全屏 y≥1012) 是结算按钮行以下的空白带, 浮标 52dp 放进去不挡判定;
+     *   work y≥540 (全屏 y≥1012) 是结算按钮行以下的空白带, 浮标放进去不挡判定;
      *   但每台机的 UI 不完全一样 ⇒ **可拖动**, 位置单独存盘 (overlay_fab_pos)。 */
 
     /** 显示/隐藏浮标 (幂等; 懒创建 —— App 启动时不白占一个窗口)。
@@ -400,13 +403,21 @@ public final class OverlayBar {
      *  「先挂浮标、再藏主窗」的顺序倒过来, 中间出现一帧"两个窗口都没有" —— 正是
      *  2026-10-16 想避开的 MIUI 后台冻结场景。所以非主线程调用时才转 post。 */
     public void setFabVisible(final boolean on) {
-        if (on == fabShown) return;
+        if (on == fabShown) {
+            /* 已显示也要查一次大小: 用户可能刚在主页改了 pf.fab_dp (引擎跑着, 浮标正挂着)
+             * —— 不查就要等下次挂机才生效, 而那时用户根本不在看这个页面。 */
+            if (on) main(this::resizeFabIfNeeded);
+            return;
+        }
         fabShown = on;
         main(() -> {
             if (on) {
                 try {
                     if (fabRoot == null) buildFab();
                     if (fabRoot == null) return;          // 建失败 (极少见: 权限被收回)
+                    /* 用户在主页改了大小 (pf.fab_dp) ⇒ 正挂着也**即时重建**, 不用等下次挂机。 */
+                    resizeFabIfNeeded();
+                    if (fabRoot == null) return;
                     /* ⚠️ 每次显示都按**当前**屏幕尺寸重算默认位置 (用户没拖过时):
                      *   竖屏建的窗拿到横屏 display 上, 旧坐标会飞出屏幕 —— 2026-10-17
                      *   用户报「横屏的时候有问题, 不在边角」就是这么来的。 */
@@ -438,24 +449,66 @@ public final class OverlayBar {
     }
 
     /**
+     * config 里的 {@code pf.fab_dp} 变了就**即时重建**浮标 (用户在主页改了大小, 正挂着也生效)。
+     * 重建 = removeView + 丢掉 fabRoot (下次 buildFab 按新尺寸建) + 重新 addView。
+     * ⚠️ 位置不重算 (用户可能拖过) —— 只按新尺寸 clamp 回屏内。 */
+    private void resizeFabIfNeeded() {
+        try {
+            if (fabRoot == null || fabLp == null) return;
+            int want = fabDpPx();
+            if (fabLp.width == want) return;              // 没变, 什么都不做
+            SgmLog.i("overlay", "暂停浮标改大小 " + fabLp.width + " → " + want + "px, 即时重建");
+            wm.removeView(fabRoot);
+            int keepX = fabLp.x, keepY = fabLp.y;
+            fabRoot = null;
+            buildFab();
+            if (fabRoot == null) return;
+            fabLp.x = keepX; fabLp.y = keepY;
+            wm.addView(fabRoot, fabLp);
+            clampPos(fabLp, fabRoot);
+            try { wm.updateViewLayout(fabRoot, fabLp); } catch (Exception ignored) { }
+        } catch (Throwable t) {
+            SgmLog.i("overlay", "浮标改大小失败 (不影响主链): " + t);
+        }
+    }
+
+    /**
      * 浮标默认位置 = 右下角, 但**离底留一条手势带** (MIUI 全面屏手势)。
      * ⚠️ 2026-10-17 用户: 「不仅点不了」—— 贴死底边时手指按在系统手势区里,
      *   轻触会被"上滑回桌面"吃掉, 表现为"点了没反应"。留 56dp 就落在可点区。
      * 用户拖过的位置 (savedFabPos) 不动; 只有从没拖过才重算。 */
     private void refreshFabPos() {
         if (OverlayCtl.savedFabPos() != null) return;
-        int dp = (int) (52 * ctx.getResources().getDisplayMetrics().density);
+        int dp = fabDpPx();
         int pad = (int) (56 * ctx.getResources().getDisplayMetrics().density);
         fabLp.x = size.w() - dp - (int) (12 * ctx.getResources().getDisplayMetrics().density);
         fabLp.y = size.h() - dp - pad;
     }
 
-    /** 建浮标窗口 (只在第一次要显示时跑)。 */
+    /**
+     * 浮标边长 (px) —— config 的 {@code pf.fab_dp} (默认 **36dp**)。
+     *
+     * <p>⚠️ 2026-10-17 用户: 「你可以缩的更小点, 然后可以设置大小」—— 默认从 52dp 缩到
+     * 36dp (用户主要诉求是"别挡游戏"), 大小可在主页 PF 配置里选 (28~64dp)。
+     * 改完下次挂机即生效; 浮标正挂着时也会即时重建 (见 {@link #resizeFabIfNeeded})。 */
+    private int fabDpPx() {
+        int dp = 36;
+        try {
+            JSONObject p = BotService.cfgOr(ctx).read().optJSONObject("pf");
+            if (p != null) dp = p.optInt("fab_dp", 36);
+        } catch (Throwable ignored) { }
+        if (dp < 24) dp = 24;                 // 再小就点不准了 (防手滑配置)
+        if (dp > 96) dp = 96;
+        return (int) (dp * ctx.getResources().getDisplayMetrics().density);
+    }
+
+    /** 建浮标窗口 (只在第一次要显示时跑; 改了大小由 {@link #resizeFabIfNeeded} 重建)。 */
     private void buildFab() {
-        final int dp = (int) (52 * ctx.getResources().getDisplayMetrics().density);
+        final int dp = fabDpPx();
         final Button b = new Button(ctx);
-        b.setText("暂停");
-        b.setTextSize(9f);
+        /* 小尺寸放不下两个字 ⇒ 单字「停」; ≥44dp 才用「暂停」。 */
+        b.setText(dp <= 40 * ctx.getResources().getDisplayMetrics().density ? "停" : "暂停");
+        b.setTextSize(dp <= 40 * ctx.getResources().getDisplayMetrics().density ? 10f : 9f);
         b.setTextColor(0xFFFFFFFF);
         b.setPadding(0, 0, 0, 0);
         b.setAllCaps(false);
@@ -494,7 +547,7 @@ public final class OverlayBar {
         if (pos != null) {
             fabLp.x = pos[0]; fabLp.y = pos[1];
         } else {
-            /* 默认右下角贴底 (游戏底部是空白带, 见类注释) */
+            /* 默认右下角 (游戏底部是空白带, 见类注释); 真正的默认值在 refreshFabPos 算 */
             fabLp.x = size.w() - dp - 12;
             fabLp.y = size.h() - dp - 12;
         }
@@ -572,6 +625,12 @@ public final class OverlayBar {
             r.run();
         }
     }
+
+    /** 浮标当前是否可见 (BotService.reload 用: 可见才值得查大小)。 */
+    public boolean fabVisible() { return fabShown; }
+
+    /** 按当前 config 的 pf.fab_dp 刷新浮标大小 (改了大小即时重建; 没变是空操作)。 */
+    public void refreshFabSize() { if (fabShown) main(this::resizeFabIfNeeded); }
 
     /** 当前统计文案 (给 OverlayCtl 的周期刷新用) */
     public String statText() { return statText; }

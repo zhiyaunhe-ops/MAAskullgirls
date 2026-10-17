@@ -252,6 +252,10 @@ public class BotService extends Service {
             JSONObject c = cfg.read();
             Vision.configure(c);                // 匹配口径可能改了
             Shots.configure(c);                 // 带图日志的开关/上限可能改了
+            /* 暂停浮标大小 (pf.fab_dp) 可能刚改过 —— 引擎跑着时浮标正挂着, 即时重建,
+             * 别让用户"改了没反应" (2026-10-17 用户: 「可以设置大小」)。 */
+            OverlayBar bb = OverlayCtl.bar();
+            if (bb != null && bb.fabVisible()) bb.refreshFabSize();
             Graph.load(c);                      // 判定图结构可能改了
             SgmLog.i("ctl", "reloaded, target=" + c.optString("target_card")
                     + " | 匹配=" + Vision.modeText());

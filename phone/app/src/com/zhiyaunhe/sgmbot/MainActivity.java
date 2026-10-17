@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
     /** PF 配置 + PF 操作整块 (仅 PF 模式可见; 2026-10-17 晚用户要求内联展开)。 */
     private LinearLayout pfBox;
     /** PF 配置各值的"当前值"按钮 (文案 = 左标签 + 右当前值, 点了弹选择层)。 */
-    private Button btnArena, btnEnergy, btnScore, btnRule, btnFav;
+    private Button btnArena, btnEnergy, btnScore, btnRule, btnFav, btnFabSize;
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -473,6 +473,7 @@ public class MainActivity extends Activity {
         btnScore = Ui.button(this, "", "本场想刷到的分数 (达标就停)", feed, this::pickScore);
         btnRule = Ui.button(this, "", "出战规则 (约束编队选人)", feed, this::pickRule);
         btnFav = Ui.button(this, "", "编队选人时只用收藏角色", feed, this::toggleFav);
+        btnFabSize = Ui.button(this, "", "挂机时那颗红色「暂停」小浮标的大小 (小了不挡游戏)", feed, this::pickFabSize);
 
         Ui.add(this, Ui.section(this, "PF 操作"));
         pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
@@ -494,6 +495,7 @@ public class MainActivity extends Activity {
         setLabel(btnScore, "分数上限: " + (st < 0 ? "无上限 (月场)" : (st / 10000000) + "kw"));
         setLabel(btnRule, "出战规则: " + (ruleText() == null ? "无" : ruleText()));
         setLabel(btnFav, "只用收藏角色: " + (pfBool("favorite", true) ? "开" : "关"));
+        setLabel(btnFabSize, "暂停浮标大小: " + pfInt("fab_dp", 36) + "dp");
     }
 
     private void setLabel(Button b, String s) {
@@ -675,6 +677,29 @@ public class MainActivity extends Activity {
         String err = writePf(kv1("pf.favorite", !on));
         if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
         pfDone(!on ? "只用收藏角色 = 开" : "只用收藏角色 = 关 (全部可选)");
+    }
+
+    /** 暂停浮标大小 (2026-10-17 用户: 「你可以缩的更小点, 然后可以设置大小」)。 */
+    private void pickFabSize() {
+        final int[] vals = {28, 32, 36, 40, 48, 56, 64};
+        String[] items = new String[vals.length];
+        for (int i = 0; i < vals.length; i++) {
+            items[i] = vals[i] + "dp" + (vals[i] == 36 ? " (默认)" : "")
+                    + (vals[i] <= 32 ? " 很小" : vals[i] >= 56 ? " 很大" : "");
+        }
+        int cur = 0;
+        int c = pfInt("fab_dp", 36);
+        for (int i = 0; i < vals.length; i++) if (vals[i] == c) cur = i;
+        pick("暂停浮标大小 (挂机时右下角那颗红钮)", items, cur, i -> {
+            String err = writePf(kv1("pf.fab_dp", vals[i]));
+            if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+            /* 引擎在跑时浮标正挂着 ⇒ OverlayBar.setFabVisible(true) 会按新尺寸即时重建;
+             * 没在跑就下次挂机生效。 */
+            feed.setTextColor(Ui.OK);
+            feed.setText("✓ 暂停浮标 = " + vals[i] + "dp"
+                    + (BotService.isRunning() ? " — 已即时重建" : " — 下次挂机生效"));
+            refreshPfLabels();
+        });
     }
 
     private static java.util.Map<String, Object> kv1(String k, Object v) {
