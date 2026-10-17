@@ -254,6 +254,56 @@ public class ConfigActivity extends Activity {
         }
     }
 
+    /**
+     * 一次写**多个** override 键 —— PF 设置页选一个场次要同时落 4 项
+     * (场次名/能量/分数上限/规则), 连着调 4 次单键版就是 4 次整文件重写 + 4 次 reload。
+     *
+     * <p>⚠️ 值为 {@code null} 表示**删掉这个键** (而不是写字符串 "null"):
+     * 换场次时要把上一场的 rule 清掉, 否则会残留成"新场次 + 旧规则"这种最坏组合。
+     *
+     * @return null 成功; 否则是人话错误
+     */
+    static String setOverrides(Context ctx, java.util.Map<String, Object> kv) {
+        try {
+            JSONObject ov = new JSONObject();
+            for (java.util.Map.Entry<String, Object> e : kv.entrySet()) {
+                Object v = e.getValue();
+                if (v == null) { removePath(ov, e.getKey()); continue; }
+                put(ov, e.getKey(), String.valueOf(v));
+            }
+            JSONObject merged = Config.merge(existingOverride(), ov);
+            /* ★ 删键必须在**合并后**的树上做: merge 只做"覆盖", 删掉的键会被 defaults
+             *   原样带回来 ⇒ 必须记下待删键, 合并完再删一遍。 */
+            for (java.util.Map.Entry<String, Object> e : kv.entrySet()) {
+                if (e.getValue() == null) removePath(merged, e.getKey());
+            }
+            File f = new File(Paths.config());
+            File p = f.getParentFile();
+            if (p != null && !p.exists()) p.mkdirs();
+            FileOutputStream os = new FileOutputStream(f);
+            os.write(merged.toString(2).getBytes("UTF-8"));
+            os.close();
+            BotService.reload();
+            SgmLog.i("cfg", "override 多键写入 " + kv.keySet() + " → " + f.getAbsolutePath());
+            return null;
+        } catch (Throwable t) {
+            SgmLog.i("cfg", "override 多键写入失败: " + t);
+            return t.toString();
+        }
+    }
+
+    /** 按 a.b.c 路径删键 (不存在就什么都不做)。 */
+    private static void removePath(JSONObject o, String path) {
+        String[] ks = path.split("\\.");
+        JSONObject d = o;
+        for (int i = 0; i < ks.length - 1; i++) {
+            JSONObject n = d.optJSONObject(ks[i]);
+            if (n == null) return;
+            d = n;
+        }
+        d.remove(ks[ks.length - 1]);
+    }
+
     private static JSONObject existingOverride() {        try {
             File f = new File(Paths.config());
             if (f.exists() && f.length() > 0)

@@ -58,6 +58,9 @@
              (非 exported 时 am start 会抛 "Permission Denial: not exported",
               实测 2026-10-16 踩到)。本页只读状态, 不接任何外部 intent 数据。 -->
         <activity android:name=".MonitorActivity" android:exported="true"/>
+        <!-- PF 设置页 (场次/能量/分数/规则/指纹)。exported=同 MonitorActivity 的理由:
+             排障时 adb am start 能直接拉起来, 省掉"在主页滚半天找按钮"。 -->
+        <activity android:name=".PfSettingsActivity" android:exported="true"/>
 
         <!-- PF WebUI 控制台: WebView 打开本机调试口 /pf (页面本体在 DebugHttp.PF_HTML)。
              exported=true 同 MonitorActivity 的理由: adb am start 能直接拉起排障;

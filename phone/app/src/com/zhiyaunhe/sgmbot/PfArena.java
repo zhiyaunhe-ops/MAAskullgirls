@@ -59,6 +59,11 @@ final class PfArena {
     }
 
     private File file() {
+        return targetFile();
+    }
+
+    /** 指纹文件 (静态版 —— PF 设置页/其它无实例的地方也要用)。 */
+    static File targetFile() {
         return new File(Paths.root(), "arena_target.png");
     }
 
@@ -198,6 +203,15 @@ final class PfArena {
      * 绝不再做任何缩放。指纹和搜索区从此同坐标系。
      */
     private boolean learn(Bitmap bmp) {
+        return remember(bmp);
+    }
+
+    /**
+     * 把当前帧的居中卡存成目标指纹 —— 抽成**包级静态**是为了让 App 内的
+     * 「PF 设置」页也能手动记一次 (用户换场次时不必先去跑一轮让 bot 自己学)。
+     * 口径与实例 {@code learn()} 完全一致 (见上面的移植踩坑注释)。
+     */
+    static boolean remember(Bitmap bmp) {
         try {
             Vision.Frame wf = Vision.toWork(bmp);        // 实机 → work(1280x576)
             int x0 = CARD[0], y0 = CARD[1], cw = CARD[2], ch = CARD[3];
@@ -207,16 +221,21 @@ final class PfArena {
                 System.arraycopy(wf.px, (y0 + y) * wf.w + x0, px, y * cw, cw);
             }
             Bitmap crop = Bitmap.createBitmap(px, cw, ch, Bitmap.Config.ARGB_8888);
-            FileOutputStream fo = new FileOutputStream(file());
+            FileOutputStream fo = new FileOutputStream(targetFile());
             crop.compress(Bitmap.CompressFormat.PNG, 100, fo);
             fo.close();
             SgmLog.i("pf", "场次锁定: 指纹已存 " + cw + "x" + ch + " (work 基准) → "
-                    + file().getAbsolutePath());
+                    + targetFile().getAbsolutePath());
             return true;
         } catch (Throwable t) {
             SgmLog.i("pf", "场次锁定: 存指纹失败 " + t);
             return false;
         }
+    }
+
+    /** 删掉指纹 (= 解除场次锁定; PC/WebUI 那句"想换场次请删掉 arena_target.png")。 */
+    static boolean forgetTarget() {
+        try { return !targetFile().exists() || targetFile().delete(); } catch (Throwable t) { return false; }
     }
 
     private static String fmt(double v) {
