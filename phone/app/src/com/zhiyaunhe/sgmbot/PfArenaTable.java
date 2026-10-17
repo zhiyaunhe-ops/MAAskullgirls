@@ -142,6 +142,24 @@ final class PfArenaTable {
         return Spec.of(e, n, e.optBoolean("monthly"));
     }
 
+    /**
+     * 全部可能的**出战规则**取值 (排序去重) —— 主页 PF 配置的「出战规则」弹层用。
+     *
+     * <p>形如 {@code class:Filia} / {@code element:water}。与 {@link Spec#rule()} 同一口径,
+     * 只是这里遍历整张表收集候选, 让用户能**手动**指定 (自动带出之外的override)。
+     */
+    static java.util.List<String> rules() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (JSONObject e : TABLE.values()) {
+            if (e == null) continue;
+            String r = Spec.of(e, "", false).rule();     // 只看 rule() 的推导, 名字/月场位无关
+            if (r == null || r.isEmpty() || out.contains(r)) continue;
+            out.add(r);
+        }
+        java.util.Collections.sort(out);
+        return out;
+    }
+
     /** 一个场次的完整定义 + 取值条件。 */
     static final class Spec {
         final String name;      // hub 上读到的原名 (可能是 null)

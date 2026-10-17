@@ -1,7 +1,9 @@
 package com.zhiyaunhe.sgmbot;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -51,9 +53,12 @@ public class MainActivity extends Activity {
     private TextView feed;          // 点击反馈行 (只由 Ui.act/gate 写)
     /** 三选一的模式键 (下标 = 0 长滚 / 1 快速 / 2 PF); 文案随当前模式变, 每秒刷。 */
     private Button[] modeBtn;
-    private Button pfSetBtn;        // PF 设置页入口 (文案带当前目标场次, 每秒刷)
     private Button overlayBtn;      // 悬浮窗 启动/隐藏 (文案随窗口状态变, 每秒刷)
     private Button pfBtn;           // PF 挂机 开始/暂停 (文案随运行状态变, 每秒刷)
+    /** PF 配置 + PF 操作整块 (仅 PF 模式可见; 2026-10-17 晚用户要求内联展开)。 */
+    private LinearLayout pfBox;
+    /** PF 配置各值的"当前值"按钮 (文案 = 左标签 + 右当前值, 点了弹选择层)。 */
+    private Button btnArena, btnEnergy, btnScore, btnRule, btnFav;
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -71,10 +76,14 @@ public class MainActivity extends Activity {
                     if (!lb.contentEquals(modeBtn[i].getText())) modeBtn[i].setText(lb);
                 }
             }
-            if (pfSetBtn != null) {
-                String lb = pfSetLabel();
-                if (!lb.contentEquals(pfSetBtn.getText())) pfSetBtn.setText(lb);
+            /* PF 配置块只在 PF 模式下可见 (模式可能被 WebUI 改, 所以这里也查)。
+             * ⚠️ 只改显隐不重建控件 —— 重建要在 Ui.end() 之后造 view, 会崩 (见 buildPfPanel 注)。 */
+            if (pfBox != null) {
+                int vis = BotService.MODE_APP_PF.equals(BotService.appMode(MainActivity.this))
+                        ? View.VISIBLE : View.GONE;
+                if (pfBox.getVisibility() != vis) pfBox.setVisibility(vis);
             }
+            refreshPfLabels();
             /* 窗口可能被系统摘掉/被悬浮条上的「结束」收掉 ⇒ 文案要跟着变。
              * ⚠️ 只在**文本真的变了**时才 setText —— 每秒无条件 setText 会让按钮一直
              *    重绘 (按下的高亮都会被刷掉, 看着像"点不动")。 */
@@ -164,76 +173,44 @@ public class MainActivity extends Activity {
                             Uri.parse("package:" + getPackageName())));
                 });
 
-        /* ---------------- 挂机控制 ----------------
-         * ⚠️ 2026-10-11 用户要求瘦身: 「启动服务 / 停止引擎 / 结束服务」**全部删掉** ——
-         *    这三件事悬浮窗五键上都有 (开始 / 导航 / 暂停 / 结束), 主页再摆一套就是
-         *    **同一个动作两条路**, 而且两条路的前置检查还不一样 (主页走 Ui.gate,
-         *    悬浮条走 Ui.blockReason), 一旦不一致就会出现「主页点不了、悬浮条能点」
-         *    这种最难查的怪事。
-         *    现在定死: **控制只有一处 = 悬浮窗**; 主页只负责把它叫出来。 */
-        Ui.add(this, Ui.section(this, "挂机控制"));
-        Ui.add(this, Ui.hint(this,
-                "控制都在悬浮窗上, **按键随模式变** (2026-10-17 起):\n"
-                + "  PF 刷      → 开始 / 暂停 / ◀ 折叠   (先在游戏里停到目标的 hub 或编队页, 再点开始)\n"
-                + "  Events 两种 → 开始 / 监控 / 暂停 / 结束 / ◀ 折叠\n"
-                + "「开始」暂停后会变成「继续」; 「暂停」= 只停循环, 窗口留着可再开;\n"
-                + "「结束」= 退出挂机 —— 连服务与悬浮窗一起收掉。\n"
-                + "主页只做一件事 —— 把悬浮窗叫出来 (不需要先起服务)。\n"
-                + "⚠️ 挂机跑起来后悬浮窗会自动藏起来 (不挡游戏判定区), 那时**右下角会出现一颗\n"
-                + "   红色「暂停」小浮标**, 点一下就是暂停 —— 不用切回这个页面; 按住可拖到顺手的位置。"));
-        overlayBtn = Ui.button(this, overlayLabel(), "", feed, this::toggleOverlay);
-
-        /* ---------------- PF 挂机 ----------------
-         * ⚠️ 2026-10-16 用户要求: App 里要有 PF 模式, 且**开始后悬浮窗自动隐藏**避免干扰。
-         * 这推翻了 2026-10-11 "控制只有一处=悬浮窗"的规矩 (用户本人改主意) —— 因为悬浮窗
-         * 挂机时整个藏起来了, 悬浮窗上的按钮全都够不着, 控制必须有一个够得着的地方。
-         * 前置检查仍走**同一份** Ui.blockReason (和悬浮窗共用), 不会出现
-         * 「主页能点、悬浮窗不能点」那种两条路检查不一致的老毛病。 */
-        Ui.add(this, Ui.section(this, "PF 挂机"));
-        Ui.add(this, Ui.hint(this,
-                "「开始 PF」= 自动 导航 → 选对手 → 编队 → 战斗 → 结算 循环连打。\n"
-                + "「就地开始」= 假定**你已经把游戏停在 PF 上**(某个场次的 hub / 编队页),\n"
-                + "    跳过起步导航直接开跑。\n"
-                + "⚠️ 想打**哪一场**在下面的「PF 设置」里选 (会从场次表带出能量/分数/规则),\n"
-                + "    再在 hub 上点一次「记住当前场次指纹」锁住它 —— 自动读卡名 (OCR) 还没做,\n"
-                + "    所以不能让 bot 自己认场次。\n"
-                + "开始后**悬浮窗会整个隐藏** (避免挡住游戏判定区) —— 暂停/看进度都回这个页面;\n"
-                + "暂停或结束后悬浮窗自动回来。「监控」随时可看 当前界面/场次/时长/日志。"));
-        pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
-        Ui.button(this, "▶ 就地开始（先在游戏里手动停在 PF）", "", feed, () -> startPf(true));
-        Ui.button(this, "监控 (当前界面 / 场次 / 时长 / 日志)", "", feed,
-                () -> startActivity(new Intent(this, MonitorActivity.class)));
-        Ui.button(this, "WebUI 控制台 (状态 / 开始 / 实时画面 / 采集开关)", "", feed,
-                () -> startActivity(new Intent(this, WebUiActivity.class)));
-
         /* ---------------- 运行模式 (三选一) ----------------
          * ⚠️ 2026-10-17 用户: 「APP 里面可以切换三种模式吧 —— 日常 Events 的长滚/快速、
          *    PF 的这个屏幕刷的模式。切到 PF 之后悬浮窗应该只有一个开始, 然后 (人自己)
          *    切到 PF 界面再点那个开始」。
          * 所以这里从"常规 ⇄ 快速连点"的**二态开关**改成**三选一**, 并落进 config 的
-         * app.mode (BotService.appMode 读它) —— 悬浮窗的按键表也跟着这个值变。 */
+         * app.mode (BotService.appMode 读它) —— 悬浮窗的按键表也跟着这个值变。
+         * 2026-10-17 晚再改版 (用户: 「首先是三种模式保留, 然后启动悬浮窗放在那个下面,
+         *   我把名字文字说明都去掉只留这个按钮; 选中 pf 的时候把 pf 的配置全选出来」):
+         *   模式段上移到授权之下、悬浮窗按钮之上; 原来那三段长说明 (挂机控制/PF 挂机/
+         *   运行模式各一大段 hint) 全删只留按钮; PF 配置改为**内联展开**。 */
         Ui.add(this, Ui.section(this, "运行模式 (三选一)"));
-        Ui.add(this, Ui.hint(this,
-                "Events·长滚: Event 进场 → 地图长滚找王关 → 开打 → 结算循环。\n"
-                + "    ⚠️ 进场+长滚那段还没移植完 (在 AutoJS 里), 现在只跑结算闭环, 日志会写明。\n"
-                + "Events·快速: 盲点连点结算 (一轮 ~0.6s), 适合一直赢、该页没有额外奖励按钮。\n"
-                + "PF 刷: 选对手 → 编队选人 → FIGHT → 结算, 每场重选。\n"
-                + "    ⚠️ PF 模式下**悬浮窗只剩「开始 / 暂停」**: 先在游戏里停到目标场次的 "
-                + "hub 或编队页, 再点「开始」(就地开始, 不自动导航进场)。\n"
-                + "场次条件 (打哪一场 / 能量上限 / 分数上限 / 出战规则) 在下面「PF 设置」里配。"));
         modeBtn = new Button[3];
         for (int i = 0; i < modeBtn.length; i++) {
             final int k = i;
             modeBtn[i] = Ui.button(this, modeLabel(i), "", feed, () -> setAppMode(k));
         }
 
-        /* ---------------- PF 设置 ----------------
-         * 用户原话: 「WebUI 的那些选场次 / 能量上限等等条件应该都在 APP 里面配置才对呀」。
-         * 那一页里同时管: 目标场次 (从场次表带出条件) / 能量上限 / 分数上限 / 出战规则 /
-         * 对手选择策略 / 场次指纹。 */
-        Ui.add(this, Ui.section(this, "PF 设置"));
-        pfSetBtn = Ui.button(this, pfSetLabel(), "", feed,
-                () -> startActivity(new Intent(this, PfSettingsActivity.class)));
+        /* ---------------- 启动悬浮窗 ----------------
+         * ⚠️ 只此一个按钮: 标题与说明全按用户要求去掉 (2026-10-17)。原来那 8 行 hint
+         * 讲的事 (按键随模式变/暂停语义/右下角浮标) 现在由悬浮窗自己呈现, 抄在这里只会
+         * 过期 —— 10-11 至 10-17 这段它恰好对错过三次 (键名/模式表/浮标各一次)。 */
+        overlayBtn = Ui.button(this, overlayLabel(), "", feed, this::toggleOverlay);
+
+        /* ---------------- PF 配置 + PF 操作 (仅 PF 模式可见) ----------------
+         * 用户原话: 「选中 pf 的时候, 把 pf 的配置全选出来, 能量下限, pf 选人限定,
+         *   分数上限规则等等」—— 所以这一整块**跟着模式显隐**, 且配置直接内联,
+         * 不再跳二级页 (以前藏在「PF 设置」页里, 用户原话:「你现在完全没有地方配置」)。
+         *
+         * ⚠️ 构建必须在 Ui.begin(pfBox) 作用域内 (Ui.button 内部走 Ui.add); 之后切模式
+         *    只改 pfBox 的显隐、**不重建** —— 重建等于在 Ui.end() 之后再造控件, 正是
+         *    2026-10-17 上午 PfSettingsActivity 一进去就闪退的那个坑。 */
+        pfBox = new LinearLayout(this);
+        pfBox.setOrientation(LinearLayout.VERTICAL);
+        Ui.add(this, pfBox);
+        Ui.begin(pfBox);
+        buildPfPanel();
+        Ui.end();
+        Ui.begin(root);          // ⚠️ 恢复外层容器: 后面的「配置与查看」等段还要往 root 里加
 
         /* ---------------- 配置 / 查看 ---------------- */
         Ui.add(this, Ui.section(this, "配置与查看"));
@@ -471,13 +448,239 @@ public class MainActivity extends Activity {
         if (modeBtn != null) for (int k = 0; k < modeBtn.length; k++) {
             if (modeBtn[k] != null) modeBtn[k].setText(modeLabel(k));
         }
+        /* PF 配置块跟着模式显隐 (每秒 tick 也会查, 这里是点了立刻生效, 不用等一秒) */
+        if (pfBox != null) {
+            pfBox.setVisibility(BotService.MODE_APP_PF.equals(BotService.appMode(this))
+                    ? View.VISIBLE : View.GONE);
+        }
+        refreshPfLabels();
     }
 
-    /** PF 设置按钮文案: 带上当前目标场次, 不必点进去才知道现在打哪一场。 */
-    private String pfSetLabel() {
-        String a = PfSettingsActivity.targetArena(this);
-        return a == null || a.isEmpty() ? "PF 设置 (场次 / 能量 / 分数 / 规则) ⇄ 当前: 未指定"
-                : "PF 设置 (场次 / 能量 / 分数 / 规则) ⇄ 当前: " + a;
+    /* ================= PF 配置 (主页内联, 仅 PF 模式可见) =================
+     * 2026-10-17 晚用户: 「选中 pf 的时候, 把 pf 的配置全选出来, 能量下限, pf 选人限定,
+     * 分数上限规则等等」。
+     * 形态: 每项一个按钮, 文案 = 「标签: 当前值」, 点了弹单选层。比一堆 EditText 省地方,
+     * 也不会出现"填了 4kw 存成 40000 这种单位车祸"。
+     * ⚠️ 全部走 ConfigActivity.setOverrides (多键一次写 + 热重载), 与别处同一个口子。 */
+
+    /** 建 PF 配置 + PF 操作两块 (必须在 Ui.begin(pfBox) 作用域内调用)。 */
+    private void buildPfPanel() {
+        PfArenaTable.load(this);                 // 场次表 (36 条) —— 内联配置要用
+
+        Ui.add(this, Ui.section(this, "PF 配置 (打哪一场 / 什么条件)"));
+        btnArena = Ui.button(this, "", "从场次表选目标场次 (自动带出能量/分数/规则)", feed, this::pickArena);
+        btnEnergy = Ui.button(this, "", "编队时每个槽位要凑够的钉数下限", feed, this::pickEnergy);
+        btnScore = Ui.button(this, "", "本场想刷到的分数 (达标就停)", feed, this::pickScore);
+        btnRule = Ui.button(this, "", "出战规则 (约束编队选人)", feed, this::pickRule);
+        btnFav = Ui.button(this, "", "编队选人时只用收藏角色", feed, this::toggleFav);
+
+        Ui.add(this, Ui.section(this, "PF 操作"));
+        pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
+        Ui.button(this, "▶ 就地开始（先在游戏里手动停在 PF）", "", feed, () -> startPf(true));
+        Ui.button(this, "监控 (当前界面 / 场次 / 时长 / 日志)", "", feed,
+                () -> startActivity(new Intent(this, MonitorActivity.class)));
+        Ui.button(this, "WebUI 控制台 (状态 / 开始 / 实时画面 / 采集开关)", "", feed,
+                () -> startActivity(new Intent(this, WebUiActivity.class)));
+
+        refreshPfLabels();
+    }
+
+    /** 每秒刷新 PF 配置按钮上的"当前值" (配置可能被 WebUI 改)。 */
+    private void refreshPfLabels() {
+        if (pfBox == null || pfBox.getVisibility() != View.VISIBLE) return;
+        setLabel(btnArena, "目标场次: " + (targetArena() == null ? "未指定 (按卡位保守口径)" : targetArena()));
+        setLabel(btnEnergy, "能量下限: " + pfInt("energy_cost", 4) + " 钉/槽");
+        long st = (long) pfInt("score_target", 40000000);
+        setLabel(btnScore, "分数上限: " + (st < 0 ? "无上限 (月场)" : (st / 10000000) + "kw"));
+        setLabel(btnRule, "出战规则: " + (ruleText() == null ? "无" : ruleText()));
+        setLabel(btnFav, "只用收藏角色: " + (pfBool("favorite", true) ? "开" : "关"));
+    }
+
+    private void setLabel(Button b, String s) {
+        if (b == null) return;
+        if (!s.contentEquals(b.getText())) b.setText(s);   // 只在变了时写, 免掉按下高亮
+    }
+
+    /* ---- 配置读写 (都走合并后的配置, 不是 override 文件本身) ---- */
+
+    private JSONObject pfCfg() {
+        try {
+            JSONObject all = BotService.cfgOr(this).read();
+            return all == null ? null : all.optJSONObject("pf");
+        } catch (Throwable t) { return null; }
+    }
+
+    private int pfInt(String k, int def) {
+        JSONObject p = pfCfg();
+        return p == null ? def : p.optInt(k, def);
+    }
+
+    private boolean pfBool(String k, boolean def) {
+        JSONObject p = pfCfg();
+        return p == null ? def : p.optBoolean(k, def);
+    }
+
+    /** config 里的 pf.arena (null/空 = 未指定)。 */
+    private String targetArena() {
+        try {
+            JSONObject p = pfCfg();
+            String a = p == null ? null : p.optString("arena", "");
+            return a == null || a.isEmpty() ? null : a;
+        } catch (Throwable t) { return null; }
+    }
+
+    /** config 里的 pf.rule 显示成 "class:Filia" (null = 无)。 */
+    private String ruleText() {
+        try {
+            JSONObject p = pfCfg();
+            JSONObject r = p == null ? null : p.optJSONObject("rule");
+            if (r == null) return null;
+            String t = r.optString("type", ""), v = r.optString("value", "");
+            if (t.isEmpty() || v.isEmpty()) return null;
+            return t + ":" + v;
+        } catch (Throwable t) { return null; }
+    }
+
+    /** 写若干 pf.* 键 (value 为 null = 删键) + 热重载; 返回 null = 成功。 */
+    private String writePf(java.util.Map<String, Object> kv) {
+        String err = ConfigActivity.setOverrides(this, kv);
+        if (err != null) return err;
+        BotService.trigger("reload");     // 引擎在跑时也要立刻看到新条件
+        return null;
+    }
+
+    private void pfDone(String msg) {
+        feed.setTextColor(Ui.OK);
+        feed.setText("✓ " + msg + (BotService.isRunning()
+                ? " — 引擎在跑, 下一场起生效" : ""));
+        refreshPfLabels();
+    }
+
+    /* ---- 弹单选层的公共骨架 ---- */
+
+    private interface Pick { void on(int i); }
+
+    private void pick(String title, String[] items, int cur, Pick cb) {
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setSingleChoiceItems(items, cur, (d, w) -> {
+                    d.dismiss();
+                    cb.on(w);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /* ---- 各项选择 ---- */
+
+    private void pickArena() {
+        SgmLog.i("ui", "pickArena 被点 (弹场次表 " + PfArenaTable.names().size() + " 个)");
+        java.util.List<String> names = PfArenaTable.names();
+        final String[] items = new String[names.size() + 1];
+        items[0] = "✖ 不指定场次 (按卡位保守口径: 4kw / 4 钉 / 无规则)";
+        for (int i = 0; i < names.size(); i++) items[i + 1] = names.get(i);
+        String cur = targetArena();
+        int sel = 0;
+        if (cur != null) {
+            for (int i = 0; i < names.size(); i++) if (names.get(i).equals(cur)) { sel = i + 1; break; }
+        }
+        pick("目标场次 (" + names.size() + " 个)", items, sel, i -> {
+            java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
+            if (i == 0) {
+                /* 不指定 = 删四个键, 回落到按卡位的保守口径 (不是写个空串进去) */
+                kv.put("pf.arena", "");
+                kv.put("pf.energy_cost", null);
+                kv.put("pf.score_target", null);
+                kv.put("pf.rule", null);
+                String err = writePf(kv);
+                if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+                pfDone("已清除场次指定 — 回到按卡位保守口径 (4kw / 4 钉 / 无规则)");
+                return;
+            }
+            String name = names.get(i - 1);
+            PfArenaTable.Spec sp = PfArenaTable.spec(name);
+            if (sp == null) { feed.setTextColor(Ui.ERR); feed.setText("✗ 场次表里找不到 " + name); return; }
+            kv.put("pf.arena", name);
+            kv.put("pf.energy_cost", sp.energy());
+            kv.put("pf.score_target", sp.noLimit() ? PfArenaTable.NO_LIMIT : sp.scoreTarget());
+            /* rule 可能是 null (misc/unknown 场) ⇒ 写 null 删键, 别把 "null" 当字符串存进去 */
+            String r = sp.rule();
+            kv.put("pf.rule", r == null ? null : ruleJson(r));
+            String err = writePf(kv);
+            if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+            pfDone("已选场次 " + name + " → " + sp.energy() + " 钉 / "
+                    + (sp.noLimit() ? "无上限" : (sp.scoreTarget() / 10000000) + "kw")
+                    + " / " + (r == null ? "无规则" : r));
+        });
+    }
+
+    /** "class:Filia" / "element:water" → {"type":..,"value":..} (PfTeam.configure 的口径)。 */
+    private static JSONObject ruleJson(String s) {
+        try {
+            int c = s.indexOf(':');
+            JSONObject o = new JSONObject();
+            o.put("type", s.substring(0, c));
+            o.put("value", s.substring(c + 1));
+            return o;
+        } catch (Throwable t) { return null; }
+    }
+
+    private void pickEnergy() {
+        final int[] vals = {3, 4, 5, 6};
+        String[] items = new String[vals.length];
+        for (int i = 0; i < vals.length; i++) items[i] = vals[i] + " 钉/槽";
+        int cur = 0;
+        for (int i = 0; i < vals.length; i++) if (vals[i] == pfInt("energy_cost", 4)) cur = i;
+        pick("能量下限 (编队每槽要凑够的钉数)", items, cur, i -> {
+            String err = writePf(kv1("pf.energy_cost", vals[i]));
+            if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+            pfDone("能量下限 = " + vals[i] + " 钉 (不够会拉人换)");
+        });
+    }
+
+    private void pickScore() {
+        final long[] vals = {40_000_000L, 50_000_000L, PfArenaTable.NO_LIMIT};
+        String[] items = {"4kw (4000 万)", "5kw (5000 万)", "无上限 (月场就是这种)"};
+        int cur = 1;
+        long c = (long) pfInt("score_target", 40000000);
+        for (int i = 0; i < vals.length; i++) if (vals[i] == c) cur = i;
+        pick("分数上限 (达标就停; 无上限 = 一直刷)", items, cur, i -> {
+            String err = writePf(kv1("pf.score_target", vals[i]));
+            if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+            pfDone(vals[i] < 0 ? "分数上限 = 无上限" : "分数上限 = " + (vals[i] / 10000000) + "kw");
+        });
+    }
+
+    private void pickRule() {
+        java.util.List<String> rs = PfArenaTable.rules();
+        final String[] items = new String[rs.size() + 1];
+        items[0] = "✖ 无规则 (不约束编队)";
+        for (int i = 0; i < rs.size(); i++) items[i + 1] = rs.get(i);
+        String cur = ruleText();
+        int sel = 0;
+        if (cur != null) {
+            for (int i = 0; i < rs.size(); i++) if (rs.get(i).equals(cur)) { sel = i + 1; break; }
+        }
+        pick("出战规则 (约束编队选人)", items, sel, i -> {
+            java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
+            kv.put("pf.rule", i == 0 ? null : ruleJson(rs.get(i - 1)));
+            String err = writePf(kv);
+            if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+            pfDone(i == 0 ? "出战规则 = 无" : "出战规则 = " + rs.get(i - 1));
+        });
+    }
+
+    private void toggleFav() {
+        boolean on = pfBool("favorite", true);
+        String err = writePf(kv1("pf.favorite", !on));
+        if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+        pfDone(!on ? "只用收藏角色 = 开" : "只用收藏角色 = 关 (全部可选)");
+    }
+
+    private static java.util.Map<String, Object> kv1(String k, Object v) {
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put(k, v);
+        return m;
     }
 
     private void connectShizuku() {
@@ -509,9 +712,9 @@ public class MainActivity extends Activity {
         sb.append("所有文件访问 ").append(Paths.legacy() ? "已授" : "未授 (退私有目录)").append('\n');
         sb.append("引擎         ").append(engineText()).append('\n');
         sb.append("运行模式     ").append(MODE_NAMES[appModeIdx()]).append('\n');
-        String tgtArena = PfSettingsActivity.targetArena(this);
+        String tgtArena = targetArena();
         sb.append("PF 目标场次  ").append(tgtArena == null ? "未指定 (按卡位保守口径)" : tgtArena)
-                .append(PfArena.targetFile().exists() ? " · 已锁指纹" : " · 无指纹").append('\n');
+                .append('\n');
         Store st = Store.load();
         sb.append("战绩         ").append(st.text(0))
                 .append(" · 累计 ").append(st.totalRounds()).append(" 场 / ")

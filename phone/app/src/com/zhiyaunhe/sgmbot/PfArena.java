@@ -102,17 +102,16 @@ final class PfArena {
      *
      * @return true = 现在居中卡就是目标 (可以放心点 PLAY!);
      *         false = 没找到 —— **上层绝不能再点 PLAY!** (宁可不打, 也不能进错场)
-     */
+     *
+     * <p>⚠️⚠️ 2026-10-17 用户: 「你这个场次, 不需要存了, 只记录现在有的场次」——
+     * 指纹那套 (App 内记住/清除按钮 + 这里的首次自动学习) **整体不再使用**:
+     * 主页 PF 配置只从场次表选场次 (写 config 的 pf.arena 等), 不再截图标定。
+     * 所以**没有指纹文件时直接放行** (按卡位盲点居中卡), 不再自动 learn 存盘。
+     * 只有当用户自己往 {@code arena_target.png} 放了文件 (或老机器上有残留) 时才核对。 */
     boolean ensureTarget(Bitmap bmp) {
         if (disabled) return true;                 // 已关掉锁定 ⇒ 直接放行 (见 MAX_FAILS 注释)
+        if (!hasTarget()) return true;             // 没有指纹 = 不锁定 (见上面注释)
         Vision.Frame w = Vision.toWork(bmp);
-        if (!hasTarget()) {
-            if (learn(bmp)) {
-                flow.log("场次锁定: 首次学习目标场次 (当前居中卡已存为指纹)");
-                return true;
-            }
-            return false;
-        }
         double s = score(w);
         if (s >= TH) {
             failCount = 0;                         // 找到了就清零
