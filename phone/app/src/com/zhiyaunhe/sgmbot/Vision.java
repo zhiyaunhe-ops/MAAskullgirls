@@ -22,6 +22,23 @@ public final class Vision {
     /** 模板基准高 (素材源 1280x576), 帧先缩放到此高度再匹配 */
     public static final int WORK_H = 576;
 
+    /**
+     * 「只看分数」哨兵: 传它 = **禁用"命中即返回"**, 穷举整个 ROI 取**真峰值**。
+     *
+     * ⚠️⚠️ 为什么必须有它 (2026-10-17 实栽): {@code findScored(f,t,roi,0.0)} 看上去是
+     *     "阈值设 0 = 什么都能过 = 自然拿到最高分", 但 fullSearch 里是 **命中早退**
+     *     (`if (ncc >= th) return`), th=0 就成了 **"返回第一个相关性为正的补丁"** ——
+     *     扫描从 ROI 左上角开始, 常常第 1~2 个位置就退出了 ⇒ 报出来的分数与真峰值无关。
+     *     现场表现: 倍率模板真峰值 0.9311 (cv2 与 {@link #scoreAt} 双证), App 内却恒定
+     *     报 0.06~0.38 ⇒ readMult 永远 NaN; 自贴图 1.000 的位置也报 0.0437。
+     *     同一个坑还命中 PfArena.score (场次指纹相似度) / PfTeam.best / PfFlow.dumpUnknown
+     *     —— 凡是"只要分数"的调用点都中招。
+     *
+     * ⚠️ 本哨兵只对**未走金字塔**的路径严格成立 (传 pyrLevel=0); 金字塔虽无早退, 但走的是
+     *    "粗搜收候选 → 精修", 峰值只是候选集里的近似。要最稳连用 pyrLevel=0 + step=1。
+     */
+    public static final double SCAN_ALL = 0.0;
+
     /* ---- 可配置口径 (每轮由 Config 装载) ---- */
     private static volatile int SHIFT = 0;        // blue=0 green=8 red=16
     private static volatile boolean GRAY = false;
@@ -93,6 +110,10 @@ public final class Vision {
     /**
      * 同 find, 但**一定带回搜索过程中的最高分** —— 判定图要看"差多少没过阈值"
      * (0.69 卡住和 0.31 毫无相关性是两回事, 只有分数能区分)。
+     *
+     * ⚠️ 但要注意: 内部是 **命中早退**, 所以 th 必须是个真阈值。要"只看分数"请传
+     * {@link #SCAN_ALL} (最好再配 step=1), 别传 0.0 指望它返回峰值 —— 那是返回
+     * **第一个非负补丁** (2026-10-17 倍率恒 NaN 的根因)。
      * @return {x, y, best}; 未命中时 best < th (越界/尺寸不足返回 null)
      */
     public static double[] findScored(Frame frame, Frame tpl, int[] roi, double th) {
@@ -219,12 +240,15 @@ public final class Vision {
         Match m = new Match(frame, tpl);        // 模板统计 + 两侧通道缓存 + 帧积分图, 一次做好
         if (m.tVar < 1e-6) return null;
 
+        /* ⚠️⚠️ th<=0 ({@link #SCAN_ALL}) = **禁用早退**: "命中即返回"在这里会把 th=0 解释成
+            "返回第一个非负补丁" —— 从 ROI 左上角起步, 常常一两个位置就退出了 (见 SCAN_ALL 注释)。 */
+        boolean early = th > 0.0;
         double best = -2, bx = rx, by = ry;
         for (int oy = ry; oy <= ry + rh - tpl.h; oy += st) {     // 步距 st, 命中后细化
             for (int ox = rx; ox <= rx + rw - tpl.w; ox += st) {
                 double ncc = nccAt(m, ox, oy);
                 if (ncc > best) { best = ncc; bx = ox; by = oy; }
-                if (ncc >= th) {
+                if (early && ncc >= th) {
                     int[] rf = refine(m, th, ox, oy);
                     if (rf != null) {
                         double s = nccAt(m, rf[0], rf[1]);

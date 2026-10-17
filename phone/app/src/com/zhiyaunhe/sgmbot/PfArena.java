@@ -162,7 +162,9 @@ final class PfArena {
         if (t == null) return 0;
         int[] roi = {Math.max(0, CARD[0] - PAD), Math.max(0, CARD[1] - PAD),
                 CARD[2] + PAD * 2, CARD[3] + PAD * 2};
-        double[] r = Vision.findScored(w, t, roi, 0.0, -1, 0);
+        /* ⚠️ 传 0.0 会命中 findScored 的"早退" ⇒ 拿到 ROI 左上角附近第一个非负补丁的分,
+         * 与真实相似度无关 ⇒ 场次判据随机失效 (2026-10-17 与倍率同根因)。 */
+        double[] r = Vision.findScored(w, t, roi, Vision.SCAN_ALL, -1, 0, 1);
         /* ⚠️⚠️ 取 **r[2]** 不是 r[0]!  `findScored` 返回的是 **{x, y, best}** ——
          * 第一版写成 r[0] 取到了 **x 坐标**, 于是日志打出「居中卡就是目标场 (494.00)」
          * 这种不可能的分值 (分数恒在 0~1), 且 494 >= 0.72 ⇒ **永远判"就是目标场"**

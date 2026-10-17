@@ -257,29 +257,52 @@ final class PfTeam {
      */
     void pickOpponent(Vision.Frame work, Bitmap bmp) {
         flow.setStepText("选对手");
-        /* 临时截图 hook (2026-10-16): 采选对手页样本补 mult_* 模板 —— 关着时零开销 */
-        PfDump.oppPage(work);
+        /* ⚠️⚠️ 先等入场动画落定 (2026-10-17 dump 实证): 选对手页卡片带 ~0.9 倍缩放飞入,
+         * 动画中途截屏的倍率徽章小一圈, NCC 只剩 0.6~0.75 且相邻档位交叉分能到 0.75+
+         * ⇒ 分数与静止帧不同分布, 既读不出也可能读错档。600ms 后重截一帧再读。 */
+        PfFlow.sleep_(600);
+        Bitmap b0 = sh.capture();
+        if (b0 != null) { bmp = b0; work = Vision.toWork(b0); }
+
+        boolean[] fire = new boolean[3];
         int fireCount = 0, firstFire = -1;
-        double[] mults = new double[3];
+        double[] mults = readPass(work, fire);
+
+        /* 有火框却读不出倍率 ⇒ 多半还是撞上动画尾巴: 等 500ms 重截再读一轮 (只一次) */
+        boolean needRetry = false;
         for (int i = 0; i < 3; i++) {
-            boolean fire = findFireBadge(work, Pf.FIRE_SEARCH[i]) != null;
-            double power = readPower(work, Pf.OPP_POWER[i]);
-            /* 倍率直接在火框 ROI 里按档位模板比 —— 不再依赖 findFireBadge 的命中框
-             * (那只是"有没有火"的判据, 位置不一定正好框住徽章整块)。 */
-            mults[i] = readMult(work, Pf.FIRE_SEARCH[i]);
-            if (fire) {
+            if (fire[i]) {
                 fireCount++;
                 if (firstFire < 0) firstFire = i;
+                if (Double.isNaN(mults[i])) needRetry = true;
             }
-            flow.log("对手卡" + (i + 1) + ": 战力=" + fmt(power) + " 倍率=" + fmt(mults[i])
-                    + " 火框=" + fire);
+        }
+        if (needRetry) {
+            flow.log("有火框但倍率不可读 — 疑似动画帧, 500ms 后重读一轮");
+            PfFlow.sleep_(500);
+            Bitmap b1 = sh.capture();
+            if (b1 != null) {
+                work = Vision.toWork(b1);
+                bmp = b1;
+                mults = readPass(work, fire);      // fire 状态重测 (轮播可能换页)
+                fireCount = 0; firstFire = -1;
+                for (int i = 0; i < 3; i++) {
+                    if (fire[i]) {
+                        fireCount++;
+                        if (firstFire < 0) firstFire = i;
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < 3; i++) {
+            flow.log("对手卡" + (i + 1) + ": 倍率=" + fmt(mults[i]) + " 火框=" + fire[i]);
         }
         /* PC 口径 (pf_bot.pick_opponent): **倍率可读的排前, 倍率大优先**;
          * 都读不出来才退"组内战力最低" (战力也读不到 ⇒ 退首个火框卡 / 第 1 张)。 */
         int chosen = -1;
         double bestMult = Double.NEGATIVE_INFINITY;
         for (int i = 0; i < 3; i++) {
-            if (fireCount > 0 && findFireBadge(work, Pf.FIRE_SEARCH[i]) == null) continue;
+            if (fireCount > 0 && !fire[i]) continue;      // readPass 里已测过, 别重复搜
             if (Double.isNaN(mults[i])) continue;
             if (mults[i] > bestMult) {
                 bestMult = mults[i];
@@ -297,9 +320,7 @@ final class PfTeam {
         }
         int[] p = Pf.OPP_CLICK[chosen];
         flow.tap(bmp, p[0], p[1]);
-        PfFlow.sleep_(900);
-
-        // 点 CONTINUE 进编队, 并等对手页消失 (防重复选人)。
+        PfFlow.sleep_(900);        // 点 CONTINUE 进编队, 并等对手页消失 (防重复选人)。
         Bitmap b2 = sh.capture();
         if (b2 == null) return;
         Vision.Frame w2 = Vision.toWork(b2);
@@ -337,6 +358,18 @@ final class PfTeam {
     /** 倍率模板命中阈值 (同一块裁剪自匹配接近 1.0; 不同档位的字差别很大)。 */
     private static final double TH_MULT = 0.70;
 
+    /** 一轮对手页读数: 逐卡测火框 + 倍率 (临时采样 hook 挂在这里)。fire[i] 带回各卡火框状态。 */
+    private double[] readPass(Vision.Frame work, boolean[] fire) {
+        /* 临时截图 hook (2026-10-16): 采选对手页样本补 mult_* 模板 —— 关着时零开销 */
+        PfDump.oppPage(work);
+        double[] mults = new double[3];
+        for (int i = 0; i < 3; i++) {
+            fire[i] = findFireBadge(work, Pf.FIRE_SEARCH[i]) != null;
+            mults[i] = readMult(work, Pf.FIRE_SEARCH[i]);
+        }
+        return mults;
+    }
+
     /**
      * 读倍率 —— 在火框 ROI 里拿各档模板比一遍, 取最高的那档。
      *
@@ -344,19 +377,37 @@ final class PfTeam {
      * 曾经在 PfArena 里写成 r[0] 拿到 x 坐标当分数, 害得判据恒真 (2026-10-16 实栽)。
      */
     private double readMult(Vision.Frame f, int[] roi) {
-        double best = 0;
+        double b1 = 0, b2 = 0;                 // 最高 / 次高
+        String bestName = null;
         double val = Double.NaN;
         for (int i = 0; i < MULT_TPL.length; i++) {
             Vision.Frame t = tpls.get(MULT_TPL[i]);
             if (t == null) continue;               // 这一档还没模板, 跳过
-            double[] r = Vision.findScored(f, t, roi, 0.0, -1, 0);
-            if (r != null && r[2] > best) {
-                best = r[2];
-                val = MULT_VAL[i];
-            }
+            /* ⚠️ 别传 0.0 指望"阈值 0 自然拿最高分" —— findScored 是命中早退, th=0 会
+             * 返回 ROI 里**第一个非负补丁** (实测 0.0280 vs 真峰值 0.9311, 2026-10-17)。
+             * 要 peak 必须 SCAN_ALL; 数字笔画高频, 再配 step=1 免粗网格漂开。 */
+            double[] r = Vision.findScored(f, t, roi, Vision.SCAN_ALL, -1, 0, 1);
+            if (r == null) continue;
+            double s = r[2];
+            if (s > b1) { b2 = b1; b1 = s; bestName = MULT_TPL[i]; val = MULT_VAL[i]; }
+            else if (s > b2) { b2 = s; }
         }
-        return best >= TH_MULT ? val : Double.NaN;
+        /* ⚠️ 别把"没模板"和"分数不够"混成一句"不可读" —— 2026-10-17 实栽:
+         * 离线 cv2 对同一帧打分 0.93, App 内却恒 NaN, 两种原因的修法完全不同。 */
+        /* ⚠️⚠️ 两道门: 阈值 + **领先幅度**。选对手页有入场动画 (卡片 ~0.9 倍飞入),
+         * 动画中途帧的徽章小一圈, 相邻档位交叉分能到 0.75+ (实测 x2.5 徽章被
+         * mult_35 以 0.756 抢走最高, 而 mult_25 只有 0.643) —— 单看最高分会**错读档位**。
+         * 领先不足 0.08 一律判不可读 (退化按火框/首卡选), 宁可少赚不可选错。 */
+        if (b1 < TH_MULT || b1 - b2 < MARGIN_MULT) {
+            flow.log(String.format("倍率不可读: 最高 %s=%.3f 次高=%.3f (门: ≥%.2f 且领先 ≥%.2f)",
+                    bestName == null ? "无模板" : bestName, b1, b2, TH_MULT, MARGIN_MULT));
+            return Double.NaN;
+        }
+        return val;
     }
+
+    /** 倍率判档的第二道门: 最高分必须甩开次高这么多, 否则视为不可辨 (防动画帧错读档位)。 */
+    private static final double MARGIN_MULT = 0.08;
 
     /** TODO(ocr): 火框内倍率 ('x1.5'/'X2')。读不到返回 NaN。 */
     /** TODO(ocr): 战力 (卡左上数字, '28.1k'/'9,713')。读不到返回 NaN (仍按 PC 的二级排序兜底)。 */
@@ -764,7 +815,8 @@ final class PfTeam {
     private double best(Vision.Frame work, String tplName, int[] roi) {
         Vision.Frame t = tpls.get(tplName);
         if (t == null) return -9;                     // 模板缺失
-        double[] r = Vision.findScored(work, t, roi, 0.0, -1, 0);
+        /* 只看分数 ⇒ SCAN_ALL (见 Vision.SCAN_ALL 注释: 传 0.0 会拿到"第一个非负补丁") */
+        double[] r = Vision.findScored(work, t, roi, Vision.SCAN_ALL, -1, 0, 1);
         return r == null ? -1 : r[2];
     }
 
