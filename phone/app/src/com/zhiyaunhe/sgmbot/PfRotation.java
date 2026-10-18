@@ -28,9 +28,12 @@ import java.util.TimeZone;
  * 元素       element_order[w mod 5]     wd ≥ 5 (周六–周日)
  * 金币场     wd == 2 || wd == 3         (场名轮换顺序未确认 ⇒ 不给名)
  * 星助手场   wd == 4 || wd == 5         SEEING STARS
- * 招式场     wd ≥ 5                    SHOW ME YOUR MOVES (官方"隔周", 相位未核实)
+ * 招式场     wd ≥ 5                    SHOW ME YOUR MOVES (官方"隔周", 相位未核实 ⇒ **不列为可选**)
  * 月场:      表里 monthly && from ≤ 今日 &lt; until
  * </pre>
+ * ⚠️⚠️ 招式场**只标窗口、不进可选列表**: 2026-10-18 用户口径 —— 官方只写「隔周、周六–周日」,
+ * 相位未确认, 排进去等于断言"当天开"。窗口内但未核实的项用 {@link Open#unverified} 标出,
+ * {@link Open#pickable()} 会把它挡在选项外, 只在日志里说明。
  * ⚠️ wd 以**周一 = 0** 计 (与站点一致), 不是 Calendar 的周日 = 1。
  *
  * <h3>⚠️ 公式 != hub 实况</h3>
@@ -56,8 +59,8 @@ final class PfRotation {
             this.unverified = unverified;
         }
 
-        /** 能拿去选的只有"有名字且表里有条件"的。 */
-        boolean pickable() { return name != null && !name.isEmpty(); }
+        /** 能拿去选的只有「有名字 + 不是未核实项」。 */
+        boolean pickable() { return name != null && !name.isEmpty() && !unverified; }
     }
 
     private PfRotation() { }

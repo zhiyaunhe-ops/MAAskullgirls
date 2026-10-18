@@ -125,9 +125,19 @@ final class PfArenaTable {
                     + monthlySlots + " 张)");
             /* 目录里有 40 条 ≠ 今天能打 40 场。登录时就把"今天开放"打出来, 免得又把目录当列表。 */
             java.util.List<String> t = namesToday();
+            StringBuilder skip = new StringBuilder();
+            try {
+                for (PfRotation.Open o : PfRotation.today(ROOT)) {
+                    if (o.pickable()) continue;
+                    if (skip.length() > 0) skip.append(", ");
+                    skip.append(o.name == null ? o.type : o.name)
+                            .append(o.unverified ? "(相位未核实)" : "(表里无名)");
+                }
+            } catch (Throwable ignored) { }
             SgmLog.i("pf", "今日开放 (游戏日 " + PfRotation.gameDay() + "): "
                     + (t.isEmpty() ? "轮换公式算不出 (rotation 段缺失) — 退回整表"
-                                   : t.size() + " 场 → " + t.toString()));
+                                   : t.size() + " 场 → " + t.toString())
+                    + (skip.length() == 0 ? "" : " | 未列入: " + skip));
         } catch (Throwable t) {
             SgmLog.i("pf", "场次表载入失败: " + t);
         }
