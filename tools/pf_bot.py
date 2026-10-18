@@ -764,8 +764,12 @@ class PfBot(SceneNav):
     # ---------- 计分 ----------
 
     def read_score(self, img):
-        """读对手选择页左面板的总分, 失败返回 None。"""
-        val = vis.parse_power(self.ocr_text(img, vis.SCORE_ROI))
+        """读对手选择页左面板的总分, 失败返回 None。
+
+        ⚠️ 走 vis.parse_score 而不是 parse_power: 前者含「<1000 按 ×1000」的修正
+        (分数行带 k 单位, OCR 常把 k 吃掉)。战力读数仍走 parse_power —— 别混。
+        """
+        val = vis.parse_score(self.ocr_text(img, vis.SCORE_ROI))
         return int(val) if val is not None else None
 
     def track_score(self, img) -> None:

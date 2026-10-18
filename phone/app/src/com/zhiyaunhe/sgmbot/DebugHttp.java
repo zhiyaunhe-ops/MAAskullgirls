@@ -103,6 +103,60 @@ public final class DebugHttp {
                 body = n > 0 ? tailLog(n) : readFile(Paths.logDir() + "app.log", "(empty)");
             } else if (path.startsWith("/pf/state")) {
                 body = pfState().toString(2);
+            } else if (path.startsWith("/cfg/arena")) {
+                /* 调试通道: 选场次 —— **与 UI「目标场次」完全相同的 kv 构造**
+                 * (pf.arena / energy / score / rule 四项一起走 setOverrides)。
+                 * 2026-10-19 用户报「选完场次规则没自动带出, light 还是自己选的」,
+                 * 这条通道用于回归: 清 rule 后重选, rule 应自动回来。 */
+                String nm = query(path, "name");
+                if (nm == null || nm.isEmpty()) { reply(s, "需要 name=场次名"); return; }
+                PfArenaTable.load(App.inst);
+                PfArenaTable.Spec sp = PfArenaTable.spec(nm);
+                if (sp == null) { reply(s, "场次表里找不到: " + nm); return; }
+                java.util.Map<String, Object> av = new java.util.LinkedHashMap<>();
+                av.put("pf.arena", nm);
+                av.put("pf.energy_cost", sp.energy());
+                av.put("pf.score_target", sp.noLimit() ? PfArenaTable.NO_LIMIT : sp.scoreTarget());
+                String ar = sp.rule();
+                if (ar != null) {
+                    int c = ar.indexOf(':');
+                    JSONObject ro = new JSONObject();
+                    ro.put("type", ar.substring(0, c));
+                    ro.put("value", ar.substring(c + 1));
+                    av.put("pf.rule", ro);
+                } else {
+                    av.put("pf.rule", null);
+                }
+                String aerr = ConfigActivity.setOverrides(App.inst, av);
+                body = aerr == null ? ("ok: " + nm + " → rule=" + ar
+                        + " energy=" + sp.energy()) : ("err: " + aerr);
+            } else if (path.startsWith("/cfg/arena")) {
+                /* 调试通道: 选场次 —— **与 UI「目标场次」完全相同的 kv 构造**
+                 * (pf.arena / energy / score / rule 四项一起走 setOverrides)。
+                 * 2026-10-19 用户报「选完场次规则没自动带出, light 还是自己选的」,
+                 * 这条通道用于回归: 清 rule 后重选, rule 应自动回来。 */
+                String nm = query(path, "name");
+                if (nm == null || nm.isEmpty()) { reply(s, "需要 name=场次名"); return; }
+                PfArenaTable.load(App.inst);
+                PfArenaTable.Spec sp = PfArenaTable.spec(nm);
+                if (sp == null) { reply(s, "场次表里找不到: " + nm); return; }
+                java.util.Map<String, Object> av = new java.util.LinkedHashMap<>();
+                av.put("pf.arena", nm);
+                av.put("pf.energy_cost", sp.energy());
+                av.put("pf.score_target", sp.noLimit() ? PfArenaTable.NO_LIMIT : sp.scoreTarget());
+                String ar = sp.rule();
+                if (ar != null) {
+                    int c = ar.indexOf(':');
+                    JSONObject ro = new JSONObject();
+                    ro.put("type", ar.substring(0, c));
+                    ro.put("value", ar.substring(c + 1));
+                    av.put("pf.rule", ro);
+                } else {
+                    av.put("pf.rule", null);
+                }
+                String aerr = ConfigActivity.setOverrides(App.inst, av);
+                body = aerr == null ? ("ok: " + nm + " → rule=" + ar
+                        + " energy=" + sp.energy()) : ("err: " + aerr);
             } else if (path.startsWith("/cfg/rule")) {
                 /* 调试通道: 设「出战规则」——**故意走 UI 那条完全相同的路**
                  * ({@link ConfigActivity#setOverrides}), 因为要复现/回归的正是那条路上的
@@ -405,7 +459,15 @@ public final class DebugHttp {
         if (q < 0) return "";
         for (String kv : path.substring(q + 1).split("&")) {
             int eq = kv.indexOf('=');
-            if (eq > 0 && key.equals(kv.substring(0, eq))) return kv.substring(eq + 1);
+            if (eq > 0 && key.equals(kv.substring(0, eq))) {
+                /* 场次名带空格 ("A SHINING EXAMPLE") ⇒ curl 里写 %20, 这里必须解码,
+                 * 否则拿到的字面量是 "A%20SHINING%20EXAMPLE", 表里永远查不到。 */
+                try {
+                    return java.net.URLDecoder.decode(kv.substring(eq + 1), "UTF-8");
+                } catch (Throwable t) {
+                    return kv.substring(eq + 1);
+                }
+            }
         }
         return "";
     }

@@ -162,6 +162,27 @@ def parse_power(text: str) -> float | None:
     return val
 
 
+def parse_score(text: str) -> float | None:
+    """**分数**专用解析 —— 只在 parse_power 之上加一条「<1000 按 ×1000」的修正。
+
+    ⚠️⚠️ 别把这条规则加进 parse_power: 它同时被用来读**战力** (对手卡 616 / 778 / 860、
+    对手页 834 这种真的小值都是合法的) —— 对战力 ×1000 会错得更离谱。分数和战力
+    必须分开走 (2026-10-19 用户: 「分数的计算 - <1000 的均*1000, 避免小误读」)。
+
+    理由同 pf_nav.parse_score_ocr: 分数行带 k 单位 ('87.1k'), OCR 常把 k 吃掉 ⇒
+    87.1 → 87, 小三个数量级。真实 PF 分数不会 <1000。
+    """
+    val = parse_power(text)
+    if val is None or val <= 0:
+        return val
+    if val < 10:
+        # 个位数多半是 OCR 噪声 (把 0 读成别的), 按 0 而不是 ×1000
+        return 0.0
+    if val < 1000:
+        return val * 1000
+    return val
+
+
 def parse_mult(text: str) -> float | None:
     """'x1.5' / 'X2' / 'x1.5y' -> 1.5（正则提取数字段）。失败返回 None。"""
     if not text:

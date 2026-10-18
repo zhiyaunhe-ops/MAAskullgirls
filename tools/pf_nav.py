@@ -251,7 +251,11 @@ class SceneNav:
         坑史与归一化规则详见 PF_BOT.md §6.9; 要点:
           - 先剥 SCORE 标签, 再把 O/Q -> 0 (顺序不能反, 否则标签里的 O 混进数字);
           - 取最长数字串, 千分位逗号兼容;
-          - 领域约束: SGM PF 分数没有个位数, <10 一律按 0 (OCR 把 0 读错的兜底)。
+          - 领域约束: SGM PF 分数没有个位数, <10 一律按 0 (OCR 把 0 读错的兜底);
+          - ⚠️ <1000 一律 **×1000** (2026-10-19 用户口径「避免小误读」): 分数行常带 k 单位
+            ('87.1k' / '5.2k'), 而 OCR 经常**把 k 吃掉**, 于是 87.1 → 87、5.2 → 5,
+            比真实值小三个数量级 ⇒ 达标判定/进度记录全错。真实 PF 分数不会小于 1000,
+            所以这个区间一律按"丢了 k"处理。
         """
         if not raw:
             return -1
@@ -272,6 +276,10 @@ class SceneNav:
         if score < 10:
             STATE.log(f"分数 OCR 得个位数 {score}, 按 0 处理 (原文 {raw!r})", "warn")
             return 0
+        if score < 1000:
+            STATE.log(f"分数 OCR 得 {score} (<1000, 疑似漏读 k 单位) → 按 {score * 1000} 处理"
+                      f" (原文 {raw!r})", "warn")
+            return score * 1000
         return score
 
     def read_center_card(self, img=None) -> tuple[str, int]:
