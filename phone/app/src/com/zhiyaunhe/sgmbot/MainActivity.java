@@ -482,7 +482,7 @@ public class MainActivity extends Activity {
         /* 场次表原来只能靠重装 APK 更新 (assets 在增量安装下还常常读不到),
          * 现在改成从 GitHub Pages 拉 —— 官方上了新场次, 点一下就有。 */
         btnArenaSync = Ui.button(this, "",
-                "从线上 (zhiyaunhe-ops.github.io) 拉最新场次表; 失败就继续用上次缓存/内置表",
+                "从线上 (zhiyaunhe-ops.github.io/sgm-pf) 拉最新场次表; 失败就继续用上次缓存/内置表",
                 feed, this::syncArena);
 
         Ui.add(this, Ui.section(this, "PF 操作"));

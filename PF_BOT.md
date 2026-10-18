@@ -227,8 +227,8 @@ Double/Squigly → Valentine/Fukua → Eliza/Marie → Annie/Big Band
 | 锚点来源 | 官方论坛 [Prize Fight Calendar](https://forum.skullgirlsmobile.com/threads/prize-fight-calendar.22233)（2024-06-03 周 = Double/Squigly + Water） |
 | 窗口 | 角色场 3 天（周一–三 / 周四–六，周日空档）；元素场 2 天（周六–日）；金币场周三开、1–2 天；星场周五–六；招式场周六–日隔周；月场 1 日开、整月 |
 | 生成器 | `tools/pf_site_export.py --out <站点目录> --weeks 8`（输入 = `tools/data/*.json` + 本表公式，产物 `data/arenas.json` / `data/schedule.json`） |
-| 公开站 | <https://zhiyaunhe-ops.github.io/>（仓库 `zhiyaunhe-ops/zhiyaunhe-ops.github.io`，Pages 走 main 根目录） |
-| 手机端 | `PfArenaRemote`：开屏 24h 节流自动拉 + 主页「场次表」按钮手动拉；缓存 `<root>/pf_arena_remote.json`，坏包不落盘，失败回落 `assets/pf_arena.json` |
+| 公开站 | <https://zhiyaunhe-ops.github.io/sgm-pf/>（仓库 `zhiyaunhe-ops/sgm-pf`，项目页，Pages 走 main 根目录） |
+| 手机端 | `PfArenaRemote`（`.../sgm-pf/data/arenas.json`）：开屏 24h 节流自动拉 + 主页「场次表」按钮手动拉；缓存 `<root>/pf_arena_remote.json`，坏包不落盘，失败回落 `assets/pf_arena.json` |
 | ⚠️ 证据分级 | 只有官方公告/官方论坛算 A；本机 hub 扫描只作**参考性校验**（识别链路新、可能被残留卡干扰），不当权威 |
 
 | 实测校验（C 级） | 结果 |

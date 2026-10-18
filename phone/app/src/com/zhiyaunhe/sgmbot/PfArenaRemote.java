@@ -45,12 +45,17 @@ import java.util.Locale;
  */
 final class PfArenaRemote {
 
-    static final String DEFAULT_URL = "https://zhiyaunhe-ops.github.io/data/arenas.json";
+    static final String DEFAULT_URL = "https://zhiyaunhe-ops.github.io/sgm-pf/data/arenas.json";
     private static final String T = "场次表";
     private static final int CONNECT_TIMEOUT = 8000;
     private static final int READ_TIMEOUT = 15000;
-    /** 自动拉取的间隔：一天一次（场次按周/月变，没必要更频繁） */
-    private static final long AUTO_INTERVAL_MS = 24 * 3600 * 1000L;
+    /**
+     * 自动拉取的默认间隔（小时）。**按天**，不是按周 —— 一周里每天的场次都不一样
+     * （角色场周一二三 / 四五六各一个、周日空档；元素场只在周六日），
+     * 官方也可能中途换场，所以每天至少对一次表。
+     * 可用 config {@code pf.arena_sync_h} 覆盖（0 = 关掉自动，只留主页按钮手动拉）。
+     */
+    private static final int AUTO_INTERVAL_H = 24;
     /** 低于这个条数就当坏包 —— 正常目录 40+ 条；被截断的文件通常只剩几条 */
     private static final int MIN_ARENAS = 10;
 
@@ -90,6 +95,17 @@ final class PfArenaRemote {
             return u == null || u.isEmpty() ? DEFAULT_URL : u;
         } catch (Throwable t) {
             return DEFAULT_URL;
+        }
+    }
+
+    /** 自动同步间隔（小时）；config {@code pf.arena_sync_h} 覆盖，默认 24。 */
+    static int syncHours(Context c) {
+        try {
+            JSONObject all = BotService.cfgOr(c).read();
+            JSONObject pf = all == null ? null : all.optJSONObject("pf");
+            return pf == null ? AUTO_INTERVAL_H : pf.optInt("arena_sync_h", AUTO_INTERVAL_H);
+        } catch (Throwable t) {
+            return AUTO_INTERVAL_H;
         }
     }
 
@@ -206,8 +222,10 @@ final class PfArenaRemote {
      * 后台拉不到只是继续用旧表，没必要打断用户。
      */
     static void autoSync(final Context ctx) {
+        int hours = syncHours(ctx);
+        if (hours <= 0) return;                       // 显式关掉自动同步
         long at = lastFetchMs();
-        if (at > 0 && System.currentTimeMillis() - at < AUTO_INTERVAL_MS) return;
+        if (at > 0 && System.currentTimeMillis() - at < hours * 3600_000L) return;
         new Thread(() -> {
             JSONObject r = sync(ctx);
             if (r.optBoolean("ok") && !r.optBoolean("notModified")) {

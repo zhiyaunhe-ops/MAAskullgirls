@@ -369,7 +369,39 @@ def build_schedule(monthlies: dict, weeks: int, today: dt.date) -> dict:
                         if m.get("from") and m.get("until")
                         and m["from"] <= today.isoformat() < m["until"]],
         })
-    return {"generated_for": today.isoformat(), "weeks": rows}
+    daily = []
+    for i in range(weeks * 7):
+        d = start + dt.timedelta(days=i)
+        rot = rotation_for(d)
+        slot = {"date": d.isoformat(), "weekday": "一二三四五六日"[d.weekday()], "open": []}
+
+        # 角色场：周一–周三 / 周四–周六（周日空档）
+        if d.weekday() <= 2:
+            slot["open"].append({"type": "character", "char": rot["pair"][0],
+                                 "name": CHAR_BY_CHAR.get(rot["pair"][0], "")})
+        elif d.weekday() <= 5:
+            slot["open"].append({"type": "character", "char": rot["pair"][1],
+                                 "name": CHAR_BY_CHAR.get(rot["pair"][1], "")})
+        # 元素场：周六–周日
+        if d.weekday() >= 5:
+            slot["open"].append({"type": "element", "element": rot["element"],
+                                 "name": ELEM_ARENA[rot["element"]]})
+        # 金币场：周三起 1–2 天（名字轮换，未确认）
+        if d.weekday() in (2, 3):
+            slot["open"].append({"type": "gold", "name": None})
+        # 星场：周五–周六
+        if d.weekday() in (4, 5):
+            slot["open"].append({"type": "assist", "name": "SEEING STARS"})
+        # 招式场：周六–周日、隔周（相位未确认）⇒ 只标窗口，不宣称开放
+        if d.weekday() >= 5:
+            slot["open"].append({"type": "move", "name": "SHOW ME YOUR MOVES", "unverified": True})
+        # 月场：有 from/until 且覆盖当天
+        for m in monthlies.values():
+            if m.get("from") and m.get("until") and m["from"] <= d.isoformat() < m["until"]:
+                slot["open"].append({"type": m["tag"], "name": m["name"], "element": m.get("element")})
+        daily.append(slot)
+
+    return {"generated_for": today.isoformat(), "weeks": rows, "daily": daily}
 
 
 CHAR_BY_CHAR: dict[str, str] = {}
@@ -402,7 +434,7 @@ def main(argv=None) -> int:
         "game_day": today.isoformat(),
         "game_version": "8.11",
         "monthly_slots": 2,
-        "source": "https://zhiyaunhe-ops.github.io/data/arenas.json",
+        "source": "https://zhiyaunhe-ops.github.io/sgm-pf/data/arenas.json",
         "rotation": {
             "anchor": ANCHOR.isoformat(),
             "pair_order": [list(p) for p in PAIRS],

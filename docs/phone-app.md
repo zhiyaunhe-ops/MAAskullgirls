@@ -765,12 +765,16 @@ Java 版**没有导航链**（`BotService` 里 `MODE_NAV` 退化为直接跑结�
 | 2 | APK 内置 | `assets/pf_arena.json` |
 | 3 | 都没有 | 表为空 ⇒ 按卡位保守口径（4kw / 4 钉 / 无规则） |
 
-- 默认地址 `https://zhiyaunhe-ops.github.io/data/arenas.json`，可用 config `pf.arena_url` 覆盖。
+- 默认地址 `https://zhiyaunhe-ops.github.io/sgm-pf/data/arenas.json`（项目页，不占账号根路径），
+  可用 config `pf.arena_url` 覆盖。
 - **落盘前必须过 `PfArenaRemote.valid`**（`schema≥2`、`arenas` ≥10 条、每条有 `name`）：
   机场/酒店 Wi-Fi 的登录页会回 200 + HTML，无脑落盘的结果是「下次启动场次全不认识」，
   看起来像识别坏了。写 `.part` 再改名，断电不留半截。
 - 带上一次的 `ETag`，304 只推进时间戳（否则 24h 节流退化成每次启动都请求）。
-- 入口：开屏 `autoSync`（24h 节流、后台、失败静默）+ 主页 PF 配置块「场次表 …（点这里拉线上最新）」。
+- 入口：开屏 `autoSync`（**默认 24h 节流**、后台、失败静默；间隔由 config `pf.arena_sync_h`
+  控制，`0` = 关自动只留手动）+ 主页 PF 配置块「场次表 …（点这里拉线上最新）」。
+  ⚠️ 为什么是「按天」不是「按周」：一周里每天的场次都不同（角色场周一二三 / 四五六各一个、
+  周日空档；元素场只在周六日；金币场周三起；星场周五–六），官方也可能中途换场。
   拉成功后 `PfArenaTable.reload()` 立即生效；失败保留内存里的旧表，不影响正在跑的引擎。
 - ⚠️ 主页每秒刷新的标签只读 `PfArenaTable.sourceDesc()`（内存），**不在这里碰文件/网络**。
 
