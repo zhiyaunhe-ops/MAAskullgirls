@@ -75,6 +75,25 @@ public final class Pf {
     public static final String T_SPD_3X       = "pf/battle_spd_3x";
     public static final String T_HUB_PLAY     = "pf/hub_play";          // PF hub 居中卡 PLAY!
     public static final String T_HALL_PRIZE   = "pf/hall_prize_fights"; // 大厅 PRIZE FIGHTS 菱形
+    /**
+     * 大厅「PRIZE FIGHTS」**文字条**模板 (2026-10-18, 用户: 「首页是可以拉动的, 你得要么
+     * 拉最左边, 然后 ocr 读 prize fighter 才行」)。
+     *
+     * <p>⚠️ 为什么不能再用整块菱形 ({@link #T_HALL_PRIZE}): ① 菱形里带**倒计时数字**
+     * (23:49:07) 每几秒就变; ② 大厅三个菱形 (PRIZE FIGHTS / STORY / EVENTS) 版式几乎一样,
+     * 整块模板会互相抢分 —— 实测本次就匹配到了 STORY 那片, 点下去落在 GUILDS 上。
+     * 只取文字条后区分度是 1.00 vs 0.20 / 0.14 (同一帧实测), 等价于"读文字"。</p>
+     */
+    public static final String T_HALL_PRIZE_TEXT = "pf/hall_prize_text";
+    /**
+     * 大厅「STORY」**文字**模板 —— {@link #inHall} 的判据之一。
+     *
+     * <p>⚠️⚠️ 2026-10-18 实栽: 原判据 (整块 PRIZE FIGHTS / EVENTS 菱形) 里带**倒计时数字**
+     * (23:49:07), 每几秒就变 ⇒ 同一画面只有 **0.25**, 认不出大厅 ⇒ gotoHub 永远停在
+     * "未知界面", `step` 卡死"回到 PF hub" (用户报的就是"导航不进去")。
+     * STORY 是居中大字、无倒计时、不随地图横向拖动消失 —— 实测大厅 **1.000** / hub 0.358。</p>
+     */
+    public static final String T_HALL_STORY_TEXT = "pf/hall_story_text";
 
     /**
      * 大厅 EVENTS 菱形 —— 大厅的**第二判据**。
@@ -227,6 +246,10 @@ public final class Pf {
 
     public static final double TH_HUB_PLAY   = 0.70;
     public static final double TH_HALL_PRIZE = 0.72;
+    /** 文字条阈值: 正例 1.00, 异菱形 ≤0.20 ⇒ 0.70 留足余量。 */
+    public static final double TH_HALL_PRIZE_TEXT = 0.70;
+    /** 大厅文字判据阈值 (正例 1.00 / hub 0.36)。 */
+    public static final double TH_HALL_STORY_TEXT = 0.70;
     /** 大厅通用判据阈值 (EVENTS 等) —— 实测大厅 ≥0.87、其它界面 ≤0.42。 */
     public static final double TH_HALL        = 0.72;
     public static final double TH_REFRESH    = 0.70;

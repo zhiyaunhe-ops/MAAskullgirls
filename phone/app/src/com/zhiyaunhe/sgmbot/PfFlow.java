@@ -185,6 +185,10 @@ public final class PfFlow {
     /** 最近一次 hub 扫描到的卡数 (-1 = 还没扫过) —— /pf/state 与监控页显示。 */
     volatile int hubCards = -1;
 
+    /** 大厅归位滑动计数 (gotoHub 每轮重置)。滑到最左最多 3 次, 之后不再滑。 */
+    private int hallSlides;
+    private static final int HALL_SLIDE_MAX = 3;
+
     /**
      * 扫一遍 hub 轮播 (导航到位后自动调用; 2026-10-18 用户: 「把 navigate 和扫描加到一起」)。
      *
@@ -535,7 +539,33 @@ public final class PfFlow {
         if (inHall(work)) {
             unknownTries = 0;
             setStep("主大厅");
-            log("在主大厅 — 点 PRIZE FIGHTS 进入 PF");
+            /* ⚠️⚠️ 2026-10-18 用户: 「首页是可以拉动的, 你得要么拉最左边, 然后 ocr 读
+             * prize fighter 才行」—— 两件事都指向同一个根因:
+             *   ① 大厅是**可横向拖动的地图**, 节点位置不固定 ⇒ 原来硬编码的
+             *      HALL_PRIZE_TAP(240,310) 会落到 GUILDS 上 (实测就卡在"在大厅, 点
+             *      PRIZE FIGHTS"无限循环);
+             *   ② 整块菱形模板不可靠: 里面带**每秒变的倒计时**, 且 PRIZE/STORY/EVENTS
+             *      三个菱形版式雷同 ⇒ 会互相抢分。
+             * 现在的口径: **先右滑归位到最左** (位置就固定了), 再用「PRIZE FIGHTS」
+             * **文字条**模板定位 (实测 1.00 vs 异菱形 0.20, 等价于读文字), 点图标中心
+             * (文字上方 ~35px)。文字读不到才退回硬编码坐标兜底。 */
+            if (hallSlides < HALL_SLIDE_MAX) {
+                hallSlides++;
+                log("大厅: 第 " + hallSlides + " 次右滑归位到最左 (地图可拖动)");
+                swipe(bmp, 380, 340, 1050, 340, 420);
+                sleep_(900);
+                return;
+            }
+            double[] txt = match(work, Pf.T_HALL_PRIZE_TEXT, Pf.ROI_FULL, Pf.TH_HALL_PRIZE_TEXT);
+            if (txt != null) {
+                int tx = (int) txt[0] + 105, ty = (int) txt[1] - 35;
+                log("大厅: 读到 PRIZE FIGHTS 文字 ("
+                        + Math.round(txt[2] * 100) / 100.0 + ") — 点图标 (" + tx + "," + ty + ")");
+                tap(bmp, tx, ty);
+                sleep_(2500);
+                return;
+            }
+            log("大厅: 文字模板没读到 — 退回固定坐标兜底 (滑到最左后位置固定)");
             tap(bmp, Pf.HALL_PRIZE_TAP);
             sleep_(2500);
             return;
@@ -702,6 +732,8 @@ public final class PfFlow {
      */
     private boolean gotoHub(AtomicBoolean run, JSONObject c) {
         setStep("回到 PF hub");
+        hallSlides = 0;                  // 每轮导航重新归位 (大厅位置可能被上次拖动改过)
+        hallSlides = 0;                  // 每轮导航重新归位 (大厅位置可能被上次拖动改过)
         long t0 = System.currentTimeMillis();
         long limit = 300_000L;                       // NAV_TIMEOUT
         long battleLogAt = 0;
@@ -845,7 +877,12 @@ public final class PfFlow {
      * 这样"判据可以是被遮住的那个, 定位不依赖模板"。
      */
     private boolean inHall(Vision.Frame work) {
-        return matchFull(work, Pf.T_HALL_PRIZE, Pf.ROI_FULL, Pf.TH_HALL_PRIZE) != null
+        /* ⚠️ 2026-10-18 加**文字**判据 (用户: 「ocr 读 prize fighter」): 原来那两条整块菱形
+         * 模板里带**倒计时数字**, 每几秒变 ⇒ 实测同一画面只剩 0.25, 认不出大厅, 于是
+         * gotoHub 永远停在"未知界面"、step 卡在"回到 PF hub" (导航彻底不工作)。
+         * 文字条不含倒计时, 实测大厅 1.000 / hub 0.358。 */
+        return matchFull(work, Pf.T_HALL_STORY_TEXT, Pf.ROI_FULL, Pf.TH_HALL_STORY_TEXT) != null
+                || matchFull(work, Pf.T_HALL_PRIZE, Pf.ROI_FULL, Pf.TH_HALL_PRIZE) != null
                 || matchFull(work, Pf.T_HALL_EVENTS, Pf.ROI_FULL, Pf.TH_HALL) != null;
     }
 

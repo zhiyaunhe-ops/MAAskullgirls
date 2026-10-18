@@ -138,12 +138,43 @@ public final class ShizukuCtl {
 
     /* ---- 原语 ---- */
 
-    /** sh -c 执行, 返回 stdout (UserService 未绑定/异常返回 "") */
-    public static String exec(String cmd) {
-        IShellService s = svc;
+    /**
+     * 跨进程执行 shell —— **带调用侧超时**。
+     *
+     * <p>⚠️⚠️ 2026-10-18 实栽 (这是"日志全停但 GC 不停"的真因): UserService 跑在
+     * `:sgmbot` 独立进程 (`processNameSuffix`), 那个进程**没有任何可见窗口/前台服务**
+     * ⇒ MIUI 后台冻结会把它停掉; 而 App 侧 `s.exec()` 是**同步 binder 调用, 没有超时**
+     * ⇒ 主循环永久卡在 capture, 表现就是: 进程活着、线程在跑、GC 每几秒一次、**日志一条不出**。
+     * UserService 里虽有自己的 6s 超时, 但那是在**对端能执行**的前提下才有效 —— 冻住的进程
+     * 连代码都不跑。
+     *
+     * 现在: 调用丢到线程池, 主线程最多等 {@link #EXEC_CALL_TIMEOUT_MS}; 超时就判定
+     * UserService 卡死, **丢弃连接并重绑** (新调用走新进程), 本次返回 "ERR: timeout"
+     * (capture 解码失败 → 丢帧继续, 循环不再挂死)。 */
+    private static final long EXEC_CALL_TIMEOUT_MS = 12_000;
+    private static final java.util.concurrent.ExecutorService EXEC_POOL =
+            java.util.concurrent.Executors.newCachedThreadPool();
+
+    public static String exec(final String cmd) {
+        final IShellService s = svc;
         if (s == null) { ensureBound(); return ""; }   // ⚠️ 空手返回前先试着重绑 (见 ensureBound)
-        try { return s.exec(cmd); }
-        catch (Throwable t) {
+        java.util.concurrent.Future<String> f = null;
+        try {
+            f = EXEC_POOL.submit(new java.util.concurrent.Callable<String>() {
+                @Override public String call() throws Exception { return s.exec(cmd); }
+            });
+            return f.get(EXEC_CALL_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException te) {
+            if (f != null) f.cancel(true);
+            SgmLog.i("shizuku", "exec 超时 " + EXEC_CALL_TIMEOUT_MS + "ms — UserService 疑似被冻结,"
+                    + " 重绑连接 | cmd=" + (cmd.length() > 70 ? cmd.substring(0, 70) + "…" : cmd));
+            synchronized (ShizukuCtl.class) {
+                svc = null;
+                bound = false;
+            }
+            ensureBound();
+            return "ERR: exec timeout";
+        } catch (Throwable t) {
             SgmLog.i("shizuku", "exec err: " + t);
             return "";
         }
