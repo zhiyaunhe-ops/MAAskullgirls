@@ -1,5 +1,17 @@
 name: build-apk
 
+# 开发快照通道 —— main 上的普通推送走这里。
+#
+# ⚠️ 与 release-apk.yml 的分工 (2026-10-18 按「版本化发版」重做):
+#   · 本文件          = 每次推 main 出一个**快照包**, 发布成 **prerelease** 的滚动 tag `latest`
+#   · release-apk.yml = 打 v* tag 时出一个**正式版本**, 各自一个独立 release
+# 快照必须是 prerelease, 否则 GitHub 的 /releases/latest 会被它抢走 (App 内自更新读的
+# 就是这个接口) —— 那用户装到的会是任意一次中间提交, 而不是确认过的稳定版。
+#
+# versionCode 用 version.properties 的基线**不递增**: 快照同 code 可以互相覆盖, 而正式包
+# 的下一个 code 一定 ≥ 它 ⇒ 装了快照也不会把正式版挡在门外。老方案拿 github.run_number
+# 当 code, 跑久了会超过语义化 code, 直接造成 INSTALL_FAILED_VERSION_DOWNGRADE。
+
 on:
   push:
     branches: [main]
@@ -25,15 +37,13 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
-      # APK 自更新走 pm install -r, versionCode 必须递增 (否则 INSTALL_FAILED_VERSION_DOWNGRADE)
-      - name: Bump versionCode
-        run: |
-          sed -i "s/android:versionCode=\"[0-9]*\"/android:versionCode=\"${{ github.run_number }}\"/" phone/app/AndroidManifest.xml
-          sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"0.1.${{ github.run_number }}\"/" phone/app/AndroidManifest.xml
-          grep -n "versionCode\|versionName" phone/app/AndroidManifest.xml
-
+      # versionCode / versionName 由 build-ci.sh 从 version.properties 注入;
+      # 快照只给 versionName 加 -snapshot.N 后缀, code 保持基线。
       - name: Build APK (aapt2 + javac + d8 + apksigner)
-        run: bash phone/app/build-ci.sh
+        run: |
+          BASE=$(sed -n 's/^versionName=//p' phone/app/version.properties | tr -d '\r')
+          export APP_VERSION_NAME="$BASE-snapshot.${{ github.run_number }}"
+          bash phone/app/build-ci.sh
 
       # bundle.zip = templates + config, 供 App 内「拉取更新」热更 (换模板不必重装 APK)
       - name: Pack bundle
@@ -46,21 +56,24 @@ jobs:
       - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: sgmbot-debug-apk
+          name: sgmbot-snapshot-apk
           path: phone/app/build/sgmbot.apk
 
-      - name: Publish to latest release
+      - name: Publish snapshot (prerelease)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=latest
           git tag -f "$TAG" "$GITHUB_SHA"
           git push -f origin "$TAG"
-          VC=${{ github.run_number }}
-          NOTES="auto build ${GITHUB_SHA::7} (versionCode ${VC}, versionName 0.1.${VC}) — $(git log -1 --pretty=%s)"
-          gh release create "$TAG" --title "SGM挂机 debug 构建" --notes "$NOTES" 2>/dev/null || true
-          # 每次都刷新说明 —— 只 create 的话 release 文案会永远停在首次构建那个提交,
-          # 而资产是 --clobber 覆盖的 ⇒ 说明与 APK 对不上 (用户看到的"更新说明"是陈的)
-          gh release edit "$TAG" --title "SGM挂机 debug 构建 (持续更新)" --notes "$NOTES"
+          BASE=$(sed -n 's/^versionName=//p' phone/app/version.properties | tr -d '\r')
+          NOTES="开发快照 ${GITHUB_SHA::7} — ${BASE}-snapshot.${{ github.run_number }} (versionCode 仍为基线)
+          $(git log -1 --pretty=%s)
+
+          ⚠️ 这是 main 的自动构建, **不是发布版**。正式版看 Releases 里 v* 的 tag。"
+          gh release create "$TAG" --title "开发快照 (main 自动构建)" --notes "$NOTES" --prerelease 2>/dev/null || true
+          # 每次都刷新说明 —— 只 create 的话文案会永远停在首次构建那个提交,
+          # 而资产是 --clobber 覆盖的 ⇒ 说明与 APK 对不上。
+          gh release edit "$TAG" --title "开发快照 (main 自动构建)" --notes "$NOTES" --prerelease
           gh release upload "$TAG" phone/app/build/sgmbot.apk --clobber
           gh release upload "$TAG" bundle.zip --clobber

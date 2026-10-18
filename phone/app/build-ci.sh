@@ -28,6 +28,27 @@ mkdir -p "$OUT/gen"
 #     aidl -I libs/aidl-src -I libs/aidl-framework -o build/gen "$f"; done
 # CI 的 aidl 是 34 版 (v2 语法), 与本地 11 版对 Bundle/Intent 解析行为不同 — 不在 CI 生成
 
+echo "== version =="
+# 版本号唯一事实源 = version.properties (发版脚本 tools/release.sh 改它)。
+# 允许环境变量覆盖: tag 触发的 release 构建用 tag 名 (workflow 已做一致性校验)。
+VP=version.properties
+vname=""; vcode=""
+if [ -f "$VP" ]; then
+  vname=$(sed -n 's/^versionName=//p' "$VP" | tr -d '\r' | head -1)
+  vcode=$(sed -n 's/^versionCode=//p' "$VP" | tr -d '\r' | head -1)
+fi
+vname="${APP_VERSION_NAME:-$vname}"
+vcode="${APP_VERSION_CODE:-$vcode}"
+if [ -z "$vname" ] || [ -z "$vcode" ]; then
+  echo "[!!] version.properties 缺 versionName/versionCode (或被环境变量覆盖成空)"; exit 1
+fi
+# ⚠️ 这里是**原地改源文件**: CI 工作区是一次性的所以无妨; 本地要构建请用
+#    build-local.sh (它会生成一份 versionCode=9999 的副本, 不动这里的源文件)。
+sed -i "s/android:versionCode=\"[0-9]*\"/android:versionCode=\"$vcode\"/" AndroidManifest.xml
+sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"$vname\"/" AndroidManifest.xml
+echo "  versionName=$vname versionCode=$vcode"
+grep -n "versionCode\|versionName" AndroidManifest.xml
+
 echo "== manifest 语法自检 =="
 # ⚠️ 加这步的原因 (2026-10-08 实际踩到): 注释写成 /* ... */ 时, XML 解析器不把它当
 # 注释, 会把后面的元素一起吞掉, 报错只有一句 "not well-formed (invalid token)"

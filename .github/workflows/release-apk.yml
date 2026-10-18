@@ -1,0 +1,110 @@
+name: release-apk
+
+# 正式版本通道 —— 只有打了 v* tag 才会跑。
+#
+# 一次发版 = 一个 tag = 一个独立 release (含 sgmbot.apk + bundle.zip + 自上个版本以来的
+# 提交清单)。这与 build-apk.yml 的开发快照 (prerelease 滚动 tag `latest`) 是两条路:
+# App 内自更新读 /releases/latest, 只会命中这里产出的正式版。
+#
+# 怎么发: 跑 tools/release.sh <major|minor|patch|x.y.z> [--push]
+#   它负责改 version.properties → 提交 → 打 tag → 推 tag, 剩下的交给本 workflow。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已推送的 tag (形如 v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 生成 changelog 要完整历史 + 上一个 tag
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK pieces
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      # tag 与 version.properties 必须一致 —— 否则"发出去的版本号"和"代码里的版本号"
+      # 会长期错位, 而 APK 的 versionName 恰恰是用户判断有没有更新的依据。
+      - name: Resolve & verify version
+        id: ver
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_REF_NAME}"
+          NAME="${TAG#v}"
+          PROP=$(sed -n 's/^versionName=//p' phone/app/version.properties | tr -d '\r')
+          CODE=$(sed -n 's/^versionCode=//p' phone/app/version.properties | tr -d '\r')
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG / versionName=$PROP / versionCode=$CODE"
+          if [ "$PROP" != "$NAME" ]; then
+            echo "[!!] tag ($NAME) 与 phone/app/version.properties ($PROP) 不一致"
+            echo "     先把 version.properties 改到 $NAME 并提交, 再打 tag。"
+            exit 1
+          fi
+
+      - name: Build APK (aapt2 + javac + d8 + apksigner)
+        run: bash phone/app/build-ci.sh
+
+      # bundle.zip = templates + config, App 内热更用; 名字必须与 assets/config.json 的
+      # update.bundle_asset / update.apk_asset 对上, 否则 App 找不到资产。
+      - name: Pack bundle
+        run: |
+          cd phone/app/assets
+          zip -r "$GITHUB_WORKSPACE/bundle.zip" templates config.json
+          cd "$GITHUB_WORKSPACE"
+          unzip -l bundle.zip
+
+      - name: Changelog (上一个 v* tag 之后)
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          PREV=$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)
+          {
+            echo "## ${{ steps.ver.outputs.name }}"
+            echo
+            echo "versionCode \`${{ steps.ver.outputs.code }}\` · 构建 \`${GITHUB_SHA::7}\`"
+            echo
+            if [ -n "$PREV" ]; then
+              echo "\`$PREV\` 之后的改动:"
+            else
+              echo "首个版本化发布。"
+            fi
+            echo
+            git log --no-merges --pretty='- %s (`%h`)' ${PREV:+$PREV..}$TAG | head -200
+            echo
+            echo "### 安装"
+            echo '下载 `sgmbot.apk` 直接覆盖安装即可 (签名一致)。App 内「检查更新」也会读到这一版。'
+          } > notes.md
+          cat notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG 已存在 — 覆盖资产"
+            gh release upload "$TAG" phone/app/build/sgmbot.apk bundle.zip --clobber
+            gh release edit "$TAG" --title "SGM挂机 v${{ steps.ver.outputs.name }}" --notes-file notes.md
+          else
+            gh release create "$TAG" --verify-tag \
+              --title "SGM挂机 v${{ steps.ver.outputs.name }}" \
+              --notes-file notes.md \
+              phone/app/build/sgmbot.apk bundle.zip
+          fi
