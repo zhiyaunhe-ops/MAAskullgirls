@@ -268,28 +268,32 @@ def build_arenas(root: str) -> dict:
             conf=tier(v.get("依据", "")))
 
     # 3.4) 官方限制口径（2026-10-18 用户口径，两条都是**官方规则**不是玩家约定）
-    #      元素场 = 限制**出战队**元素；角色场 = 限制**防守队伍**的角色。
+    #      元素场（含元素月场）= 出战队**含**对应元素；周角色场 = 防守队伍**含**对应角色。
+    #      ⚠️ 是「含」不是「为」：队伍 3 个位置，含 1 个就满足 —— 写成「需为」会被读成全队同元素。
     for e in out.values():
         tag = e["tag"]
         base = e.get("official") or dict(OFFICIAL_FREE)
         if tag in ("element", "monthly_element"):
             zh = ELEM_ZH.get(e.get("element") or "", "")
             e["official"] = {**base,
-                             "restriction": (f"出战队需为{zh}元素" if zh else "出战队需为对应元素"),
+                             # ⚠️ 「需含」不是「需为」: 出战队 3 人, 含 1 个对应元素即可,
+                             #    写「需为」会被读成全队同元素 (2026-10-18 用户口径)。
+                             "restriction": (f"出战队需含{zh}元素" if zh else "出战队需含对应元素"),
                              "applies_to": "attack",
-                             "note": "官方规则：元素场限制出战队元素"}
+                             "note": "官方规则：元素场要求出战队含对应元素（含 1 个即可）"}
         elif tag == "character":
             c = e.get("char")
             e["official"] = {**base,
-                             "restriction": (f"防守队伍需为 {c}" if c
-                                             else "防守队伍需为对应角色"),
+                             "restriction": (f"防守队伍需含 {c}" if c
+                                             else "防守队伍需含对应角色"),
                              "applies_to": "defense",
-                             "note": "官方规则：角色场限制防守队伍的角色"}
+                             "note": "官方规则：角色场要求防守队伍含对应角色（含 1 个即可）"}
         elif tag.startswith("monthly"):
-            # ⚠️ 月场（含角色月场）**没有出战限制** —— 2026-10-18 用户口径。
-            #    别把「角色场限防守角色」外推到月场：那会让脚本去换防守队、白烧能量。
+            # 走到这里的只剩 monthly_character / monthly_misc（monthly_element 已在上面按元素处理）。
+            # ⚠️ **角色月场不设出战限制** —— 2026-10-18 用户口径。
+            #    别把「周角色场限防守角色」外推到 monthly_character：那会让脚本去换防守队、白烧能量。
             e["official"] = {**base, "restriction": "无", "applies_to": None,
-                             "note": "月场不设出战限制（用户口径 2026-10-18）"}
+                             "note": "角色月场不设出战限制（用户口径 2026-10-18）"}
 
     # 3.5) 官方明文写过的限制（没有写的一律「无」；别把玩家约定冒充成官方限制）
     official_override = {

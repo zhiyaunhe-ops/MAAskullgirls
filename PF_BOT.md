@@ -129,7 +129,7 @@
 | 6.3 | 已保障规则后缺能量 | 槽1先补规则角色；槽2／3纯能量替换 |
 | 6.3 | 拖拽失败／池空 | 复读、归零＋微调、最多30页／返回失败 |
 | 6.4 | 规则格式 | null／{"type":"element","value":"wind"}／{"type":"class","value":"Cerebella"}；pf_domain规范化 |
-| 6.4 | class规则含义 | 角色场**防守队**限定该角色（2026-09-29用户口径；arena_rules defense_char）；出战队不受限——judge_rule对class恒True（旧"恒False"是空烧桩，已废） |
+| 6.4 | class规则含义 | 角色场**防守队含**该角色（3 位放 1 个即可，勿写成「必须全队」）（2026-09-29用户口径；arena_rules defense_char）；出战队不受限——judge_rule对class恒True（旧"恒False"是空烧桩，已废） |
 | 6.4 | 防守队左1 | element→对应元素角色；class→该角色（CHARACTER_CHIPS筛选＋拖居中候选＋槽位角色名OCR复验，put_char_in_defense）；拖拽/复验待下次角色场实机验证 |
 | 6.4 | 防守编辑器 | 版式与常规编队不同：三槽居中（落点440/640/840）、无能量黄钉、右上CONFIRM（pf/defense_confirm.png）；不合规=红禁止标＋CONFIRM灰点不动 |
 | 6.4 | 锁定弹窗 | 角色场FIGHT!后一次性"locked into the Diamond"确认（无X，CANCEL/CONTINUE）：正文OCR两探针判定＋CONTINUE(748,576)；离线冒烟正命中/三类帧零误报，实机路径未验证 |
@@ -236,7 +236,7 @@ Double/Squigly → Valentine/Fukua → Eliza/Marie → Annie/Big Band
 | 2026-09-17 / 09-21 / 09-24 / 09-28 / 10-13 | Marie / Annie / Big Band / Cerebella / Filia，全部与公式一致 |
 | 2026-10-13 hub 扫描 | `A SHOT IN THE DARK`(#1) `COSTUME PARTY`(#2) `TWO TO TANGLE`(#3)；周场与公式一致，前两张是月场位 |
 
-| 官方限制（2026-10-18 用户口径） | **元素场限制出战队元素；周角色场限制防守队伍角色**（月场不设限制） |
+| 官方限制（2026-10-18 用户口径） | **元素场→出战队「含」对应元素；周角色场→防守队伍「含」对应角色**（队伍 3 位，**含 1 个即可**，不是全队同元素/同角色）；月场不设限制 |
 | 10 月月场 | 元素月场 `FALL OF THE DARK`（暗，官方 8.11 公告点名）+ 角色月场 `COSTUME PARTY`（防守角色名官方未给，留空） |
 
 ⚠️ 仍待核实（已写进站点 `pending`）：`COSTUME PARTY` 的防守角色、`FALL OF THE DARK` 的起止日期、招式场隔周相位、Medici 场名轮换顺序。

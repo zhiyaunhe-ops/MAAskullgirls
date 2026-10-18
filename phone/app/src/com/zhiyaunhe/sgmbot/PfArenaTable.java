@@ -325,7 +325,8 @@ final class PfArenaTable {
             return 4;
         }
 
-        /** 取人规则: character 只约束**防守队**; element 限制出战队元素; 其余 null。 */
+        /** 取人规则: character 只约束**防守队**(含该角色即可); element 要求出战队**含**对应元素;
+         *  monthly_character 无限制; 其余 null。 */
         String rule() {
             if ("element".equals(tag) || "monthly_element".equals(tag)) {
                 return element == null ? null : "element:" + element;
