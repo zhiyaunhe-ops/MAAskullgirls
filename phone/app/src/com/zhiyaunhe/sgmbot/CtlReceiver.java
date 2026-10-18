@@ -34,7 +34,8 @@ public class CtlReceiver extends BroadcastReceiver {
                         android.graphics.Bitmap b = s.capture();
                         if (b == null) { SgmLog.i("scan", "手动扫描: 截屏失败"); return; }
                         java.util.List<PfScan.Card> cards = PfScan.scan(s, b);
-                        SgmLog.i("scan", "手动扫描完成: " + cards.size() + " 张卡");
+                        SgmLog.i("scan", "手动扫描完成: " + cards.size() + " 个卡位 (上限, 非卡数; "
+                                + "今天开哪些场看轮换公式)");
                         PfScan.save(cards);
                     } catch (Throwable t) {
                         SgmLog.i("scan", "手动扫描异常: " + t);

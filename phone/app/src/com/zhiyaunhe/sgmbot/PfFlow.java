@@ -204,14 +204,18 @@ public final class PfFlow {
                 log("场地扫描: 截屏失败 — 跳过 (不影响进场)");
                 return;
             }
-            log("场地扫描: 开始 (滑到最左 → 逐卡左滑 → 同图即到头)");
+            log("场地扫描: 开始 (先定滑动方向 → 走到一端 → 反向逐卡位记指纹)");
             java.util.List<PfScan.Card> cards = PfScan.scan(sh, b);
             hubCards = cards.size();
             if (hubCards <= 0) {
-                log("⚠ 场地扫描: 一张都没读到 —— 界面不是 hub? 或轮播滑动没生效");
+                log("⚠ 场地扫描: 一个卡位都没读到 —— 界面不是 hub? 或轮播滑动没生效");
             } else {
-                SgmLog.i("pf", "场地扫描: 今日 hub 共 " + hubCards + " 张卡"
-                        + " (卡位口径: 前 2 张按月场处理)", b);
+                /* ⚠️ 文案必须说"卡位"不要说"张卡": 轮播不吸附时同一张卡可能占两格,
+                 * 这个数只是**上限**。权威的"今天开哪些场"是 PfRotation (站点轮换公式)。 */
+                int today = PfArenaTable.namesToday().size();
+                SgmLog.i("pf", "场地扫描: hub 上扫到 " + hubCards + " 个卡位"
+                        + " (上限; 非卡数) | 轮换公式今日 " + today + " 场 "
+                        + PfArenaTable.namesToday(), b);
             }
             PfScan.save(cards);
             noteProgress();                 // 扫完算进展, 别让看门狗当成卡死
@@ -546,28 +550,9 @@ public final class PfFlow {
              *      PRIZE FIGHTS"无限循环);
              *   ② 整块菱形模板不可靠: 里面带**每秒变的倒计时**, 且 PRIZE/STORY/EVENTS
              *      三个菱形版式雷同 ⇒ 会互相抢分。
-             * 现在的口径: **先右滑归位到最左** (位置就固定了), 再用「PRIZE FIGHTS」
-             * **文字条**模板定位 (实测 1.00 vs 异菱形 0.20, 等价于读文字), 点图标中心
-             * (文字上方 ~35px)。文字读不到才退回硬编码坐标兜底。 */
-            if (hallSlides < HALL_SLIDE_MAX) {
-                hallSlides++;
-                log("大厅: 第 " + hallSlides + " 次右滑归位到最左 (地图可拖动)");
-                swipe(bmp, 380, 340, 1050, 340, 420);
-                sleep_(900);
-                return;
-            }
-            double[] txt = match(work, Pf.T_HALL_PRIZE_TEXT, Pf.ROI_FULL, Pf.TH_HALL_PRIZE_TEXT);
-            if (txt != null) {
-                int tx = (int) txt[0] + 105, ty = (int) txt[1] - 35;
-                log("大厅: 读到 PRIZE FIGHTS 文字 ("
-                        + Math.round(txt[2] * 100) / 100.0 + ") — 点图标 (" + tx + "," + ty + ")");
-                tap(bmp, tx, ty);
-                sleep_(2500);
-                return;
-            }
-            log("大厅: 文字模板没读到 — 退回固定坐标兜底 (滑到最左后位置固定)");
-            tap(bmp, Pf.HALL_PRIZE_TAP);
-            sleep_(2500);
+             * 现在统一走 {@link #tapHallPrizeFights}: 读「PRIZE FIGHTS」**文字条**
+             * (实测 0.95 vs 异菱形 0.20, 等价于读文字) 定位, 点它的**相对偏移**。 */
+            tapHallPrizeFights(bmp, work);
             return;
         }
         // ⑦ 防守队说明弹窗 (每场次只处理一次; 失败也置位, 避免无限点 OK 空烧)。
@@ -720,6 +705,45 @@ public final class PfFlow {
     // ==================================================================
     //  导航: 从任意界面走回 PF hub (跨 pf_nav.goto_pf_hub)
     // ==================================================================
+
+    /**
+     * 大厅里进 PF: 用「PRIZE FIGHTS」**文字条**定位, 点它的**相对偏移**。
+     *
+     * <p>为什么是相对偏移而不是绝对坐标: 大厅是**可横向拖动的地图**, 同一个节点在不同时刻
+     * 落在不同的 x 上。文字条一旦命中, 点击点就跟着走, 不需要"先拉最左"这个前提。</p>
+     *
+     * <p>匹配必须走 {@link #matchFull} (强制全搜): 文字条只有 148x36, 金字塔在 0.5x/0.25x
+     * 上会把它的峰值削到 0.15~0.18 ⇒ 用 {@code match()} 会**永远读到 0**。</p>
+     *
+     * <p>文字读不到时才右滑归位重试 (抽屉式: 最多 {@link #HALL_SLIDE_MAX} 次) ——
+     * 右滑 = 内容右移 = 露出地图左边, 横幅从左边进来。三次都没有才退固定坐标兜底。</p>
+     *
+     * @return 总是 true (调用方一律 continue); 留返回值只为将来可能"什么都没做"
+     */
+    private boolean tapHallPrizeFights(Bitmap bmp, Vision.Frame work) {
+        double[] txt = matchFull(work, Pf.T_HALL_PRIZE_TEXT, Pf.ROI_FULL, Pf.TH_HALL_PRIZE_TEXT);
+        if (txt != null) {
+            int[] c = centerOf(work, txt, Pf.T_HALL_PRIZE_TEXT);
+            int tx = c[0] + Pf.HALL_PRIZE_DX, ty = c[1] + Pf.HALL_PRIZE_DY;
+            log("大厅: 读到 PRIZE FIGHTS 文字 (" + Math.round(txt[2] * 100) / 100.0
+                    + ") @(" + (int) txt[0] + "," + (int) txt[1] + ") — 点横幅 (" + tx + "," + ty + ")");
+            tap(bmp, tx, ty);
+            sleep_(2500);
+            return true;
+        }
+        if (hallSlides < HALL_SLIDE_MAX) {
+            hallSlides++;
+            log("大厅: 没读到 PRIZE FIGHTS 文字 — 第 " + hallSlides + " 次右滑把地图拉回最左");
+            swipe(bmp, 380, 340, 1050, 340, 420);
+            sleep_(900);
+            return true;
+        }
+        log("大厅: 文字一直读不到 — 退回固定坐标兜底 (" + Pf.HALL_PRIZE_TAP[0]
+                + "," + Pf.HALL_PRIZE_TAP[1] + ")");
+        tap(bmp, Pf.HALL_PRIZE_TAP);
+        sleep_(2500);
+        return true;
+    }
 
     /**
      * 走回 PF hub: 弹窗优先 → PLAY 就绪 → 大厅菱形 → 房子回家。

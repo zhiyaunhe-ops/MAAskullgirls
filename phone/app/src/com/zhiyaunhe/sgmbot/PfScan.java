@@ -9,8 +9,8 @@ import java.util.List;
  * PF hub 轮播扫描器 —— 移植 PC {@code pf_nav.PfNav.scan_arenas} 的**骨架**。
  *
  * <h3>它做什么</h3>
- * 先右滑到最左, 再逐卡左滑, 每张卡截一处"卡面指纹"(居中卡区域缩略图), 直到某一张
- * 与上一张相同 (轮播到头) 或到 {@link #MAX_CARDS} 上限。返回每张卡的序号 + 指纹。
+ * 先探明轮播的滑动方向, 走到一端, 再反向逐"卡位"截一处指纹 (居中卡区域缩略图),
+ * 屏幕不再变化即到头。返回每个卡位的指纹。
  *
  * <h3>⚠️ 它**不**读场次名</h3>
  * PC 端 {@code read_center_card()} 靠 OCR 读标题 + SCORE 行, 再拿人工表把卡名映射成
@@ -37,6 +37,12 @@ final class PfScan {
     /** 平均绝对差 < 此值 ⇒ 同一张卡 (0~255 灰度尺度)。实测同图 ~2, 异图 ~40+。 */
     private static final double SAME_DIFF = 8;
 
+    /**
+     * "画面有没有真的动"的阈值 (96x48 灰度平均绝对差)。
+     * 实测: 静止帧 0.3~0.84 / 真实换卡 23.78 ⇒ 取 3.0。
+     */
+    private static final double STILL_DIFF = 3.0;
+
     /** hub 轮播滑动参数 —— 与 PfArena 同口径 (y=250 避开 PLAY!/顶栏 HUD)。 */
     private static final int SLIDE_Y = 250, SLIDE_CX = 640, SLIDE_DX = 300;
 
@@ -60,7 +66,26 @@ final class PfScan {
     /**
      * 扫一遍 hub 轮播。**会动屏幕** (左右滑), 只在 hub 页调用。
      *
-     * @return 每张卡的指纹列表 (可能为空: 截屏失败); 顺序 = 从左到右
+     * <h3>⚠️⚠️ 2026-10-18 实测重写 (原版把 5 张数成 7 张)</h3>
+     * 用户指出「事实上只有 5 张」。实测复现: 连续 8 帧横扫, **整帧 96x48 灰度平均绝对差只有
+     * 0.3~0.84** —— 也就是说画面根本没动 (滑到端了), 但旧实现照样每帧记一张卡: 它的判重
+     * 只跟**上一张**比, 而指纹区含**实时分数数字 + 卡面动画**, 静止帧之间也超阈值
+     * (真实换卡的差异是 **23.78**, 两个分布差 30 倍)。
+     *
+     * <p>现在的三条闸:
+     * <ol>
+     *   <li><b>位移闸</b>: 每次滑完先比整帧, 差异 &lt; {@link #STILL_DIFF} 就判"到头", 不进下一格;</li>
+     *   <li><b>全局判重</b>: 与**已记录的每一张**比, 不是只比上一张;</li>
+     *   <li><b>方向自检</b>: 不假设滑动方向。实测"手指右滑反而让列表前进", 与直觉相反 ⇒
+     *       每次先试一个方向, 画面不动就反过来 (一次 swipe 的成本远低于记错方向)。</li>
+     * </ol></p>
+     *
+     * <h3>⚠️ 结果仍只是"卡位"不是"卡数"</h3>
+     * 每滑一屏记一个位置。轮播不吸附 (滑动距离与卡宽不严格相等) 时, 同一张卡可能落在
+     * 两格里 ⇒ 数出来是**上限**。**权威的"今天开哪些场"来自 {@link PfRotation}** (站点
+     * 那张表的轮换公式), 这里的数只用来"人眼对一下今天几张"。
+     *
+     * @return 每个卡位的指纹 (可能为空: 截屏失败); 顺序 = 扫描方向
      */
     static List<Card> scan(ShizukuCtl sh, Bitmap firstFrame) {
         List<Card> out = new ArrayList<>();
@@ -68,32 +93,84 @@ final class PfScan {
         if (b == null) b = sh.capture();
         if (b == null) return out;
 
-        /* ① 先滑到最左: 右滑 MAX_CARDS 次 (到底再滑不会动, 无副作用)。 */
-        for (int i = 0; i < MAX_CARDS; i++) {
-            sh.swipeWork(b, SLIDE_CX, SLIDE_Y, SLIDE_CX + SLIDE_DX, SLIDE_Y, 420);
-            PfFlow.sleep_(320);
+        /* ① 定方向: 先试"手指向左", 画面不动就反过来。 */
+        int dir = 0;
+        for (int sign : new int[]{-1, 1}) {
+            Bitmap before = b;
+            sh.swipeWork(b, SLIDE_CX, SLIDE_Y, SLIDE_CX + sign * SLIDE_DX, SLIDE_Y, 420);
+            PfFlow.sleep_(900);
             Bitmap nb = sh.capture();
-            if (nb != null) b = nb;
+            if (nb == null) return out;
+            b = nb;
+            if (moved(before, b)) { dir = sign; break; }
         }
-        PfFlow.sleep_(600);
+        if (dir == 0) {
+            /* 左右都不动 ⇒ hub 只有一屏 (或轮播没做), 记下当前这一格就结束, 别硬凑数。 */
+            int[] t0 = thumb(b);
+            if (t0 != null) out.add(new Card(0, t0));
+            SgmLog.i("pf", "场地扫描: 左右滑都不改变画面 ⇒ hub 只有一屏 (记 1 个卡位)");
+            return out;
+        }
 
-        /* ② 逐卡左滑读取 + 判到头。 */
-        Card prev = null;
+        /* ② 先走到一端 (同一方向滑到画面不再变化)。 */
         for (int i = 0; i < MAX_CARDS; i++) {
-            b = sh.capture();
-            if (b == null) break;
-            Card c = new Card(i, thumb(b));
-            if (c.thumb == null) break;
-            if (prev != null && c.sameAs(prev)) {
-                SgmLog.i("pf", "场地扫描: 第 " + (i + 1) + " 张与上一张相同 ⇒ 轮播到头");
-                break;
-            }
-            out.add(c);
-            prev = c;
-            sh.swipeWork(b, SLIDE_CX, SLIDE_Y, SLIDE_CX - SLIDE_DX, SLIDE_Y, 420);
-            PfFlow.sleep_(1000);
+            Bitmap before = b;
+            sh.swipeWork(b, SLIDE_CX, SLIDE_Y, SLIDE_CX + dir * SLIDE_DX, SLIDE_Y, 420);
+            PfFlow.sleep_(700);
+            Bitmap nb = sh.capture();
+            if (nb == null) break;
+            b = nb;
+            if (!moved(before, b)) break;
+        }
+
+        /* ③ 反向逐个卡位记录 (全局判重)。 */
+        dir = -dir;
+        for (int i = 0; i < MAX_CARDS; i++) {
+            int[] th = thumb(b);
+            if (th == null) break;
+            Card c = new Card(out.size(), th);
+            boolean dup = false;
+            for (Card o : out) if (c.sameAs(o)) { dup = true; break; }
+            if (!dup) out.add(c);
+            Bitmap before = b;
+            sh.swipeWork(b, SLIDE_CX, SLIDE_Y, SLIDE_CX + dir * SLIDE_DX, SLIDE_Y, 420);
+            PfFlow.sleep_(900);
+            Bitmap nb = sh.capture();
+            if (nb == null) break;
+            b = nb;
+            if (!moved(before, b)) break;          // 到另一端
         }
         return out;
+    }
+
+    /**
+     * 两次截屏之间画面是否真的动了 (96x48 灰度平均绝对差 &gt; {@link #STILL_DIFF})。
+     *
+     * <p>实测分布: 静止 0.3~0.84 / 真实换卡 23.78 ⇒ 3.0 这个阈值有 3.5 倍余量。</p>
+     */
+    private static boolean moved(Bitmap a, Bitmap c) {
+        int[] x = sig(a), y = sig(c);
+        if (x == null || y == null) return true;      // 算不出就当动了 (宁可多扫一格)
+        long sum = 0;
+        for (int i = 0; i < x.length; i++) sum += Math.abs(x[i] - y[i]);
+        return sum / (double) x.length > STILL_DIFF;
+    }
+
+    /** 96x48 灰度签名 (全屏; 判"有没有位移"用, 与卡位指纹不是一回事)。 */
+    private static int[] sig(Bitmap bmp) {
+        try {
+            Bitmap s = Bitmap.createScaledBitmap(bmp, 96, 48, true);
+            int[] p = new int[96 * 48];
+            s.getPixels(p, 0, 96, 0, 0, 96, 48);
+            if (s != bmp) s.recycle();
+            for (int i = 0; i < p.length; i++) {
+                int v = p[i], r = (v >> 16) & 0xFF, g = (v >> 8) & 0xFF, bl = v & 0xFF;
+                p[i] = (r * 299 + g * 587 + bl * 114) / 1000;
+            }
+            return p;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 截居中卡区域 → 灰度缩略 (work 坐标; 越界返回 null)。 */

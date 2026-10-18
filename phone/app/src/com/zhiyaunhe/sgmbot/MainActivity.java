@@ -477,7 +477,7 @@ public class MainActivity extends Activity {
         btnRule = Ui.button(this, "", "出战规则 (约束编队选人)", feed, this::pickRule);
         btnFav = Ui.button(this, "", "编队选人时只用收藏角色", feed, this::toggleFav);
         btnFabSize = Ui.button(this, "", "挂机时那颗红色「暂停」小浮标的大小 (小了不挡游戏)", feed, this::pickFabSize);
-        Ui.button(this, "📜 历史场次 (只读: 已过期的场次 / 每天扫到几张卡)",
+        Ui.button(this, "📜 历史场次 (只读: 已过期的场次 / 每天扫到几个卡位)",
                 "之前的场次只在这里回看, 不在上面的可选列表里", feed, this::showArenaHistory);
         /* 场次表原来只能靠重装 APK 更新 (assets 在增量安装下还常常读不到),
          * 现在改成从 GitHub Pages 拉 —— 官方上了新场次, 点一下就有。 */
@@ -609,18 +609,32 @@ public class MainActivity extends Activity {
         });
     }
 
+    /**
+     * 选目标场次。
+     *
+     * <p>⚠️ 默认只列**今天开放的** (轮换公式, 见 {@link PfRotation}) —— 表里 40 条是历届目录,
+     * 不是"现在能打什么"(2026-10-18 用户: 「只需要当前的场次可选」)。完整目录留在最后一项
+     * 里给"公式算漏了/要手动核对"的场合用, 不是默认列表。</p>
+     */
     private void pickArena() {
-        SgmLog.i("ui", "pickArena 被点 (弹场次表 " + PfArenaTable.names().size() + " 个)");
         java.util.List<String> names = PfArenaTable.names();
-        final String[] items = new String[names.size() + 1];
+        boolean todayMode = !PfArenaTable.namesToday().isEmpty();
+        SgmLog.i("ui", "pickArena 被点 (列 " + names.size() + " 个, "
+                + (todayMode ? "今日开放" : "公式不可用 → 整表") + ")");
+        final java.util.List<String> list = new java.util.ArrayList<>(names);
+        int base = 1 + list.size();                 // 0 = 不指定; 之后是场次; 最后一项 = 全部目录
+        final String[] items = new String[base + 1];
         items[0] = "✖ 不指定场次 (按卡位保守口径: 4kw / 4 钉 / 无规则)";
-        for (int i = 0; i < names.size(); i++) items[i + 1] = names.get(i);
+        for (int i = 0; i < list.size(); i++) items[i + 1] = list.get(i);
+        items[base] = "⋯ 全部场次目录 (" + PfArenaTable.namesAll().size() + " 个, 含今天没开放的)";
         String cur = targetArena();
         int sel = 0;
         if (cur != null) {
-            for (int i = 0; i < names.size(); i++) if (names.get(i).equals(cur)) { sel = i + 1; break; }
+            for (int i = 0; i < list.size(); i++) if (list.get(i).equals(cur)) { sel = i + 1; break; }
         }
-        pick("目标场次 (" + names.size() + " 个)", items, sel, i -> {
+        pick("目标场次 · " + (todayMode ? "今日开放 " + list.size() + " 场" : "整表 " + list.size() + " 场"),
+                items, sel, i -> {
+            if (i == base) { pickAllArenas(); return; }
             java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
             if (i == 0) {
                 /* 不指定 = 删四个键, 回落到按卡位的保守口径 (不是写个空串进去) */
@@ -633,21 +647,36 @@ public class MainActivity extends Activity {
                 pfDone("已清除场次指定 — 回到按卡位保守口径 (4kw / 4 钉 / 无规则)");
                 return;
             }
-            String name = names.get(i - 1);
-            PfArenaTable.Spec sp = PfArenaTable.spec(name);
-            if (sp == null) { feed.setTextColor(Ui.ERR); feed.setText("✗ 场次表里找不到 " + name); return; }
-            kv.put("pf.arena", name);
-            kv.put("pf.energy_cost", sp.energy());
-            kv.put("pf.score_target", sp.noLimit() ? PfArenaTable.NO_LIMIT : sp.scoreTarget());
-            /* rule 可能是 null (misc/unknown 场) ⇒ 写 null 删键, 别把 "null" 当字符串存进去 */
-            String r = sp.rule();
-            kv.put("pf.rule", r == null ? null : ruleJson(r));
-            String err = writePf(kv);
-            if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
-            pfDone("已选场次 " + name + " → " + sp.energy() + " 钉 / "
-                    + (sp.noLimit() ? "无上限" : (sp.scoreTarget() / 10000000) + "kw")
-                    + " / " + (r == null ? "无规则" : r));
+            applyArena(list.get(i - 1));
         });
+    }
+
+    /** 完整目录 (含今天没开放的) —— 只在"公式漏了/要手动核对"时进这里。 */
+    private void pickAllArenas() {
+        final java.util.List<String> all = PfArenaTable.namesAll();
+        String[] items = all.toArray(new String[0]);
+        String cur = targetArena();
+        int sel = 0;
+        for (int i = 0; i < all.size(); i++) if (all.get(i).equals(cur)) { sel = i; break; }
+        pick("全部场次目录 (" + all.size() + " 个)", items, sel, i -> applyArena(all.get(i)));
+    }
+
+    /** 把场次名连带的条件 (能量/分数上限/规则) 一起写进配置。 */
+    private void applyArena(String name) {
+        java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
+        PfArenaTable.Spec sp = PfArenaTable.spec(name);
+        if (sp == null) { feed.setTextColor(Ui.ERR); feed.setText("✗ 场次表里找不到 " + name); return; }
+        kv.put("pf.arena", name);
+        kv.put("pf.energy_cost", sp.energy());
+        kv.put("pf.score_target", sp.noLimit() ? PfArenaTable.NO_LIMIT : sp.scoreTarget());
+        /* rule 可能是 null (misc/unknown 场) ⇒ 写 null 删键, 别把 "null" 当字符串存进去 */
+        String r = sp.rule();
+        kv.put("pf.rule", r == null ? null : ruleJson(r));
+        String err = writePf(kv);
+        if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
+        pfDone("已选场次 " + name + " → " + sp.energy() + " 钉 / "
+                + (sp.noLimit() ? "无上限" : (sp.scoreTarget() / 10000000) + "kw")
+                + " / " + (r == null ? "无规则" : r));
     }
 
     /** "class:Filia" / "element:water" → {"type":..,"value":..} (PfTeam.configure 的口径)。 */
@@ -725,7 +754,7 @@ public class MainActivity extends Activity {
         if (his.isEmpty()) {
             sb.append("  (还没有记录 — 跑一次「开始」(自动导航) 就会扫一遍 hub)\n");
         } else {
-            for (String[] h : his) sb.append("  ").append(h[0]).append(" — ").append(h[1]).append(" 张卡\n");
+            for (String[] h : his) sb.append("  ").append(h[0]).append(" — ").append(h[1]).append(" 个卡位\n");
         }
         java.util.List<String> old = PfArenaTable.namesExpired();
         sb.append("\n【已过期的场次】(").append(old.size()).append(" 条, 只读)\n");

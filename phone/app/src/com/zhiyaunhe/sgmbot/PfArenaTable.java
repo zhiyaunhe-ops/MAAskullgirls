@@ -320,9 +320,10 @@ final class PfArenaTable {
             if ("element".equals(tag) || "monthly_element".equals(tag)) {
                 return element == null ? null : "element:" + element;
             }
-            if ("character".equals(tag) || "monthly_character".equals(tag)) {
-                /* ⚠️ 角色场（含角色月场）限制的是**防守队伍**的角色，不是出战队 ——
-                 * 官方规则，2026-10-18 用户口径。 */
+            if ("character".equals(tag)) {
+                /* ⚠️ 只有**周**角色场限制防守队伍的角色。
+                 * 月场（含角色月场 COSTUME PARTY）**没有出战限制** —— 2026-10-18 用户口径；
+                 * 别把这条外推到 monthly_character，否则脚本会去换防守队、白烧能量。 */
                 return charName == null ? null : "class:" + charName;
             }
             return null;
