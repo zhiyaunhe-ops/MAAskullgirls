@@ -67,6 +67,20 @@ public final class Pf {
     public static final String T_REFRESH      = "pf/pf_refresh_btn";    // 选对手页 REFRESH
     public static final String T_STREAK_X     = "pf/streak_x";          // 连胜弹窗 X
     public static final String T_DETAIL       = "pf/detail_stats";      // 误入角色详情页
+
+    /**
+     * LEADERBOARDS 页标题带 —— **误入脱困**的判据。
+     *
+     * <p>2026-10-18 用户: 「又卡住了, 又点到这个中心的 leaderboard 上去了」。</p>
+     * <p>⚠️ 真因不是 CONTINUE 连点。日志 22:56:51 看门狗按返回键脱困后, 代码仍按**旧场景**
+     * (TEAM_PREVIEW) 推断, 走到「TEAM 菱形模板没命中」分支时**盲点固定坐标**
+     * (work 638,444) —— 而那个位置在排行榜页上正好是入口, 于是越点越深。
+     * 模板取自真机 1:1 帧 (2400x1080 → work): 自匹配 0.973, 当日 60 张其它界面最高
+     * 0.270 (缩略图帧 0.832), 区分度 ~3 倍, 阈值 0.70 很安全。</p>
+     */
+    public static final String T_LB_TITLE     = "pf/lb_title";
+    /** 阈值: 命中帧 0.966~0.973 / 其它界面 ≤0.27。 */
+    public static final double TH_LB_TITLE    = 0.70;
     public static final String T_OPTIONS_X    = "pf/options_x";         // OPTIONS 弹窗 X
     public static final String T_SRV_OK       = "pf/srv_ok";            // 服务器错误 OK
     public static final String T_SRV_RETRY    = "pf/srv_retry";         // 服务器错误 RETRY
@@ -252,6 +266,17 @@ public final class Pf {
     public static final int[] ROI_SPD        = {590, 430, 130, 90};
     /** 结算页 CONTINUE (handle_results / wait_battle_end)。 */
     public static final int[] ROI_RESULT_C   = R(400, 570, 980, 700);
+
+    /** 排行榜标题带的搜索区 —— 只搜顶部, 别做全帧 (列表里全是卡面, 全帧容易撞)。 */
+    public static final int[] ROI_LB_TITLE   = R(450, 20, 950, 130);
+
+    /**
+     * 排行榜页**左上角返回箭头** (work)。实测真机帧 (35,29), 给一点余量。
+     *
+     * <p>优先点它而不是 {@code input keyevent 4}: 返回键在这个游戏里有时被页面自己吃掉,
+     * 而且按错一次会再叠一层 —— 点位是实测的, 更确定。</p>
+     */
+    public static final int[] LB_BACK        = {36, 30};
     /** 全屏 (等价 PC 的 (0,0,0,0))。 */
     public static final int[] ROI_FULL       = new int[]{0, 0, WORK_W, WORK_H};
 

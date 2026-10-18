@@ -421,7 +421,15 @@ public final class PfFlow {
             lastSceneSeen = sc;
         }
         if (sc != PfScene.S.UNKNOWN) {
+            if (sc != PfScene.S.LEADERBOARD) lbHits = 0;   // 离开排行榜就把连击计数清掉
             switch (sc) {
+                case LEADERBOARD:
+                    /* 用户 2026-10-18: 「不要等个什么 30 秒, 然后才触发回到上一页的全局兜底」
+                     * —— 有判据就当轮退, 不等看门狗。 */
+                    unknownTries = 0;
+                    setStep("退出排行榜");
+                    exitLeaderboard(bmp);
+                    return;
                 case QUIT_DIALOG:            // 我们按返回键按出来的, 无 X, 必须先点掉否则死锁
                     tap(bmp, PfScene.quitCancelAt(work));
                     unknownTries = 0;
@@ -946,6 +954,31 @@ public final class PfFlow {
         return r == null ? null : centerOf(w, r, Pf.T_FILTER_BTN);
     }
 
+    /**
+     * 从 LEADERBOARDS 排行榜页**当轮**退出去 —— 不等看门狗。
+     *
+     * <p>2026-10-18 用户: 「不要等个什么 30 秒, 然后才触发回到上一页的这个全局兜底」。
+     * 之前这页没有任何专属判据 ⇒ PfScene 判 UNKNOWN ⇒ 串行链也认不出 ⇒ 只能等
+     * {@code STUCK_MS}(90s) 的第 1 级"系统返回键"。现在有了标题判据, 一帧就能脱身。</p>
+     *
+     * <p>退出手段: 先点**左上角返回箭头** (真机实测 work 36,30) —— 它是页面自己的返回,
+     * 不依赖系统返回键 (这个游戏的返回键有时被页面吃掉, 按错还会叠一层);
+     * 连点两次还没出去 (点位漂了/被遮挡) 才退回 {@code input keyevent 4}。</p>
+     */
+    private void exitLeaderboard(Bitmap bmp) {
+        lbHits++;
+        log("误入 LEADERBOARDS — 当轮退出 (第 " + lbHits + " 次)");
+        if (lbHits <= 2) tap(bmp, Pf.LB_BACK);
+        else {
+            log("连点返回箭头 2 次仍没退出 — 改用系统返回键");
+            sh.exec("input keyevent 4");
+        }
+        sleep_(800);
+        /* 退出动作**不算进展**: 万一这个判据是误报 (排行榜其实不在), noteProgress 会让
+         * 看门狗一直重置 ⇒ 真的卡死时反而救不回来。只记账不重置计时。 */
+        lastActMs = System.currentTimeMillis();
+    }
+
     /** 若已在编队编辑器则直接修正; 否则先点 TEAM 菱形进入。 */
     private void fightFlow(Vision.Frame work, Bitmap bmp, AtomicBoolean run) {
         setStep("进编队");
@@ -968,8 +1001,18 @@ public final class PfFlow {
             if (dm != null) {
                 tapCenter(bmp, work, dm, Pf.T_TEAM_DIAMOND);
             } else {
-                log("TEAM 菱形模板没命中 — 退回固定坐标 (位置可能已漂)");
-                tap(bmp, Pf.TEAM_DIAMOND);
+                /* ⚠️⚠️ 2026-10-18 用户实栽, 这条兜底**必须删掉**, 不许盲点。
+                 *
+                 * 它原本的算盘是"菱形位置漂了, 点个大概也能中"。实测代价是灾难性的:
+                 * 22:56:56 菱形模板 0.150 (阈值 0.62) —— 程序自己都承认**没看见菱形** ——
+                 * 却仍然点了 work(638,444)。而**同一坐标在 LEADERBOARDS 页上正好是入口**,
+                 * 于是点进排行榜, 再也没自己出来 (只能等看门狗 90s, 用户看到的就是"卡住")。
+                 *
+                 * 教训写成一句话: 判据缺失时点下去不是"可能命中", 而是"可能点中别的页面的
+                 * 致命按钮"。宁可这一轮什么都不做, 让主循环重新识别 (scene 会重判, 该退就退),
+                 * 也别蒙一个坐标。 */
+                log("TEAM 菱形不在画面里 — 不盲点 (盲点会点到别的页面的按钮), 回主循环重识别");
+                return;
             }
             sleep_(1600);
             Bitmap b2 = sh.capture();
@@ -1348,6 +1391,8 @@ public final class PfFlow {
 
     /** 上次按系统返回键的时刻 (限流用)。 */
     private long lastBackMs;
+    /** 连续从 LEADERBOARDS 退出的次数 —— 前两次点左上箭头, 之后换系统返回键 (见 exitLeaderboard)。 */
+    private int lbHits;
 
     /** 上一次点 FIGHT 的时刻 —— 用来认出"紧随其后"的 ENERGY REFILL 弹窗 (见 step ⓪)。 */
     private long lastFightTapMs;

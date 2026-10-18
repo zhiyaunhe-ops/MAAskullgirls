@@ -53,6 +53,13 @@ final class PfScene {
         QUIT_DIALOG,
         /** 带 X 的通用弹窗 (能量/streak/OPTIONS)。 */
         POPUP_X,
+        /**
+         * LEADERBOARDS 排行榜页 —— 从编队预览页中心误点进去的覆盖层。
+         *
+         * <p>它盖住底下所有页面 (FIGHT! 被遮 ⇒ 原本会判成 UNKNOWN), 然后只能等看门狗的
+         * 90s 兜底。有了这个判据就能**当轮**退出去 (见 PfFlow.exitLeaderboard)。</p>
+         */
+        LEADERBOARD,
         /** 认不出来 —— 调用方回退串行链。 */
         UNKNOWN
     }
@@ -85,6 +92,12 @@ final class PfScene {
         // ① 不在游戏 / 还在加载 —— 纯像素, 最便宜, 且必须是第一顺位 (后面所有判据都靠游戏 UI)
         if (w.w < w.h) return S.NOT_IN_GAME;
         if (PfFlow.blankFrame(w)) return S.BOOT;
+
+        /* ⓪ 排行榜 —— 必须排在**所有**页面判据之前。
+         * 它是从编队预览页中心误点出来的**覆盖层**: 盖住下面整页后 FIGHT!/菱形/漏斗全都
+         * 看不见 ⇒ 老代码只能判 UNKNOWN, 然后等看门狗 90s。判据 = 顶部那条
+         * "LEADERBOARDS" 标题带 (真机 1:1 裁: 命中 0.966~0.973 / 其它界面 ≤0.27)。 */
+        if (hit(w, Pf.T_LB_TITLE, Pf.ROI_LB_TITLE, Pf.TH_LB_TITLE) != null) return S.LEADERBOARD;
 
         if (freqFirst) {
             S hot = fastThree(w);
