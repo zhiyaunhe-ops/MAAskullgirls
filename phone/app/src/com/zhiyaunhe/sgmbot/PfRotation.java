@@ -72,17 +72,30 @@ final class PfRotation {
      * 提前跳天, 而游戏要到次日上午 10:00 PT 才换 —— 那一段会"算出明天/昨天的场次"。</p>
      */
     static String gameDay() {
-        Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("America/Los_Angeles"));
-        cal.add(Calendar.HOUR_OF_DAY, -10);
-        return new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.getTime());
+        return gameDayAt(System.currentTimeMillis(), TimeZone.getTimeZone("America/Los_Angeles"));
     }
 
-    /** 用给定时区/时刻算游戏日 (测试用)。 */
+    /**
+     * 用给定时区/时刻算游戏日。
+     *
+     * <p>⚠️⚠️ 2026-10-18 实栽 (用户: 「为什么 apk 里还是今天只有两场?」): 旧实现是
+     * <pre>
+     *   Calendar cal = Calendar.getInstance(LA);  cal.add(HOUR_OF_DAY, -10);
+     *   new SimpleDateFormat("yyyy-MM-dd").format(cal.getTime());   // ← 错在这里
+     * </pre>
+     * {@code cal.getTime()} 拿到的是**瞬时点**, 而新建的 {@code SimpleDateFormat} 用的是
+     * **JVM 默认时区 (东八区)** ⇒ 把"洛杉矶 10-17 21:27"渲染成"北京 10-18 12:27",
+     * **整整多算一天**。那一晚实际是**游戏日周六**(wd=5), 却按**周日**(wd=6) 排期 ⇒
+     * 周日没有角色场、没有星助手场 ⇒ 只列出 2 场 (hub 上实际 5 张)。
+     * 修法: 格式器也钉到同一个时区 (或直接读 Calendar 字段)。</p>
+     */
     static String gameDayAt(long ms, TimeZone tz) {
         Calendar cal = Calendar.getInstance(tz);
         cal.setTimeInMillis(ms);
         cal.add(Calendar.HOUR_OF_DAY, -10);
-        return new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.getTime());
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        f.setTimeZone(tz);                       // ⚠️ 少了这一行就多算一天 (见上)
+        return f.format(cal.getTime());
     }
 
     /** 今天开放的场次 (顺序: 角色 → 元素 → 金币 → 星助手 → 招式 → 月场)。 */

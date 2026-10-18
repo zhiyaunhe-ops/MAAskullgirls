@@ -1088,12 +1088,10 @@ public final class PfFlow {
             log("▶ 第 " + roundsDone + " 场开始 (本次累计 " + roundsDone + " 场), 等待结束…");
             /* ⚠️⚠️ 2026-10-18: 这里原来先置位再调用 —— 一次性 latch。第一次若因为"HUD 还没
              * 渲染完"扑空, 整轮**再也不会试**, 用户看到的就是"每场都只有 *1"。
-             * 现在只有**确认到 3x** 才置位; 没成功就下一场继续试。
-             * 另加**周期性复核** (每 5 场): 游戏侧有可能把速度打回 1x (换场次/重开/手动点了
-             * 一下), 只信一次不够 —— 复核成本只有一次截屏 + 三次模板匹配。 */
-            if (!battleAutoChecked || roundsDone % 5 == 0) {
-                battleAutoChecked = team.ensureBattleAuto();
-            }
+             * 现口径 (用户指定): **每一场开打都核验一次**, 不再做"只信第一次"的优化 ——
+             * 游戏侧随时可能把速度打回 1x (换场次/重开/手动点一下), 而一次核验
+             * = 一次截屏 + 三次小模板匹配, 相对一场战斗的开销可以忽略。 */
+            battleAutoChecked = team.ensureBattleAuto();
             waitBattleEnd(run);
             return;
         }
