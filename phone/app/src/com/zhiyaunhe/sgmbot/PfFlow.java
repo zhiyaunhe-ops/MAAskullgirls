@@ -182,6 +182,40 @@ public final class PfFlow {
     /** 当前目标场次名 (未指定 = null) —— 监控页/状态页显示用。 */
     volatile String arenaName;
 
+    /** 最近一次 hub 扫描到的卡数 (-1 = 还没扫过) —— /pf/state 与监控页显示。 */
+    volatile int hubCards = -1;
+
+    /**
+     * 扫一遍 hub 轮播 (导航到位后自动调用; 2026-10-18 用户: 「把 navigate 和扫描加到一起」)。
+     *
+     * <p>⚠️ 它**不含场次名**: App 没有 OCR, 只能给出"今天 hub 上几张卡"(见 PfScan 类注释)。
+     * 价值在两点: ① 让人在日志/状态里看见今天的场次数量 (而不是盲点居中卡);
+     * ② 扫描完轮播停在**最左**, 之后点 PLAY! 进场的是最左那张 —— 与"月场固定占 #1/#2"
+     * 的卡位口径对齐 (PfArenaTable 的位置优先规则)。</p>
+     */
+    private void scanHub(AtomicBoolean run) {
+        try {
+            Bitmap b = sh.capture();
+            if (b == null) {
+                log("场地扫描: 截屏失败 — 跳过 (不影响进场)");
+                return;
+            }
+            log("场地扫描: 开始 (滑到最左 → 逐卡左滑 → 同图即到头)");
+            java.util.List<PfScan.Card> cards = PfScan.scan(sh, b);
+            hubCards = cards.size();
+            if (hubCards <= 0) {
+                log("⚠ 场地扫描: 一张都没读到 —— 界面不是 hub? 或轮播滑动没生效");
+            } else {
+                SgmLog.i("pf", "场地扫描: 今日 hub 共 " + hubCards + " 张卡"
+                        + " (卡位口径: 前 2 张按月场处理)", b);
+            }
+            PfScan.save(cards);
+            noteProgress();                 // 扫完算进展, 别让看门狗当成卡死
+        } catch (Throwable t) {
+            log("场地扫描异常 (不影响主链): " + t);
+        }
+    }
+
     /**
      * PF 主循环 (在 BotService 工作线程里跑)。
      *
@@ -235,6 +269,14 @@ public final class PfFlow {
             if (fatal == null) fatal = "导航失败";
             return;
         }
+        /* ⚠️ 2026-10-18 用户: 「把 navigate 和扫描加到一起」——
+         * 导航一到 hub 就**顺手扫一遍轮播** (PC 的 scan_arenas 同一步), 不再让人单独触发。
+         * 扫描会左右滑几张卡 (约 10~15 秒), 但它把"今天 hub 上到底几张"变成日志里的事实,
+         * 之后选场次/排期才有依据。
+         * ⚠️ 扫描**不读场次名** (App 没有 OCR, 见 PfScan 类注释), 只给卡数与指纹;
+         *    所以它只做"看得见", 不做"替你选"。
+         * ⚠️ quiet 模式 (人已停在编队页) 不扫 —— 那时屏幕上不是 hub, 扫了只会乱滑。 */
+        if (!quiet) scanHub(run);
 
         while (run.get() && fatal == null) {
             /* ---- 看门狗: 长时间没有任何实质进展就自动脱困 ----

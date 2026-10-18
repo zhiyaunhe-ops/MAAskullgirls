@@ -22,6 +22,29 @@ public class CtlReceiver extends BroadcastReceiver {
             case "start_nav":
                 BotService.start(ctx, BotService.MODE_NAV);
                 break;
+            /* 手动扫一遍 hub 轮播 (不启动整条循环) —— 2026-10-18 加: 导航与扫描合并之后
+             * 仍需要一条"只扫不跑"的路, 否则在 hub 上想核对今天几张卡, 得先让它导航一圈。
+             * ⚠️ 前提: 游戏停在 hub; 扫描会左右滑轮播 (有副作用, 会改变居中卡)。 */
+            case "scan": {
+                final Context c2 = ctx.getApplicationContext();
+                new Thread(() -> {
+                    try {
+                        ShizukuCtl s = BotService.sh();
+                        if (s == null) { SgmLog.i("scan", "手动扫描: Shizuku 通道未就绪"); return; }
+                        android.graphics.Bitmap b = s.capture();
+                        if (b == null) { SgmLog.i("scan", "手动扫描: 截屏失败"); return; }
+                        java.util.List<PfScan.Card> cards = PfScan.scan(s, b);
+                        SgmLog.i("scan", "手动扫描完成: " + cards.size() + " 张卡");
+                        PfScan.save(cards);
+                    } catch (Throwable t) {
+                        SgmLog.i("scan", "手动扫描异常: " + t);
+                    }
+                }, "manual-scan").start();
+                break;
+            }
+            /* 手动扫一遍 hub 轮播 (不启动整条循环) —— 2026-10-18 加: 导航与扫描合并之后
+             * 仍需要一条"只扫不跑"的路, 否则在 hub 上想核对今天几张卡, 得先让它导航一圈。
+             * ⚠️ 前提: 游戏停在 hub; 扫描会左右滑轮播 (有副作用, 会改变居中卡)。 */
             /* 就地开始: 跳过起步导航 (见 BotService.MODE_NAV_HERE)。
              * ⚠️ 新增动作**必须同时加到这里和 BotService.trigger** —— 广播通道与
              *    HTTP /trigger 各有自己的白名单, 漏一处就"unknown action"静默失效。 */

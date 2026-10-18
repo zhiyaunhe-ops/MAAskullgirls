@@ -116,13 +116,31 @@ final class PfArenaTable {
      *    「WebUI 的那些选场次什么能量上限等等条件应该都在 APP 里面配置才对呀,
      *     你现在完全没有地方配置, 也没有读取场次的那个逻辑」。本方法与
      *    {@link #spec(String)} 就是给那个设置页用的两个口子。</p>
+     *
+     * <p>⚠️ 2026-10-18 用户: 「只需要当前的场次可选, 之前的场次只在历史记录里可以回看」
+     *    ⇒ 这里**只返回当前有效**的 (带 {@code until} 且已过期的月场不列)。
+     *    过期那些走 {@link #namesExpired()} (只读展示, 不能选)。</p>
      */
     static java.util.List<String> names() {
+        return namesFiltered(false);
+    }
+
+    /** 已经过期 (until &lt; 今天) 的场次 —— **只读**, 给「历史场次」回看用, 不能选。 */
+    static java.util.List<String> namesExpired() {
+        return namesFiltered(true);
+    }
+
+    private static java.util.List<String> namesFiltered(boolean wantExpired) {
+        String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(new java.util.Date());
         java.util.List<String> out = new java.util.ArrayList<>();
         for (JSONObject e : TABLE.values()) {
             if (e == null) continue;
             String n = e.optString("name", "");
-            if (!n.isEmpty()) out.add(n);
+            if (n.isEmpty()) continue;
+            String u = e.optString("until", null);
+            boolean expired = u != null && !u.isEmpty() && today.compareTo(u) > 0;
+            if (expired == wantExpired) out.add(n);
         }
         for (int i = 1; i < out.size(); i++) {                 // 插入排序: 表只有 20 来条, 不值得引排序器
             String v = out.get(i);

@@ -474,6 +474,8 @@ public class MainActivity extends Activity {
         btnRule = Ui.button(this, "", "出战规则 (约束编队选人)", feed, this::pickRule);
         btnFav = Ui.button(this, "", "编队选人时只用收藏角色", feed, this::toggleFav);
         btnFabSize = Ui.button(this, "", "挂机时那颗红色「暂停」小浮标的大小 (小了不挡游戏)", feed, this::pickFabSize);
+        Ui.button(this, "📜 历史场次 (只读: 已过期的场次 / 每天扫到几张卡)",
+                "之前的场次只在这里回看, 不在上面的可选列表里", feed, this::showArenaHistory);
 
         Ui.add(this, Ui.section(this, "PF 操作"));
         pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
@@ -677,6 +679,35 @@ public class MainActivity extends Activity {
         String err = writePf(kv1("pf.favorite", !on));
         if (err != null) { feed.setTextColor(Ui.ERR); feed.setText("✗ " + err); return; }
         pfDone(!on ? "只用收藏角色 = 开" : "只用收藏角色 = 关 (全部可选)");
+    }
+
+    /**
+     * 「历史场次」只读弹层 —— 2026-10-18 用户: 「之前的场次只在历史记录里可以回看」。
+     * 两块: ① 每天扫描到的卡数 (pf_scan_history.jsonl, 最近 10 天);
+     *       ② 场次表里**已过期**的场次 (until &lt; 今天), 只展示不能选。
+     */
+    private void showArenaHistory() {
+        StringBuilder sb = new StringBuilder();
+        java.util.List<String[]> his = PfScan.history(10);
+        sb.append("【最近扫描】\n");
+        if (his.isEmpty()) {
+            sb.append("  (还没有记录 — 跑一次「开始」(自动导航) 就会扫一遍 hub)\n");
+        } else {
+            for (String[] h : his) sb.append("  ").append(h[0]).append(" — ").append(h[1]).append(" 张卡\n");
+        }
+        java.util.List<String> old = PfArenaTable.namesExpired();
+        sb.append("\n【已过期的场次】(").append(old.size()).append(" 条, 只读)\n");
+        if (old.isEmpty()) {
+            sb.append("  (无)\n");
+        } else {
+            for (String n : old) sb.append("  ").append(n).append('\n');
+        }
+        sb.append("\n⚠️ 过期场次不在「目标场次」可选列表里 —— 需要打它们请等表更新。");
+        new AlertDialog.Builder(this)
+                .setTitle("历史场次")
+                .setMessage(sb.toString())
+                .setPositiveButton("知道了", null)
+                .show();
     }
 
     /** 暂停浮标大小 (2026-10-17 用户: 「你可以缩的更小点, 然后可以设置大小」)。 */
