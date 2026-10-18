@@ -95,8 +95,11 @@ final class PfScene {
         if (quitDialog(w)) return S.QUIT_DIALOG;
 
         // ③ 战斗中 —— 速度泡 (小模板 + 小 ROI)
-        if (hit(w, Pf.T_SPD_2X, ROI_SPD, 0.80) != null || hit(w, Pf.T_SPD_3X, ROI_SPD, 0.80) != null
-                || hit(w, Pf.T_SPD_1X, ROI_SPD, 0.80) != null) return S.BATTLE;
+        /* ⚠️ 阈值必须跟 PfTeam 同口径: 旧值 0.80 只够 1x 帧 (0.805~0.818),
+         * 3x 帧只有 0.727~0.745 ⇒ 打着 3x 反而判不出"在战斗"。统一用 Pf.TH_SPD。 */
+        if (hit(w, Pf.T_SPD_2X, ROI_SPD, Pf.TH_SPD) != null
+                || hit(w, Pf.T_SPD_3X, ROI_SPD, Pf.TH_SPD) != null
+                || hit(w, Pf.T_SPD_1X, ROI_SPD, Pf.TH_SPD) != null) return S.BATTLE;
 
         // ④ 筛选面板 —— 面板右上 ✕ (只在这一页出现, 是它的专属锚点)
         if (hit(w, Pf.T_FILTER_X, Pf.ROI_FILTER_X, Pf.TH_FILTER_X) != null) return S.FILTER_PANEL;
@@ -130,8 +133,11 @@ final class PfScene {
 
     /** 战斗 / 编辑器 / 选对手 三个高频界面的极简判定 (给"上一帧就是它"的场合用)。 */
     private S fastThree(Vision.Frame w) {
-        if (hit(w, Pf.T_SPD_2X, ROI_SPD, 0.80) != null || hit(w, Pf.T_SPD_3X, ROI_SPD, 0.80) != null
-                || hit(w, Pf.T_SPD_1X, ROI_SPD, 0.80) != null) return S.BATTLE;
+        /* ⚠️ 阈值必须跟 PfTeam 同口径: 旧值 0.80 只够 1x 帧 (0.805~0.818),
+         * 3x 帧只有 0.727~0.745 ⇒ 打着 3x 反而判不出"在战斗"。统一用 Pf.TH_SPD。 */
+        if (hit(w, Pf.T_SPD_2X, ROI_SPD, Pf.TH_SPD) != null
+                || hit(w, Pf.T_SPD_3X, ROI_SPD, Pf.TH_SPD) != null
+                || hit(w, Pf.T_SPD_1X, ROI_SPD, Pf.TH_SPD) != null) return S.BATTLE;
         if (hit(w, Pf.T_DRAGHINT, Pf.ROI_DRAGHINT, Pf.TH_DRAGHINT) != null) return S.TEAM_EDITOR;
         if (hit(w, Pf.T_REFRESH, Pf.ROI_REFRESH, Pf.TH_REFRESH) != null) return S.OPPONENT;
         return null;

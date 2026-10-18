@@ -875,8 +875,12 @@ public final class PfFlow {
             } else {
                 lastBackMs = System.currentTimeMillis();
                 log("导航: 未知界面, 按系统返回键尝试脱离");
-                dumpUnknown(bmp, work);
+                /* ⚠️⚠️ 顺序不能反 (2026-10-18 实栽): dumpUnknown 在真机上要跑 **~3 分钟**
+                 * (17 个模板 x 全帧 step=1; 注释里"一次几百 ms"是 PC 估算)。放在返回键
+                 * **之前**, 一次判不出就吃掉 300s 导航预算的一半 —— 日志表现为"按返回键"
+                 * 之后 3 分钟空窗, 然后直接超时。先脱困, 再存证。 */
                 sh.exec("input keyevent 4");
+                dumpUnknown(bmp, work);
             }
             sleep_(2500);
         }
@@ -1082,9 +1086,11 @@ public final class PfFlow {
             roundsDone++;                     // 打完才算一场? 不 —— 开场就算, 便于中途观察进度
             noteProgress();                   // 开打 = 最硬的进展
             log("▶ 第 " + roundsDone + " 场开始 (本次累计 " + roundsDone + " 场), 等待结束…");
+            /* ⚠️⚠️ 2026-10-18: 这里原来先置位再调用 —— 一次性 latch。第一次若因为"HUD 还没
+             * 渲染完"扑空, 整轮**再也不会试**, 用户看到的就是"每场都只有 *1"。
+             * 现在只有**确认到 3x** 才置位; 没成功就下一场继续试。 */
             if (!battleAutoChecked) {
-                battleAutoChecked = true;
-                team.ensureBattleAuto();
+                battleAutoChecked = team.ensureBattleAuto();
             }
             waitBattleEnd(run);
             return;
@@ -1287,10 +1293,10 @@ public final class PfFlow {
 
     /** 诊断转储用的模板子集 (判不出界面时要看的那些)。 */
     private static final String[] DIAG_TPL = {
-            Pf.T_HALL_PRIZE, Pf.T_HUB_PLAY, Pf.T_FIGHT, Pf.T_REFRESH, Pf.T_DRAGHINT,
-            Pf.T_RESULT_CONT, Pf.T_CONTINUE, Pf.T_HOME, Pf.T_OPTIONS_X, Pf.T_ENERGY_X,
-            Pf.T_STREAK_X, Pf.T_MOVES_FIGHT, Pf.T_SRV_OK, Pf.T_DEF_CONFIRM, Pf.T_SCENE_X,
-            Pf.T_MODAL_X, Pf.T_SPD_3X,
+            /* ⚠️ 只留"能一眼定方位"的 6 个。2026-10-18: 17 个 x 全帧 step=1 在真机上要 ~3 分钟,
+             * 把导航预算吃光; 图片本身才是主要证据, 分数只是辅助。 */
+            Pf.T_HUB_PLAY, Pf.T_FIGHT, Pf.T_REFRESH, Pf.T_DRAGHINT, Pf.T_HALL_STORY_TEXT,
+            Pf.T_SPD_3X,
     };
 
     /**
@@ -1317,8 +1323,9 @@ public final class PfFlow {
             for (String n : DIAG_TPL) {
                 Vision.Frame t = tpls.get(n);
                 if (t == null) continue;
+                /* step=2: 诊断只要"大差不差", 不必逐像素; step=1 在真机上慢 4 倍 */
                 double[] r = Vision.findScored(work, t, Pf.ROI_FULL,
-                        Vision.SCAN_ALL, -1, 0, 1);
+                        Vision.SCAN_ALL, -1, 0, 2);
                 if (r != null) {
                     sb.append(n).append('=')
                       .append(Math.round(r[2] * 100) / 100.0).append(' ');

@@ -1089,67 +1089,159 @@ final class PfTeam {
 
     /**
      * 战斗速度泡: 0 = 无泡 (auto 未开或未渲染), 1/2/3 = 当前倍率。
-     * th=0.85: 同位实测 ≥0.95, 1x/3x 串扰 ≤0.76, 无泡画面 ≤0.14。
+     *
+     * <h3>⚠️⚠️ 2026-10-18 重写 (用户: 「自动的 *3 没点上, 都只有 *1」)</h3>
+     * 旧实现 = 按 3x→2x→1x 顺序找**第一个**过 {@code TH_SPD(0.85)} 的模板。两处都错:
+     * <ul>
+     *   <li><b>阈值 0.85 根本过不了</b>: 6 张真机帧灰度 NCC 实测 1x 最高 0.818、3x 最高 0.745
+     *       ⇒ 恒返回 0, 于是"速度泡未识别, 跳过提速", 永远 1x。</li>
+     *   <li><b>金字塔 + 命中早退</b>: 48~56px 的小模板在 0.5x/0.25x 上峰值被削
+     *       (同 MEMORY 里"金字塔只对全屏大按钮成立")。改走 {@link #matchFull}。</li>
+     * </ul>
+     * 现口径: 三个模板**全搜**, 取最高分定档, 要求 ≥{@link Pf#TH_SPD} 且领先次高
+     * {@link Pf#SPD_LEAD} —— 1x 帧领先 0.29 / 3x 帧领先 0.12, 余量充足。
      */
     int battleSpeedLevel(Vision.Frame w) {
-        String[] tpls3 = {Pf.T_SPD_3X, Pf.T_SPD_2X, Pf.T_SPD_1X};
-        int[] lv = {3, 2, 1};
-        for (int i = 0; i < tpls3.length; i++) {
-            if (match(w, tpls3[i], Pf.ROI_SPD, Pf.TH_SPD) != null) return lv[i];
-        }
-        return 0;
+        int[] b = speedBest(w);
+        return b == null ? 0 : b[2];
     }
 
-    /** 脑子图标亮 = 自动战斗开。实测亮 V 均值 ~101, 灯灭 ~49, 阈值 75。 */
-    boolean brainAutoOn(Vision.Frame w) {
-        int[] box = Pf.R(620, 670, 660, 710);
-        double v = Vision.sampleMean(w, box, new Vision.Chan() {
+    /**
+     * 速度泡定点: {@code {cx, cy, level, score}}; 认不出返回 null。
+     *
+     * <p>顺带给出**泡的实际中心** —— 升档时点它而不是常量, HUD 抖动/不同分辨率都不会点空。</p>
+     */
+    int[] speedBest(Vision.Frame w) {
+        String[] names = {Pf.T_SPD_1X, Pf.T_SPD_2X, Pf.T_SPD_3X};
+        int[] lv = {1, 2, 3};
+        double best = -1, second = -1;
+        int bx = 0, by = 0, bw = 0, bh = 0, bl = 0;
+        for (int i = 0; i < names.length; i++) {
+            Vision.Frame t = tpls.get(names[i]);
+            if (t == null) continue;
+            double[] r = matchFull(w, names[i], Pf.ROI_SPD, Pf.TH_SPD);
+            lastSpeedScores[i] = r == null ? -1 : r[2];
+            if (r == null) continue;
+            if (r[2] > best) {
+                second = best;
+                best = r[2]; bl = lv[i];
+                bx = (int) r[0]; by = (int) r[1]; bw = t.w; bh = t.h;
+            } else if (r[2] > second) {
+                second = r[2];
+            }
+        }
+        if (best < Pf.TH_SPD) return null;
+        /* 领先要求: 次高可能是 0 (只有一片过阈值), 0.04 的余量只用来挡"两片几乎并列" */
+        if (second > 0 && best - second < Pf.SPD_LEAD) return null;
+        return new int[]{bx + bw / 2, by + bh / 2, bl, (int) Math.round(best * 100)};
+    }
+
+    /**
+     * 最近一次 {@link #speedBest} 里三片模板的原始分 {@code [1x, 2x, 3x]}。
+     *
+     * <p>⚠️ 只留在日志里用: 这个 bug 类 ("*3 没点上") 光看结论分不清是"没认出来"还是
+     * "认错档", 必须能一眼看到三片各多少分。别拿它做判据。</p>
+     */
+    private final double[] lastSpeedScores = {-1, -1, -1};
+
+    /** 升档要用: 泡中心 (work); 认不出退回 {@link Pf#SPD_BTN}。 */
+    private int[] speedTapPoint(Vision.Frame w) {
+        int[] b = speedBest(w);
+        return b == null ? Pf.SPD_BTN : new int[]{b[0], b[1]};
+    }
+
+    /** 三片分数格式化 (0.80 / -1 = 没跑). */
+    private String sc(int i) {
+        double v = lastSpeedScores[i];
+        return v < 0 ? "?" : String.valueOf(Math.round(v * 100) / 100.0);
+    }
+
+    /** 脑子图标亮度的 V 均值 (亮 ~101 / 灭 ~49), 判据见 {@link Pf#TH_BRAIN_V}。 */
+    double brainValue(Vision.Frame w) {
+        int[] box = Pf.BRAIN_BOX;
+        return Vision.sampleMean(w, box, new Vision.Chan() {
             public double of(int argb) {
                 return Math.max((argb >> 16) & 0xFF, Math.max((argb >> 8) & 0xFF, argb & 0xFF));
             }
         });
-        return v >= Pf.TH_BRAIN_V;
     }
 
-    /** 战斗开场检查自动战斗 + 3x 速度; 失败只告警, 不影响运行。 */
-    void ensureBattleAuto() {
-        PfFlow.sleep_(1800);
-        try {
-            Bitmap b = sh.capture();
-            if (b == null) return;
-            Vision.Frame w = Vision.toWork(b);
-            int spd = battleSpeedLevel(w);
-            if (spd == 0 && !brainAutoOn(w)) {
-                flow.log("自动战斗未开启, 点脑子");
-                flow.tap(b, Pf.BRAIN_BTN[0], Pf.BRAIN_BTN[1]);
-                PfFlow.sleep_(600);
-                Bitmap b2 = sh.capture();
-                if (b2 != null) {
-                    w = Vision.toWork(b2);
-                    spd = battleSpeedLevel(w);
-                }
-            }
-            if (spd == 0) {
-                flow.log(brainAutoOn(w) ? "自动战斗已开但速度泡未识别, 跳过提速"
-                        : "速度泡与脑子均未识别 (界面未就绪?), 跳过");
-                return;
-            }
-            if (spd < 3) {
-                flow.log("战斗速度 " + spd + "x, 升档到 3x");
-                Bitmap bb = sh.capture();
-                for (int i = 0; i < 3 - spd; i++) {
-                    if (bb != null) flow.tap(bb, Pf.SPD_BTN[0], Pf.SPD_BTN[1]);
-                    PfFlow.sleep_(450);
-                }
-                Bitmap b3 = sh.capture();
-                int spd2 = b3 == null ? 0 : battleSpeedLevel(Vision.toWork(b3));
-                flow.log(spd2 == 3 ? "速度校验: 3x" : "速度校验: " + (spd2 == 0 ? "未识别" : spd2 + "x"));
-            } else {
-                flow.log("自动战斗已开, 速度 3x");
-            }
-        } catch (Exception e) {
-            flow.log("自动战斗检查异常 (不影响运行): " + e);
+    /** 脑子图标亮 = 自动战斗开。 */
+    boolean brainAutoOn(Vision.Frame w) {
+        return brainValue(w) >= Pf.TH_BRAIN_V;
+    }
+
+    /**
+     * 战斗开场: 等 HUD → 开自动 → 升到 3x。
+     *
+     * <h3>⚠️ 2026-10-18 重写</h3>
+     * 旧版: 打完 FIGHT 固定等 1.8s → 看一眼 → 扑空就"跳过", 且调用方有**一次性 latch**
+     * ⇒ 第一次扑空之后整轮再也不会试 (用户看到的就是"都只有 *1")。
+     * 新版: ① 最多 {@link Pf#SPD_WAIT_MS} 轮询等泡出现; ② 每点一次都重新定位泡中心并复读;
+     * ③ 返回**是否确认 3x**, 由调用方决定下一场要不要再试。
+     *
+     * @return true = 已确认 3x (调用方可以不再重试)
+     */
+    boolean ensureBattleAuto() {
+        Bitmap b = null;
+        Vision.Frame w = null;
+        long t0 = System.currentTimeMillis();
+        while (System.currentTimeMillis() - t0 < Pf.SPD_WAIT_MS) {
+            PfFlow.sleep_(600);
+            b = sh.capture();
+            if (b == null) continue;
+            w = Vision.toWork(b);
+            if (speedBest(w) != null) break;
         }
+        if (w == null || speedBest(w) == null) {
+            flow.log("战斗速度: 等了 " + (Pf.SPD_WAIT_MS / 1000) + "s 仍未认出速度泡 — 本场跳过 (下一场重试)");
+            return false;
+        }
+
+        /* ① 自动战斗没开就先点脑子 (只影响打不打, 不影响速度) */
+        double bv = brainValue(w);
+        if (bv < Pf.TH_BRAIN_V) {
+            flow.log("自动战斗未开 (脑子亮度 " + Math.round(bv) + " < " + Math.round(Pf.TH_BRAIN_V) + "), 点一下");
+            flow.tap(b, Pf.BRAIN_BTN[0], Pf.BRAIN_BTN[1]);
+            PfFlow.sleep_(700);
+            Bitmap b2 = sh.capture();
+            if (b2 != null) { b = b2; w = Vision.toWork(b2); }
+        }
+
+        /* ② 升档: 每次点之前重新定位泡中心, 点完复读 */
+        int[] cur = speedBest(w);
+        int spd = cur == null ? 0 : cur[2];
+        flow.log("速度泡读数: 1x=" + sc(0) + " 2x=" + sc(1) + " 3x=" + sc(2)
+                + " → " + (spd == 0 ? "认不出" : spd + "x"));
+        if (spd == 3) {
+            flow.log("自动战斗已开, 速度 3x");
+            return true;
+        }
+        for (int i = 0; i < 4 && spd > 0 && spd < 3; i++) {
+            int[] p = speedTapPoint(w);
+            flow.log("战斗速度 " + spd + "x → 点速度泡 (" + p[0] + "," + p[1] + ")");
+            flow.tap(b, p[0], p[1]);
+            PfFlow.sleep_(550);
+            b = sh.capture();
+            if (b == null) break;
+            w = Vision.toWork(b);
+            int[] nx = speedBest(w);
+            if (nx == null) {
+                flow.log("速度校验: 泡暂时认不出 (动画帧), 再读一轮");
+                continue;
+            }
+            flow.log("速度校验: " + nx[2] + "x | 1x=" + sc(0) + " 2x=" + sc(1) + " 3x=" + sc(2));
+            if (nx[2] == spd) {
+                flow.log("⚠ 点了没升档 — 可能点到泡外或动画中");
+            }
+            spd = nx[2];
+        }
+        if (spd == 3) {
+            flow.log("自动战斗已开, 速度 3x");
+            return true;
+        }
+        flow.log("⚠ 速度没升到 3x (当前 " + spd + "x) — 下一场再试");
+        return false;
     }
 
     // ==================================================================
@@ -1209,11 +1301,19 @@ final class PfTeam {
         return r != null && r[2] >= th ? r : null;
     }
 
-    /** 同 match, 但**强制全搜** (小模板/召回关键一律走这条, 理由见 PfFlow.funnel 注释)。 */
+    /**
+     * 同 match, 但**强制全搜** —— 小模板 (≤64px) 一律走这条。
+     *
+     * <p>⚠️ 金字塔在 0.5x/0.25x 上会把小模板的峰值削到 0.15~0.18 (见 MEMORY「金字塔只对
+     * 全屏搜大按钮成立」); 速度泡模板只有 48~56px, 走金字塔等于永远搜不到。</p>
+     */
     private double[] matchFull(Vision.Frame work, String tplName, int[] roi, double th) {
         Vision.Frame t = tpls.get(tplName);
         if (t == null) return null;
-        double[] r = Vision.findScored(work, t, roi, th, -1, 0);
+        /* ⚠️⚠️ 传 {@link Vision#SCAN_ALL} 而不是 th: 传 th 是"命中早退", 拿回的是**第一个
+         * 过线位置**而不是峰值。速度要拿三个模板的峰值比大小定档, 早退会让"次高"变成噪声
+         * (同 MEMORY: 凡"只看分数"的调用一律 SCAN_ALL + step=1)。 */
+        double[] r = Vision.findScored(work, t, roi, Vision.SCAN_ALL, -1, 1);
         return r != null && r[2] >= th ? r : null;
     }
 

@@ -273,7 +273,30 @@ public final class Pf {
     public static final double TH_FILTER_X   = 0.70;
     /** 筛选漏斗 (编辑器 1.00 / 编队预览页 0.05, 分离极大)。 */
     public static final double TH_FILTER_BTN = 0.70;
-    public static final double TH_SPD        = 0.85;   // 同位实测 ≥0.95, 串扰 ≤0.76, 无泡 ≤0.14
+    /**
+     * 速度泡**存在性**阈值 —— 取到之后再用 {@code argmax} 定档位。
+     *
+     * <p>⚠️⚠️ 2026-10-18 实栽 (用户: 「自动的 *3 没点上, 都只有 *1」): 旧值 **0.85 永远过不了**。
+     * 6 张真机战斗帧的灰度 NCC 实测:</p>
+     * <pre>
+     *   1x 帧: 1x = 0.805 / 0.818 / 0.818, 2x/3x 串扰 ≤0.52
+     *   3x 帧: 3x = 0.727 / 0.745 / 0.733, 1x 串扰 ≤0.608
+     *   非战斗帧: ≤0.14
+     * </pre>
+     * <p>⇒ 最高分也才 0.82, 卡在 0.85 下面 ⇒ {@code battleSpeedLevel()} 恒返回 0 ⇒
+     * 日志一直是「自动战斗已开但速度泡未识别, 跳过提速」(设备日志 20 次里 16 次), 速度永远 1x。
+     * 现口径: 0.62 过存在性, 再在三个模板里**取最高分**定档 (1x 帧领先 0.29, 3x 帧领先 0.12,
+     * 都有充足余量)。⚠️ 别再退回"单片绝对阈值"的写法 —— 三片模板互相只差 0.12。</p>
+     */
+    public static final double TH_SPD        = 0.62;
+    /** 定档位时第一名至少要比第二名高这么多 (实测 3x 帧余量 0.12 起)。 */
+    public static final double SPD_LEAD      = 0.04;
+    /**
+     * 战斗开场等速度泡出现的最长时间。
+     * ⚠️ 原来是"打完 FIGHT 固定等 1.8s 再看一眼" —— VS 动画/加载还没结束, HUD 没渲染,
+     * 一眼扑空就再也不试 (旧代码还有一次性 latch), 于是整场 1x。
+     */
+    public static final long SPD_WAIT_MS     = 18_000L;
     public static final double TH_BRAIN_V    = 75.0;   // 脑子图标亮 V 均值 (亮~101 / 灭~49)
     public static final double TH_RULE_LIT   = 0.15;   // FIGHT 按钮高饱和占比 (橙~55% / 灰~0%)
     public static final double TH_FIRE_BOX   = 0.04;   // 对手卡右上火框红占比 (火 0.17-0.26 / 无 0.03)
@@ -330,10 +353,28 @@ public final class Pf {
     public static final int[] HOME_BTN      = {78, 26};
     /** 未知界面右上关闭 X (HUD 实测 work ≈ (1255,26), 待真机复核)。 */
     public static final int[] CLOSE_X       = {1255, 26};
-    /** 战斗速度泡 (点一下升一档)。 */
+    /**
+     * 战斗速度泡 (点一下升一档) —— **兜底值**, 正常走模板定位 (见 PfTeam.speedTapPoint)。
+     *
+     * <p>PI(640,605) → work **(640,484)**。2026-10-18 在真机帧 wt3.png 上用细网格复核:
+     * 速度泡实体 work x610~690 / y442~512、圆心 ≈ (650,477) ⇒ 这个兜底点确实落在泡内,
+     * **坐标没问题**, 当初显示不出来是阈值问题 (见 {@link #TH_SPD})。</p>
+     */
     public static final int[] SPD_BTN       = PI(640, 605);
-    /** 自动战斗脑子开关。 */
+    /**
+     * 自动战斗脑子开关。PI(640,690) → work **(640,552)**。
+     *
+     * <p>真机帧实测: 速度泡正下方那颗粉色脑子 x600~710 / y515~576(截到帧底),
+     * 亮灯区约 (624,536)-(656,568) ⇒ 兜底点落在脑子上。</p>
+     */
     public static final int[] BRAIN_BTN     = PI(640, 690);
+    /**
+     * 脑子亮灯区的取样框 (work) —— PI(620,670)-(660,710) ⇒ **(624,536,32,32)**。
+     *
+     * <p>2026-10-18 复核: 速度泡正下方的粉色脑子在 work x600~710 / y515~576(截到帧底),
+     * 亮灯核心就是这块。判据 = 该框内 max(R,G,B) 均值 ≥ {@link #TH_BRAIN_V}。</p>
+     */
+    public static final int[] BRAIN_BOX     = R(620, 670, 660, 710);
 
     /**
      * 筛选面板的四个固定点。
