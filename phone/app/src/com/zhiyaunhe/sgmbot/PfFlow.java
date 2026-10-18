@@ -982,6 +982,32 @@ public final class PfFlow {
         lastActMs = System.currentTimeMillis();
     }
 
+    /**
+     * TEAM 菱形命中位置的中心 60x60 是否为**深蓝底** (菱形的牌面颜色)。
+     *
+     * <p>背景: 内接灰度模板缩小后, 战斗页 (SHOWTIME 灯泡字) 在 ROI 中央能撞出 0.89 ——
+     * 和真菱形 (0.88~0.90) 分不开。颜色一锤定音: 真菱形中心深蓝占比实测 0.31 (三张
+     * 不同对手的帧全部 0.309~0.310), SHOWTIME 处 0.018, 选对手页 0.0。阈值 0.15 居中。
+     * 判据 {@code b>r+12 && g>r && r<110}: 深蓝 #2a3a5e 类 (B≈94 G≈58 R≈42)。</p>
+     */
+    private boolean diamondBlueOk(Vision.Frame w, double[] hit) {
+        Vision.Frame t = tpls.get(Pf.T_TEAM_DIAMOND);
+        int tw = t == null ? 56 : t.w, th = t == null ? 72 : t.h;
+        int cx = (int) hit[0] + tw / 2;
+        int cy = (int) hit[1] + th / 2;
+        int blue = 0, total = 0;
+        for (int y = cy - 30; y < cy + 30; y++) {
+            for (int x = cx - 30; x < cx + 30; x++) {
+                if (x < 0 || y < 0 || x >= w.w || y >= w.h) continue;
+                int argb = w.px[y * w.w + x];
+                int r = (argb >> 16) & 0xFF, g = (argb >> 8) & 0xFF, b = argb & 0xFF;
+                total++;
+                if (b > 55 && b < 150 && b > r + 12 && g > r && r < 110) blue++;
+            }
+        }
+        return total > 0 && blue >= total * 0.15;
+    }
+
     /** 若已在编队编辑器则直接修正; 否则先点 TEAM 菱形进入。 */
     private void fightFlow(Vision.Frame work, Bitmap bmp, AtomicBoolean run) {
         setStep("进编队");
@@ -1000,6 +1026,12 @@ public final class PfFlow {
                             Pf.TH_TEAM_DIAMOND);
                     if (dm != null) { bmp = bd; work = wd; }
                 }
+            }
+            if (dm != null && !diamondBlueOk(work, dm)) {
+                /* 灰度模板在战斗页 (SHOWTIME) 的 ROI 中央能撞出 0.89 —— 靠颜色校验挡:
+                 * 真菱形中心是**深蓝底**, 正例占比 0.31 / 该反例 0.02 (阈值 0.15)。 */
+                log("TEAM 菱形候选位置没有深蓝底 (疑似别的页面) — 视为未命中");
+                dm = null;
             }
             if (dm != null) {
                 teamDiamondMiss = 0;
