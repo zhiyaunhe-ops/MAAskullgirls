@@ -38,7 +38,12 @@ final class PfArenaTable {
     /** 「无上限」哨兵值 (与 PC 的 None 对应)。 */
     static final long NO_LIMIT = -1L;
 
-    private static final Map<String, JSONObject> TABLE = new HashMap<>();
+    /**
+     * ⚠️ {@code volatile} + **整表替换**: 线上拉取成功后会在后台线程 reload, 而 UI 线程
+     * 可能正在遍历 {@link #names()} / {@link #rules()}。就地 clear+put 会抛
+     * ConcurrentModificationException, 整表换引用则最坏只读到旧表 (可接受)。
+     */
+    private static volatile Map<String, JSONObject> TABLE = new HashMap<>();
     private static int monthlySlots = 2;
     private static boolean loaded;
     /** 当前这张表从哪来：{@code 线上} / {@code 内置} —— 设置页要显示，别让人猜。 */
@@ -67,7 +72,7 @@ final class PfArenaTable {
 
     /** 丢掉内存里的表并重新选源（拉取成功后调；也让「线上→内置」可回落）。 */
     static synchronized void reload(Context c) {
-        TABLE.clear();
+        /* 不先 clear: apply() 会建好新表再整体换引用, 中间态继续用旧表 */
         loaded = false;
         load(c);
     }
@@ -99,14 +104,17 @@ final class PfArenaTable {
             return;
         }
         try {
-            monthlySlots = root.optInt("monthly_slots", 2);
+            int slots = root.optInt("monthly_slots", 2);
             JSONObject arenas = root.optJSONObject("arenas");
             if (arenas == null) return;
+            Map<String, JSONObject> map = new HashMap<>();
             for (Iterator<String> it = arenas.keys(); it.hasNext(); ) {
                 String k = it.next();
                 JSONObject e = arenas.optJSONObject(k);
-                if (e != null) TABLE.put(k, e);
+                if (e != null) map.put(k, e);
             }
+            monthlySlots = slots;
+            TABLE = map;                      // 整体换引用 (见字段注释)
             SgmLog.i("pf", "场次表已载入 " + TABLE.size() + " 条 (" + src + ", 月场位前 "
                     + monthlySlots + " 张)");
         } catch (Throwable t) {
