@@ -41,13 +41,43 @@ final class PfArenaTable {
     private static final Map<String, JSONObject> TABLE = new HashMap<>();
     private static int monthlySlots = 2;
     private static boolean loaded;
+    /** 当前这张表从哪来：{@code 线上} / {@code 内置} —— 设置页要显示，别让人猜。 */
+    private static String sourceDesc = "未载入";
 
     private PfArenaTable() { }
 
-    /** 读 assets/pf_arena.json (幂等)。 */
+    /**
+     * 载入场次表（幂等）。**优先线上缓存，其次 APK 内置**。
+     *
+     * <p>⚠️ 顺序不能反：内置表只有重装 APK 才会更新，而 {@code adb install -r} 常是增量安装
+     * （assets 根本没换，见 MEMORY「真机移植三大坑」①）。线上那份由
+     * {@code https://zhiyaunhe-ops.github.io/data/arenas.json} 提供，改了就能立刻生效。</p>
+     *
+     * <p>⚠️ 缓存坏了（半截文件 / HTML 错误页）必须能自己退回内置 —— 判据是
+     * {@link PfArenaRemote#valid}，不是「文件存在」。</p>
+     */
     static synchronized void load(Context c) {
         if (loaded) return;
         loaded = true;
+        JSONObject root = PfArenaRemote.cached();
+        boolean online = root != null && PfArenaRemote.valid(root);
+        if (!online) root = assetRoot(c);
+        apply(root, online ? "线上" : "内置");
+    }
+
+    /** 丢掉内存里的表并重新选源（拉取成功后调；也让「线上→内置」可回落）。 */
+    static synchronized void reload(Context c) {
+        TABLE.clear();
+        loaded = false;
+        load(c);
+    }
+
+    /** 当前表的来源：「线上 42 条」/「内置 36 条」。 */
+    static String sourceDesc() {
+        return sourceDesc + " " + TABLE.size() + " 条";
+    }
+
+    private static JSONObject assetRoot(Context c) {
         try {
             InputStream in = c.getAssets().open("pf_arena.json");
             ByteArrayOutputStream bo = new ByteArrayOutputStream();
@@ -55,15 +85,30 @@ final class PfArenaTable {
             int n;
             while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
             in.close();
-            JSONObject root = new JSONObject(new String(bo.toByteArray(), "UTF-8"));
+            return new JSONObject(new String(bo.toByteArray(), "UTF-8"));
+        } catch (Throwable t) {
+            SgmLog.i("pf", "内置场次表读取失败: " + t);
+            return null;
+        }
+    }
+
+    private static void apply(JSONObject root, String src) {
+        sourceDesc = src;
+        if (root == null) {
+            SgmLog.i("pf", "场次表为空 — 按卡位保守口径 (4kw / 4 钉) 跑");
+            return;
+        }
+        try {
             monthlySlots = root.optInt("monthly_slots", 2);
             JSONObject arenas = root.optJSONObject("arenas");
             if (arenas == null) return;
             for (Iterator<String> it = arenas.keys(); it.hasNext(); ) {
                 String k = it.next();
-                TABLE.put(k, arenas.optJSONObject(k));
+                JSONObject e = arenas.optJSONObject(k);
+                if (e != null) TABLE.put(k, e);
             }
-            SgmLog.i("pf", "场次表已载入 " + TABLE.size() + " 条 (月场位前 " + monthlySlots + " 张)");
+            SgmLog.i("pf", "场次表已载入 " + TABLE.size() + " 条 (" + src + ", 月场位前 "
+                    + monthlySlots + " 张)");
         } catch (Throwable t) {
             SgmLog.i("pf", "场次表载入失败: " + t);
         }

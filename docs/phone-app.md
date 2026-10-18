@@ -754,6 +754,26 @@ Java 版**没有导航链**（`BotService` 里 `MODE_NAV` 退化为直接跑结�
 [停] 大保底: 左上角连着两帧都是 home 图标 (峰值 0.93/0.94) — 已退到大地图/大厅, 停车 (关掉改 config.map_check.on=false)
 ```
 
+## 场次表：线上拉取 + 三级兜底（2026-10-18）
+
+场次会变（新月场、下架旧场），而 `assets/pf_arena.json` 只有重装 APK 才更新，
+且 `adb install -r` 常是增量安装（assets 根本没换）。所以表改成可远端更新：
+
+| 顺序 | 来源 | 位置 |
+|---|---|---|
+| 1 | 线上缓存（上次拉成功的那份） | `<root>/pf_arena_remote.json` + `.meta.json`（etag/时间/条数） |
+| 2 | APK 内置 | `assets/pf_arena.json` |
+| 3 | 都没有 | 表为空 ⇒ 按卡位保守口径（4kw / 4 钉 / 无规则） |
+
+- 默认地址 `https://zhiyaunhe-ops.github.io/data/arenas.json`，可用 config `pf.arena_url` 覆盖。
+- **落盘前必须过 `PfArenaRemote.valid`**（`schema≥2`、`arenas` ≥10 条、每条有 `name`）：
+  机场/酒店 Wi-Fi 的登录页会回 200 + HTML，无脑落盘的结果是「下次启动场次全不认识」，
+  看起来像识别坏了。写 `.part` 再改名，断电不留半截。
+- 带上一次的 `ETag`，304 只推进时间戳（否则 24h 节流退化成每次启动都请求）。
+- 入口：开屏 `autoSync`（24h 节流、后台、失败静默）+ 主页 PF 配置块「场次表 …（点这里拉线上最新）」。
+  拉成功后 `PfArenaTable.reload()` 立即生效；失败保留内存里的旧表，不影响正在跑的引擎。
+- ⚠️ 主页每秒刷新的标签只读 `PfArenaTable.sourceDesc()`（内存），**不在这里碰文件/网络**。
+
 ## GitHub 拉取更新
 
 数据源 = repo 的 **latest release** 资产，CI 每次 push 自动发：

@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
     /** PF 配置 + PF 操作整块 (仅 PF 模式可见; 2026-10-17 晚用户要求内联展开)。 */
     private LinearLayout pfBox;
     /** PF 配置各值的"当前值"按钮 (文案 = 左标签 + 右当前值, 点了弹选择层)。 */
-    private Button btnArena, btnEnergy, btnScore, btnRule, btnFav, btnFabSize;
+    private Button btnArena, btnEnergy, btnScore, btnRule, btnFav, btnFabSize, btnArenaSync;
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -281,6 +281,9 @@ public class MainActivity extends Activity {
          * (注: 早期版本 uninstall sticky 是因为触碰 Shizuku 类就 NoClassDefFoundError —
          *  那是本机 classpath 漏编 moe.shizuku.server.* 桩所致, 已随 libs/aidl-src 编入,
          *  不是 HyperOS 的限制。此处保留轮询仅为生命周期简单。) */
+        /* 场次表开机顺手拉一次 (24h 节流, 后台, 失败静默) —— 官方上新场次后不必等重装 APK。 */
+        PfArenaRemote.autoSync(this);
+
         h.postDelayed(refresh, 500);
     }
 
@@ -476,6 +479,11 @@ public class MainActivity extends Activity {
         btnFabSize = Ui.button(this, "", "挂机时那颗红色「暂停」小浮标的大小 (小了不挡游戏)", feed, this::pickFabSize);
         Ui.button(this, "📜 历史场次 (只读: 已过期的场次 / 每天扫到几张卡)",
                 "之前的场次只在这里回看, 不在上面的可选列表里", feed, this::showArenaHistory);
+        /* 场次表原来只能靠重装 APK 更新 (assets 在增量安装下还常常读不到),
+         * 现在改成从 GitHub Pages 拉 —— 官方上了新场次, 点一下就有。 */
+        btnArenaSync = Ui.button(this, "",
+                "从线上 (zhiyaunhe-ops.github.io) 拉最新场次表; 失败就继续用上次缓存/内置表",
+                feed, this::syncArena);
 
         Ui.add(this, Ui.section(this, "PF 操作"));
         pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
@@ -498,6 +506,8 @@ public class MainActivity extends Activity {
         setLabel(btnRule, "出战规则: " + (ruleText() == null ? "无" : ruleText()));
         setLabel(btnFav, "只用收藏角色: " + (pfBool("favorite", true) ? "开" : "关"));
         setLabel(btnFabSize, "暂停浮标大小: " + pfInt("fab_dp", 36) + "dp");
+        /* ⚠️ 只读内存里的来源标记, 不在这里碰文件/网络 —— 这个方法是每秒跑一次的。 */
+        setLabel(btnArenaSync, "场次表: " + PfArenaTable.sourceDesc() + " (点这里拉线上最新)");
     }
 
     private void setLabel(Button b, String s) {
@@ -576,6 +586,28 @@ public class MainActivity extends Activity {
     }
 
     /* ---- 各项选择 ---- */
+
+    /**
+     * 拉线上场次表 → 重新载入 → 刷新标签。
+     *
+     * <p>⚠️ 拉取是**后台线程**, 落盘校验在 {@link PfArenaRemote#sync} 里; 这里只做 UI 反馈。
+     *    手动拉失败不影响正在跑的引擎 (旧表还在内存里)。</p>
+     */
+    private void syncArena() {
+        feed.setTextColor(Ui.OK);
+        feed.setText("› 正在拉取场次表… (" + PfArenaRemote.url(this) + ")");
+        SgmLog.i("ui", "手动拉取场次表");
+        PfArenaRemote.syncAsync(this, () -> {
+            PfArenaTable.reload(this);
+            refreshPfLabels();
+            boolean ok = PfArenaRemote.lastOk();
+            feed.setTextColor(ok ? Ui.OK : Ui.ERR);
+            feed.setText((ok ? "✓ 场次表: " : "✗ 拉取失败, 继续用 ")
+                    + PfArenaTable.sourceDesc()
+                    + " — " + PfArenaRemote.lastResult()
+                    + (ok ? " (缓存 " + PfArenaRemote.status() + ")" : ""));
+        });
+    }
 
     private void pickArena() {
         SgmLog.i("ui", "pickArena 被点 (弹场次表 " + PfArenaTable.names().size() + " 个)");
