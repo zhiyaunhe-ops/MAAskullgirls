@@ -11,8 +11,12 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -59,6 +63,8 @@ public class MainActivity extends Activity {
     private LinearLayout pfBox;
     /** PF 配置各值的"当前值"按钮 (文案 = 左标签 + 右当前值, 点了弹选择层)。 */
     private Button btnArena, btnEnergy, btnScore, btnRule, btnFav, btnFabSize, btnArenaSync;
+    /** 「目标场次 / 出战规则」按钮当前挂着的图标 — 只在变了才重设 (见 refreshPfLabels)。 */
+    private Bitmap lastArenaIcon, lastRuleIcon;
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -484,6 +490,16 @@ public class MainActivity extends Activity {
         btnArenaSync = Ui.button(this, "",
                 "从线上 (zhiyaunhe-ops.github.io/sgm-pf) 拉最新场次表; 失败就继续用上次缓存/内置表",
                 feed, this::syncArena);
+        /* 固定图标: 分数=奖牌, 收藏=红心 (游戏内同一套图标)。场次/规则那两个是**动态**的,
+         * 在 refreshPfLabels 里按当前值换。 */
+        setIcon(btnScore, Icons.gold(this), 20);
+        setIcon(btnFav, Icons.heart(this), 20);
+        SgmLog.i("ui", "PF 图标载入: " + Icons.debugList(this));
+        /* 固定图标: 分数=奖牌, 收藏=红心 (游戏内同一套图标)。场次/规则那两个是**动态**的,
+         * 在 refreshPfLabels 里按当前值换。 */
+        setIcon(btnScore, Icons.gold(this), 20);
+        setIcon(btnFav, Icons.heart(this), 20);
+        SgmLog.i("ui", "PF 图标载入: " + Icons.debugList(this));
 
         Ui.add(this, Ui.section(this, "PF 操作"));
         pfBtn = Ui.button(this, pfLabel(), "", feed, this::togglePf);
@@ -503,11 +519,18 @@ public class MainActivity extends Activity {
         setLabel(btnEnergy, "能量下限: " + pfInt("energy_cost", 4) + " 钉/槽");
         long st = (long) pfInt("score_target", 40000000);
         setLabel(btnScore, "分数上限: " + (st < 0 ? "无上限 (月场)" : (st / 10000000) + "kw"));
-        setLabel(btnRule, "出战规则: " + (ruleText() == null ? "无" : ruleText()));
+        setLabel(btnRule, "出战规则: " + (ruleText() == null ? "无" : ruleLabel(ruleText())));
         setLabel(btnFav, "只用收藏角色: " + (pfBool("favorite", true) ? "开" : "关"));
         setLabel(btnFabSize, "暂停浮标大小: " + pfInt("fab_dp", 36) + "dp");
         /* ⚠️ 只读内存里的来源标记, 不在这里碰文件/网络 —— 这个方法是每秒跑一次的。 */
         setLabel(btnArenaSync, "场次表: " + PfArenaTable.sourceDesc() + " (点这里拉线上最新)");
+        /* 图标跟着当前值走 (元素场显示其元素图标, 角色场显示首字母徽章)。
+         * ⚠️ 只在**真变了**才 set, 每秒无条件 setCompoundDrawables 会触发重绘。 */
+        Bitmap want = arenaIcon(targetArena());
+        if (want != lastArenaIcon) { lastArenaIcon = want; setIcon(btnArena, want, 20); }
+        String rt = ruleText();
+        Bitmap wantR = rt == null ? null : Icons.forRuleText(this, rt);
+        if (wantR != lastRuleIcon) { lastRuleIcon = wantR; setIcon(btnRule, wantR, 20); }
     }
 
     private void setLabel(Button b, String s) {
@@ -548,6 +571,14 @@ public class MainActivity extends Activity {
         try {
             JSONObject p = pfCfg();
             JSONObject r = p == null ? null : p.optJSONObject("rule");
+            /* 容错: 老版本把 rule 存成了**字符串** (见 ConfigActivity.putValue 的注释)。
+             * 不认这一手的话, 升级后的第一屏仍显示「无」, 用户会以为还是坏的。 */
+            if (r == null && p != null) {
+                String raw = p.optString("rule", "").trim();
+                if (raw.startsWith("{")) {
+                    try { r = new JSONObject(raw); } catch (Throwable ignored) { }
+                }
+            }
             if (r == null) return null;
             String t = r.optString("type", ""), v = r.optString("value", "");
             if (t.isEmpty() || v.isEmpty()) return null;
@@ -575,9 +606,45 @@ public class MainActivity extends Activity {
     private interface Pick { void on(int i); }
 
     private void pick(String title, String[] items, int cur, Pick cb) {
+        pick(title, items, (Bitmap[]) null, cur, cb);
+    }
+
+    /**
+     * 带**游戏内小图标**的单选弹层。
+     *
+     * <p>用自定义 adapter 而不是 {@code setSingleChoiceItems(String[])} —— 后者只能纯文字,
+     * 而元素场/角色场的名字 (fire / Filia) 对玩家没意义, 玩家认的是游戏里那个图标。
+     * {@code icons[i]} 允许为 null: 那一行不画图但仍占位, 保证文字左对齐一致。</p>
+     */
+    private void pick(String title, String[] items, final Bitmap[] icons, int cur, Pick cb) {
+        /* resource 用系统布局而不是 0: ArrayAdapter 内部某些路径会拿它去
+         * getResources() 找布局, 传 0 在个别 ROM 上直接崩 (反正 getView 被我们全覆盖了)。 */
+        ArrayAdapter<String> ad = new ArrayAdapter<String>(this,
+                android.R.layout.simple_list_item_1, items) {
+            @Override public View getView(int pos, View recycle, ViewGroup parent) {
+                LinearLayout row = new LinearLayout(MainActivity.this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                int px = Ui.dp(MainActivity.this, 26);
+                row.setPadding(Ui.dp(MainActivity.this, 16), Ui.dp(MainActivity.this, 9),
+                        Ui.dp(MainActivity.this, 16), Ui.dp(MainActivity.this, 9));
+                ImageView iv = new ImageView(MainActivity.this);
+                iv.setLayoutParams(new LinearLayout.LayoutParams(px, px));
+                Bitmap b = icons != null && pos < icons.length ? icons[pos] : null;
+                if (b != null) iv.setImageBitmap(b);
+                else iv.setVisibility(View.INVISIBLE);      // 占位, 别让文字参差
+                row.addView(iv);
+                TextView tv = new TextView(MainActivity.this);
+                tv.setText(items[pos]);
+                tv.setTextSize(15f);
+                tv.setPadding(Ui.dp(MainActivity.this, 12), 0, 0, 0);
+                row.addView(tv);
+                return row;
+            }
+        };
         new AlertDialog.Builder(this)
                 .setTitle(title)
-                .setSingleChoiceItems(items, cur, (d, w) -> {
+                .setAdapter(ad, (d, w) -> {
                     d.dismiss();
                     cb.on(w);
                 })
@@ -624,16 +691,21 @@ public class MainActivity extends Activity {
         final java.util.List<String> list = new java.util.ArrayList<>(names);
         int base = 1 + list.size();                 // 0 = 不指定; 之后是场次; 最后一项 = 全部目录
         final String[] items = new String[base + 1];
+        final Bitmap[] icons = new Bitmap[base + 1];
         items[0] = "✖ 不指定场次 (按卡位保守口径: 4kw / 4 钉 / 无规则)";
-        for (int i = 0; i < list.size(); i++) items[i + 1] = list.get(i);
+        for (int i = 0; i < list.size(); i++) {
+            items[i + 1] = list.get(i);
+            icons[i + 1] = arenaIcon(list.get(i));
+        }
         items[base] = "⋯ 全部场次目录 (" + PfArenaTable.namesAll().size() + " 个, 含今天没开放的)";
+        icons[base] = Icons.sparkle(this);
         String cur = targetArena();
         int sel = 0;
         if (cur != null) {
             for (int i = 0; i < list.size(); i++) if (list.get(i).equals(cur)) { sel = i + 1; break; }
         }
         pick("目标场次 · " + (todayMode ? "今日开放 " + list.size() + " 场" : "整表 " + list.size() + " 场"),
-                items, sel, i -> {
+                items, icons, sel, i -> {
             if (i == base) { pickAllArenas(); return; }
             java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
             if (i == 0) {
@@ -655,10 +727,12 @@ public class MainActivity extends Activity {
     private void pickAllArenas() {
         final java.util.List<String> all = PfArenaTable.namesAll();
         String[] items = all.toArray(new String[0]);
+        Bitmap[] icons = new Bitmap[all.size()];
+        for (int i = 0; i < all.size(); i++) icons[i] = arenaIcon(all.get(i));
         String cur = targetArena();
         int sel = 0;
         for (int i = 0; i < all.size(); i++) if (all.get(i).equals(cur)) { sel = i; break; }
-        pick("全部场次目录 (" + all.size() + " 个)", items, sel, i -> applyArena(all.get(i)));
+        pick("全部场次目录 (" + all.size() + " 个)", items, icons, sel, i -> applyArena(all.get(i)));
     }
 
     /** 把场次名连带的条件 (能量/分数上限/规则) 一起写进配置。 */
@@ -690,6 +764,57 @@ public class MainActivity extends Activity {
         } catch (Throwable t) { return null; }
     }
 
+    /**
+     * "element:water" → 「元素场 · 出战队含「水」」; "class:Filia" → 「角色场 · 防守队含 Filia」。
+     *
+     * <p>原文 {@code element:water} 是给代码看的, 放弹层里玩家认不出; 而且**两套规则的
+     * 作用对象不一样** (元素场 = 出战队必须含该元素; 角色场 = 只约束防守队), 光写
+     * "class" 会被当成"我的队也要上 Filia" —— 这里顺手把对象写清楚。</p>
+     */
+    private static String ruleLabel(String rule) {
+        if (rule == null) return "";
+        int c = rule.indexOf(':');
+        if (c <= 0) return rule;
+        String t = rule.substring(0, c), v = rule.substring(c + 1);
+        if ("element".equals(t)) return "元素场 · 出战队含「" + elemCn(v) + "」";
+        if ("class".equals(t)) return "角色场 · 只约束防守队含 " + v;
+        return t + ":" + v;
+    }
+
+    /** 元素 → 中文 (玩家用语, 跟游戏内图标一一对应)。 */
+    private static String elemCn(String e) {
+        if ("fire".equals(e)) return "火";
+        if ("water".equals(e)) return "水";
+        if ("wind".equals(e)) return "风";
+        if ("light".equals(e)) return "光";
+        if ("dark".equals(e)) return "暗";
+        if ("neutral".equals(e)) return "无属性";
+        return e == null ? "" : e;
+    }
+
+    /** 场次 / 规则用的小图标 (认不出就给 null, 不硬凑)。 */
+    private Bitmap arenaIcon(String name) {
+        PfArenaTable.Spec sp = name == null ? null : PfArenaTable.spec(name);
+        if (sp == null) return null;
+        String tag = sp.tag == null ? "" : sp.tag;
+        if ("element".equals(tag) || "monthly_element".equals(tag)) {
+            return Icons.elem(this, sp.element);
+        }
+        if ("character".equals(tag) || "monthly_character".equals(tag)) {
+            return Icons.badge(this, sp.charName);
+        }
+        if ("gold".equals(tag)) return Icons.gold(this);
+        return Icons.sparkle(this);
+    }
+
+    /** 给 Button 挂左侧小图标 (null = 清掉)。 */
+    private void setIcon(Button b, Bitmap bmp, int dp) {
+        if (b == null) return;
+        android.graphics.drawable.Drawable d = Icons.drawable(this, bmp, dp);
+        b.setCompoundDrawables(d, null, null, null);
+        b.setCompoundDrawablePadding(Ui.dp(this, 10));
+    }
+
     private void pickEnergy() {
         final int[] vals = {3, 4, 5, 6};
         String[] items = new String[vals.length];
@@ -718,15 +843,20 @@ public class MainActivity extends Activity {
 
     private void pickRule() {
         java.util.List<String> rs = PfArenaTable.rules();
+        SgmLog.i("ui", "pickRule 被点 (表里共 " + rs.size() + " 种规则: " + rs + ")");
         final String[] items = new String[rs.size() + 1];
-        items[0] = "✖ 无规则 (不约束编队)";
-        for (int i = 0; i < rs.size(); i++) items[i + 1] = rs.get(i);
+        final Bitmap[] icons = new Bitmap[rs.size() + 1];
+        items[0] = "✖ 无规则 (不约束编队选人)";
+        for (int i = 0; i < rs.size(); i++) {
+            items[i + 1] = ruleLabel(rs.get(i));
+            icons[i + 1] = Icons.forRuleText(this, rs.get(i));
+        }
         String cur = ruleText();
         int sel = 0;
         if (cur != null) {
             for (int i = 0; i < rs.size(); i++) if (rs.get(i).equals(cur)) { sel = i + 1; break; }
         }
-        pick("出战规则 (约束编队选人)", items, sel, i -> {
+        pick("出战规则 (约束编队选人)", items, icons, sel, i -> {
             java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
             kv.put("pf.rule", i == 0 ? null : ruleJson(rs.get(i - 1)));
             String err = writePf(kv);

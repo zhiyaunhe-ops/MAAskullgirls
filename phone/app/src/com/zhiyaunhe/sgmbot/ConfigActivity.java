@@ -250,7 +250,7 @@ public class ConfigActivity extends Activity {
     static String setOverride(Context ctx, String path, Object val) {
         try {
             JSONObject ov = new JSONObject();
-            put(ov, path, String.valueOf(val));
+            putValue(ov, path, val);
             JSONObject merged = Config.merge(existingOverride(), ov);
             File f = new File(Paths.config());
             File p = f.getParentFile();
@@ -282,7 +282,7 @@ public class ConfigActivity extends Activity {
             for (java.util.Map.Entry<String, Object> e : kv.entrySet()) {
                 Object v = e.getValue();
                 if (v == null) { removePath(ov, e.getKey()); continue; }
-                put(ov, e.getKey(), String.valueOf(v));
+                putValue(ov, e.getKey(), v);
             }
             JSONObject merged = Config.merge(existingOverride(), ov);
             /* ★ 删键必须在**合并后**的树上做: merge 只做"覆盖", 删掉的键会被 defaults
@@ -326,6 +326,38 @@ public class ConfigActivity extends Activity {
     }
 
     /** 把 a.b.c 路径写进嵌套 JSON */
+    /**
+     * 按类型落地一个值 —— **结构体必须原样写, 不能 String.valueOf()**。
+     *
+     * <p>⚠️⚠️ 2026-10-18 用户报「出战规则怎么选不了」就是这个: {@code ruleJson()} 返回的是
+     * {@link JSONObject} {@code {"type":"element","value":"light"}}, 被
+     * {@code String.valueOf()} 拍平成字符串 {@code "{\"type\":\"element\",...}"} 写进
+     * config.json。而读取端 ({@link PfTeam#configure} / {@link MainActivity#ruleText})
+     * 用的是 {@code optJSONObject("rule")} —— 类型不匹配恒返回 null:
+     *   · 规则**从来没生效过** (element 场不筛元素、class 场不换防守队);
+     *   · 按钮文案永远显示「无」, 看着就像"选了没用 / 选不了"。
+     * 判据: 设备上 config.json 里 {@code "rule": "{\"type\"..."} (带引号转义 = 字符串)。</p>
+     */
+    private static void putValue(JSONObject o, String path, Object v) throws Exception {
+        if (v instanceof JSONObject || v instanceof org.json.JSONArray) {
+            putRaw(o, path, v);
+            return;
+        }
+        put(o, path, String.valueOf(v));
+    }
+
+    /** 写结构体 (对象/数组) —— 与 {@link #put} 同路径规则, 只是不做字符串化。 */
+    private static void putRaw(JSONObject o, String path, Object v) throws Exception {
+        String[] ks = path.split("\\.");
+        JSONObject d = o;
+        for (int i = 0; i < ks.length - 1; i++) {
+            JSONObject n = d.optJSONObject(ks[i]);
+            if (n == null) { n = new JSONObject(); d.put(ks[i], n); }
+            d = n;
+        }
+        d.put(ks[ks.length - 1], v);
+    }
+
     private static void put(JSONObject o, String path, String val) throws Exception {
         String[] ks = path.split("\\.");
         JSONObject d = o;

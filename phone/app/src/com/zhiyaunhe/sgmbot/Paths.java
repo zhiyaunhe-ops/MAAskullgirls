@@ -77,6 +77,14 @@ public final class Paths {
     public static String store() { return root + "/store.json"; }
     public static String config() { return root + "/config.json"; }
     public static String tplDir() { return root + "/templates/"; }
+
+    /**
+     * 设置页用的游戏内小图标 (元素/奖牌/爱心/星芒)。
+     *
+     * <p>跟模板一样**外置优先**: 增量安装 (adb install -r) 后 APK 内 assets 经常读不到,
+     * 外置一份就能热更图标不必发版。见 {@link Icons}。</p>
+     */
+    public static String iconDir() { return root + "/icons/"; }
     public static String logDir() { return root + "/logs/"; }
 
     /** 带图日志的图片目录 (按天分子目录, 总量由 Shots 滚动清理)。 */

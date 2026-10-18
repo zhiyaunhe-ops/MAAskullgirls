@@ -103,6 +103,28 @@ public final class DebugHttp {
                 body = n > 0 ? tailLog(n) : readFile(Paths.logDir() + "app.log", "(empty)");
             } else if (path.startsWith("/pf/state")) {
                 body = pfState().toString(2);
+            } else if (path.startsWith("/cfg/rule")) {
+                /* 调试通道: 设「出战规则」——**故意走 UI 那条完全相同的路**
+                 * ({@link ConfigActivity#setOverrides}), 因为要复现/回归的正是那条路上的
+                 * 类型丢失 bug (rule 曾被 String.valueOf 拍平成字符串, 见 putValue 注释)。
+                 * 这台 K70 Pro 的 `input tap` 注入到不了本 App 窗口, 所以只能从 HTTP 打。
+                 *   GET /cfg/rule?type=element&value=light
+                 *   GET /cfg/rule?clear=1          (删键 = 无规则) */
+                java.util.Map<String, Object> kv = new java.util.LinkedHashMap<>();
+                if ("1".equals(query(path, "clear"))) {
+                    kv.put("pf.rule", null);
+                } else {
+                    String t = query(path, "type"), v = query(path, "value");
+                    if (t == null || t.isEmpty() || v == null || v.isEmpty()) {
+                        reply(s, "需要 type + value, 或 clear=1"); return;
+                    }
+                    JSONObject r = new JSONObject();
+                    r.put("type", t);
+                    r.put("value", v);
+                    kv.put("pf.rule", r);
+                }
+                String err = ConfigActivity.setOverrides(App.inst, kv);
+                body = err == null ? "ok" : ("err: " + err);
             } else if (path.startsWith("/pf")) {
                 replyHtml(s, PF_HTML);
                 return;
@@ -324,6 +346,30 @@ public final class DebugHttp {
                 o.put("scene", ""); o.put("step", ""); o.put("rounds", 0);
                 o.put("elapsed_ms", 0); o.put("fatal", "");
             }
+            /* 「出战规则」的**实际生效值** —— 用 PfTeam.configure 同一读法 (optJSONObject)。
+             * 2026-10-18 的 bug 就是这条链断了 (config 里存成字符串 ⇒ 这里恒 null),
+             * 所以必须能在状态里看到它, 而不是只看按钮文案。 */
+            try {
+                JSONObject all = BotService.cfgOr(App.inst).read();
+                JSONObject pf = all == null ? null : all.optJSONObject("pf");
+                JSONObject rr = pf == null ? null : pf.optJSONObject("rule");
+                o.put("rule", rr == null ? "" : (rr.optString("type", "") + ":" + rr.optString("value", "")));
+                o.put("rule_raw_type", pf == null ? "no_pf"
+                        : (pf.has("rule") ? pf.get("rule").getClass().getSimpleName() : "absent"));
+                o.put("arena_cfg", pf == null ? "" : pf.optString("arena", ""));
+            } catch (Throwable ignored) { }
+            /* 「出战规则」的**实际生效值** —— 用 PfTeam.configure 同一读法 (optJSONObject)。
+             * 2026-10-18 的 bug 就是这条链断了 (config 里存成字符串 ⇒ 这里恒 null),
+             * 所以必须能在状态里看到它, 而不是只看按钮文案。 */
+            try {
+                JSONObject all = BotService.cfgOr(App.inst).read();
+                JSONObject pf = all == null ? null : all.optJSONObject("pf");
+                JSONObject rr = pf == null ? null : pf.optJSONObject("rule");
+                o.put("rule", rr == null ? "" : (rr.optString("type", "") + ":" + rr.optString("value", "")));
+                o.put("rule_raw_type", pf == null ? "no_pf"
+                        : (pf.has("rule") ? pf.get("rule").getClass().getSimpleName() : "absent"));
+                o.put("arena_cfg", pf == null ? "" : pf.optString("arena", ""));
+            } catch (Throwable ignored) { }
             o.put("dump_on", PfDump.enabled());
             o.put("dump_count", PfDump.count());
             /* 带图日志的余量 (调试时一眼看出还能存多少张) */
