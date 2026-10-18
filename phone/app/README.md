@@ -9,6 +9,38 @@
 apksigner + android-34 platform，**无 Gradle / 无 Android Studio**，`build.sh` 一键出签名 APK。
 本项目沿用（Java 而非 Kotlin，minSdk 21 / targetSdk 34 同款）。
 
+## 版本与发布（2026-10-18 起按版本拆分）
+
+版本号只有一个事实源：`version.properties` 的 `versionName` / `versionCode`
+（编码规则 `major*10000 + minor*100 + patch`，只增不减）。`build-ci.sh` 构建时注入
+`AndroidManifest.xml`；工作流里**不再**各自 sed 版本号（两处各写一遍早晚不一致）。
+
+两条通道，别混：
+
+| 触发 | 产物 | GitHub 上的样子 |
+|---|---|---|
+| push `main` | 开发快照 `1.0.0-snapshot.N`，versionCode 仍是基线 | 滚动 tag `latest`，标 **Pre-release** |
+| push `v*` tag | 正式版 `1.0.0` | 独立 release，附 apk + bundle + 该版本改动清单 |
+
+快照必须是 Pre-release —— App 内「检查更新」读的是 `/releases/latest`，快照若算正式版
+就会把它抢走，用户装到的就是任意一次中间提交。反过来，快照的 versionCode 用基线不递增：
+同 code 可互相覆盖，而正式版的下一个 code 一定 ≥ 它，装了快照也不会把正式版挡在门外。
+
+发版：
+
+```bash
+tools/release.sh patch            # 1.0.0 → 1.0.1（minor/major 同理，也可直接给 1.2.3）
+tools/release.sh patch --push     # 改版本 → 提交 → 打 tag → 推，CI 出包并建 release
+tools/release.sh patch --dry-run  # 只看会做什么
+```
+
+脚本会拒绝脏工作树、拒绝降 versionCode、不 `--force`。CI 里 `release-apk.yml` 还会
+强校验 tag 与 `version.properties` 一致（不一致直接失败，免得"发出去的版本号"和代码里的
+版本号长期错位）。
+
+下载：<https://github.com/zhiyaunhe-ops/MAAskullgirls/releases/latest>（永远指向最新的
+**正式版**，不是快照）。
+
 ## 四条设计原则 (2026-10-05 用户拍板)
 
 1. **可配置** — 引擎零硬编码: 全部阈值/ROI/坐标/链路步骤在 `config.json`
