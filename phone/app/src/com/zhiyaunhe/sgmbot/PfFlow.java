@@ -464,9 +464,9 @@ public final class PfFlow {
                 case HALL:
                     unknownTries = 0;
                     setStep("主大厅");
-                    log("在主大厅 — 点 PRIZE FIGHTS 进入 PF");
-                    tap(bmp, Pf.HALL_PRIZE_TAP);
-                    sleep_(2500);
+                    /* 同 gotoHub: 不许盲点, 一律走「滑到最左 + 读文字条 + 相对偏移」。 */
+                    log("在主大厅 — 读 PRIZE FIGHTS 进入 PF");
+                    tapHallPrizeFights(bmp, work);
                     return;
                 case OPPONENT:
                     unknownTries = 0;
@@ -822,9 +822,12 @@ public final class PfFlow {
                 continue;
             }
             if (inHall(work)) {
-                log("导航: 在大厅, 点 PRIZE FIGHTS");
-                tap(bmp, Pf.HALL_PRIZE_TAP);
-                sleep_(2500);
+                /* ⚠️⚠️ 2026-10-19 实栽: 这里原本是**固定坐标盲点** HALL_PRIZE_TAP, 而
+                 * {@link #step} 里的大厅分支早就改成 {@link #tapHallPrizeFights} 了。
+                 * 两处各有一份 ⇒ 只改一处等于没改: 这一夜在大厅连点 21 次 (65,320) 全落空
+                 * (地图不在最左 / 该点被横幅外的区域遮住), 300s 导航预算烧光。
+                 * 现在两处共用同一个方法 (滑到最左 → 读文字条 → 点相对偏移)。 */
+                tapHallPrizeFights(bmp, work);
                 continue;
             }
             /* ---------- 认不出界面时的处置: 按「我在哪一层」分三种 ----------
@@ -999,6 +1002,7 @@ public final class PfFlow {
                 }
             }
             if (dm != null) {
+                teamDiamondMiss = 0;
                 tapCenter(bmp, work, dm, Pf.T_TEAM_DIAMOND);
             } else {
                 /* ⚠️⚠️ 2026-10-18 用户实栽, 这条兜底**必须删掉**, 不许盲点。
@@ -1011,7 +1015,29 @@ public final class PfFlow {
                  * 教训写成一句话: 判据缺失时点下去不是"可能命中", 而是"可能点中别的页面的
                  * 致命按钮"。宁可这一轮什么都不做, 让主循环重新识别 (scene 会重判, 该退就退),
                  * 也别蒙一个坐标。 */
-                log("TEAM 菱形不在画面里 — 不盲点 (盲点会点到别的页面的按钮), 回主循环重识别");
+                /* 记下**峰值** (而不是只写"没命中"): 这类故障光看结论分不清是"模板形态
+                 * 变了"还是"页面根本不对"。SCAN_ALL + step=1 只在这个分支跑, ROI 340x220
+                 * 不大, 又是 miss 才走, 成本可接受。 */
+                double peak = -1;
+                Vision.Frame tt = tpls.get(Pf.T_TEAM_DIAMOND);
+                if (tt != null) {
+                    double[] pr = Vision.findScored(work, tt, Pf.ROI_TEAM_DIAMOND,
+                            Vision.SCAN_ALL, -1, 1);
+                    if (pr != null) peak = pr[2];
+                }
+                teamDiamondMiss++;
+                log("TEAM 菱形不在画面里 (峰值 " + (peak < 0 ? "?" : Math.round(peak * 100) / 100.0)
+                        + ", 阈值 " + Pf.TH_TEAM_DIAMOND + ") — 不盲点, 第 " + teamDiamondMiss + " 次");
+                if (teamDiamondMiss >= 3) {
+                    /* 不盲点 ≠ 干等。判据连续失败 3 次说明这一页不是靠"再看一帧"能好的
+                     * (模板形态不匹配 / 页面卡在半透明过渡), 必须换手段退出重判。 */
+                    teamDiamondMiss = 0;
+                    log("连续 3 次认不出 TEAM 菱形 — 按返回键脱离当前页重新定位");
+                    sh.exec("input keyevent 4");
+                    sleep_(1500);
+                } else {
+                    sleep_(900);       // 别空转到 0.5s 一轮 (实测 90s 能转 172 次)
+                }
                 return;
             }
             sleep_(1600);
@@ -1393,6 +1419,17 @@ public final class PfFlow {
     private long lastBackMs;
     /** 连续从 LEADERBOARDS 退出的次数 —— 前两次点左上箭头, 之后换系统返回键 (见 exitLeaderboard)。 */
     private int lbHits;
+    /**
+     * 连续「认不出 TEAM 菱形」的次数。
+     *
+     * <p>⚠️⚠️ 2026-10-19 实栽: 上一轮把盲点兜底删掉是对的 (盲点会点到别的页面的致命按钮),
+     * 但**只删不给替代** ⇒ {@code fightFlow} 变成「判 TEAM_PREVIEW → 菱形 miss → return」
+     * 的纯空转: 00:04:22~00:05:54 一共转了 **172 次**, 最后靠看门狗 91s 第 2 级"重拉游戏"
+     * 才脱身 (代价是游戏重启、回到大厅、整轮白跑)。用户看到的"卡住"就是这个。
+     * 现在的口径: 前两次仍只等 (预览页是淡入的, 补帧就能读到), 第 3 次起**按返回键脱离**,
+     * 让主循环重新定位 —— 前提是 scene 已判为 TEAM_PREVIEW, 此时返回键不会退游戏。</p>
+     */
+    private int teamDiamondMiss;
 
     /** 上一次点 FIGHT 的时刻 —— 用来认出"紧随其后"的 ENERGY REFILL 弹窗 (见 step ⓪)。 */
     private long lastFightTapMs;
