@@ -9,6 +9,8 @@
   "  元素月场 = AGAINST THE WIND      (rule=element:<元素>, 无上限)",
   "⇒ sgmnow 缺的那部分(类别 + 元素)由本文件人工补, pf_artag 读它。",
   "",
+  "★ 2026-10 起月场是**两场**: 元素月场 FALL OF THE DARK (暗, 官方 8.11 公告) + 角色月场 COSTUME PARTY (万圣节; 防守队角色待确认)。",
+  "★ 官方限制口径 (2026-10-18 用户口径): 元素场 = 出战队对应元素; 角色场 = **防守队伍**对应角色。两者都是官方规则, 不是本项目自定。",
   "★ 为什么不用 arena_rules.json: 那张表的kind 是「读场地名猜」的 (B/C级,",
   "  表内注释自认), 而 sgmnow 按官方口径给名字。本文件只补 sgmnow **确实没给**",
   "  的字段, 不重复造类别 —— 避免两处都写类别又互相矛盾。",
@@ -52,20 +54,34 @@
    "valid_until": "2026-10-01",
    "依据": "A 用户 2026-09-16 确认 = 元素月场且本月 wind; 202609元素月场场次 rule=element:wind (2026-09-06 建的与 10-02 建的都实测过)"
   },
-  "COSTUMEPARTY": {
+  "FALL OF THE DARK": {
    "tag": "monthly_element",
    "monthly": true,
    "element": "dark",
    "valid_from": "2026-10-01",
    "valid_until": "2026-11-01",
-   "依据": "A 用户 2026-10-06 口径「元素月场这个月是暗」。⚠️ sgmnow 只给名字 'Costume Party', **不给类别也不给元素** —— 类别(元素月场)与元素(dark) 两项都靠用户口述。独立佐证: sessions.json 的「202609元素月场 09-06 10-02」已被手工从 rule=wind 改成 rule=dark(2026-10-02 建), 与本条一致",
-   "备注": "本条是 sgmnow 缺信息的直接补丁 —— 若sgmnow 之后自己补上分类/元素, 应改为以 sgmnow 为准并删除本条"
+   "依据": "A 官方 8.11 补丁说明 (2026-09-29)「Seasonal Fight: Fall of the Dark ... challenges you to build around your Dark Fighters, with elemental modifiers」 + 用户 2026-10-18 口径「10 月两个月场 = Fall of the Dark / Costume Party」",
+   "备注": "官方原文只给元素要求(dark), 未给起止日期; 起止按「月场整月」填, 月末核对"
+  },
+  "COSTUMEPARTY": {
+   "tag": "monthly_character",
+   "monthly": true,
+   "element": null,
+   "valid_from": "2026-10-01",
+   "valid_until": "2026-11-01",
+   "依据": "2026-10-18 用户口径: 10 月两个月场 = FALL OF THE DARK + COSTUME PARTY; 角色场按官方规则限制**防守队伍**的角色。⚠️ 具体是哪个角色官方公告未点名, 待游戏内防守队要求确认 ⇒ char=null, 不猜 (填错比留空更糟: 会锁死选人)",
+   "备注": "本条此前被误标为「元素月场·暗」(来自 2026-10-06 的 sgmnow 名字 + 口述), 2026-10-18 更正: 暗元素月场是 FALL OF THE DARK",
+   "char": null
   },
   "202609元素月场": {
    "tag": "monthly_element",
    "monthly": true,
    "element": "wind",
-   "match": ["202609元素月场", "202609元素月场 09-06", "202609元素月场 09-06 10-02"],
+   "match": [
+    "202609元素月场",
+    "202609元素月场 09-06",
+    "202609元素月场 09-06 10-02"
+   ],
    "valid_from": "2026-09-01",
    "valid_until": "2026-10-01",
    "依据": "A sessions.json 迁移实测(2026-10-06): 上面 AGAINST THE WIND 登记的是 sgmnow 官方名, 而本地场次是自起名「202609元素月场」, 按官方名匹配不上-> 落element 兜底, 标签粒度丢失(条件仍正确)。元素值 wind 取自同月官方条 (用户 2026-09-16 确认)。⚠️ 10-02 有人把「09-06 10-02」那条手工改成 dark, 2026-10-06 用户裁定: **9 月的场次按 9 月官方名 wind**, 那次 dark 是把本月(10月)的暗场加错了地方",

@@ -99,6 +99,10 @@ PROJ = {
     "move": {"energy": 4, "score_target": 40000000, "rule_kind": None},
     "assist": {"energy": 4, "score_target": 50000000, "rule_kind": None},
     "unknown": {"energy": 4, "score_target": 40000000, "rule_kind": None},
+    # 月场：能量按 4，分数无上限；两类月场各带自己的官方限制
+    "monthly_element": {"energy": 4, "score_target": None, "rule_kind": "element"},
+    "monthly_character": {"energy": 4, "score_target": None, "rule_kind": "class"},
+    "monthly_misc": {"energy": 4, "score_target": None, "rule_kind": None},
 }
 
 # 官方限制（wiki 原文口径）。只有明确写过「需要某元素」的才填，其余一律「无」。
@@ -262,6 +266,25 @@ def build_arenas(root: str) -> dict:
         add(e, src=["tools/data/arena_rules.json", clean_basis(v.get("依据", ""))],
             conf=tier(v.get("依据", "")))
 
+    # 3.4) 官方限制口径（2026-10-18 用户口径，两条都是**官方规则**不是玩家约定）
+    #      元素场 = 限制**出战队**元素；角色场 = 限制**防守队伍**的角色。
+    for e in out.values():
+        tag = e["tag"]
+        base = e.get("official") or dict(OFFICIAL_FREE)
+        if tag in ("element", "monthly_element"):
+            zh = ELEM_ZH.get(e.get("element") or "", "")
+            e["official"] = {**base,
+                             "restriction": (f"出战队需为{zh}元素" if zh else "出战队需为对应元素"),
+                             "applies_to": "attack",
+                             "note": "官方规则：元素场限制出战队元素"}
+        elif tag in ("character", "monthly_character"):
+            c = e.get("char")
+            e["official"] = {**base,
+                             "restriction": (f"防守队伍需为 {c}" if c
+                                             else "防守队伍需为对应角色（角色待确认）"),
+                             "applies_to": "defense",
+                             "note": "官方规则：角色场限制防守队伍的角色"}
+
     # 3.5) 官方明文写过的限制（没有写的一律「无」；别把玩家约定冒充成官方限制）
     official_override = {
         "HOTMESS": {
@@ -297,25 +320,22 @@ def build_arenas(root: str) -> dict:
     # 4) 条件投影（本项目口径，与 PfArenaTable.Spec 同算法）
     for e in out.values():
         tag = e["tag"]
-        p = PROJ.get("character" if tag == "character" else
-                     "element" if tag in ("element", "monthly_element") else
-                     "misc" if tag in ("misc", "monthly_character", "monthly_misc") else
-                     tag, PROJ["unknown"])
+        p = PROJ.get(tag) or PROJ["unknown"]
         monthly = e.get("monthly") or tag.startswith("monthly")
         rule = None
-        if not monthly or tag == "monthly_element":
-            if p["rule_kind"] == "element" and e.get("element"):
-                rule = "element:" + e["element"]
-            elif p["rule_kind"] == "class" and e.get("char"):
-                rule = "class:" + e["char"]
+        # ⚠️ 月场也有规则（元素月场限元素、角色月场限防守角色）—— 别按 monthly 一律抹平。
+        if p["rule_kind"] == "element" and e.get("element"):
+            rule = "element:" + e["element"]
+        elif p["rule_kind"] == "class" and e.get("char"):
+            rule = "class:" + e["char"]
         e["project"] = {
             "energy": p["energy"],
             "score_target": None if monthly else p["score_target"],
             "rule": rule,
-            "note": ("character 的 class 只约束防守队；元素场按项目约定出战队带 1 个对应元素"
-                     if tag.startswith("character") else
-                     "元素场限制按项目约定（官方只给敌方增益，不强制我方元素）"
-                     if tag == "element" else None),
+            "note": ("class 只约束防守队伍（官方规则）"
+                     if p["rule_kind"] == "class" else
+                     "出战队需带对应元素（官方规则）"
+                     if p["rule_kind"] == "element" else None),
         }
         if tag.startswith("monthly"):
             e["project"]["score_target"] = None
@@ -392,9 +412,8 @@ def build_schedule(monthlies: dict, weeks: int, today: dt.date) -> dict:
         # 星场：周五–周六
         if d.weekday() in (4, 5):
             slot["open"].append({"type": "assist", "name": "SEEING STARS"})
-        # 招式场：周六–周日、隔周（相位未确认）⇒ 只标窗口，不宣称开放
-        if d.weekday() >= 5:
-            slot["open"].append({"type": "move", "name": "SHOW ME YOUR MOVES", "unverified": True})
+        # 招式场：官方写「隔周、周六–周日」，但**哪一周开没确认** ⇒ 不进逐日表。
+        # 只要排进去就等于断言「今天开」，2026-10-18 用户实测今天没有 ⇒ 宁可空着。
         # 月场：有 from/until 且覆盖当天
         for m in monthlies.values():
             if m.get("from") and m.get("until") and m["from"] <= d.isoformat() < m["until"]:
@@ -459,10 +478,13 @@ def main(argv=None) -> int:
             "D": "语义推定（仅命名参考，不作约束依据）",
         },
         "pending": [
-            {"item": "A SHOT IN THE DARK 是否同时是 10 月元素月场",
-             "why": "10-13 hub 扫描它出现在月场位(#1)且分数 243,751,965，"
-                    "但同一名字也是暗元素周场；分不清是月场卡还是 9 月残留卡",
-             "level": "C"},
+            {"item": "COSTUME PARTY 要求防守队伍是哪个角色",
+             "why": "官方 8.11 公告只点名了 FALL OF THE DARK（暗元素）；"
+                    "COSTUME PARTY 的防守角色名公告未给，站内先留空不猜",
+             "level": "B"},
+            {"item": "FALL OF THE DARK 的起止日期",
+             "why": "官方原文只写 launches，没给日期；站内按「月场整月」填 10-01~11-01，月末需核对",
+             "level": "B"},
             {"item": "SHOW ME YOUR MOVES 的隔周相位",
              "why": "已知隔周开、周六–周日，但哪一周开没有可靠记录",
              "level": "C"},

@@ -44,6 +44,11 @@ final class PfArenaTable {
      * ConcurrentModificationException, 整表换引用则最坏只读到旧表 (可接受)。
      */
     private static volatile Map<String, JSONObject> TABLE = new HashMap<>();
+    /**
+     * 整张表的根 ({@code {rotation, arenas, ...}}) —— {@link PfRotation} 要用 rotation 段算
+     * 「今天开放哪些」。与 {@link #TABLE} 一起整体换引用。
+     */
+    private static volatile JSONObject ROOT;
     private static int monthlySlots = 2;
     private static boolean loaded;
     /** 当前这张表从哪来：{@code 线上} / {@code 内置} —— 设置页要显示，别让人猜。 */
@@ -115,8 +120,14 @@ final class PfArenaTable {
             }
             monthlySlots = slots;
             TABLE = map;                      // 整体换引用 (见字段注释)
+            ROOT = root;
             SgmLog.i("pf", "场次表已载入 " + TABLE.size() + " 条 (" + src + ", 月场位前 "
                     + monthlySlots + " 张)");
+            /* 目录里有 40 条 ≠ 今天能打 40 场。登录时就把"今天开放"打出来, 免得又把目录当列表。 */
+            java.util.List<String> t = namesToday();
+            SgmLog.i("pf", "今日开放 (游戏日 " + PfRotation.gameDay() + "): "
+                    + (t.isEmpty() ? "轮换公式算不出 (rotation 段缺失) — 退回整表"
+                                   : t.size() + " 场 → " + t.toString()));
         } catch (Throwable t) {
             SgmLog.i("pf", "场次表载入失败: " + t);
         }
@@ -174,7 +185,42 @@ final class PfArenaTable {
      *    ⇒ 这里**只返回当前有效**的 (带 {@code until} 且已过期的月场不列)。
      *    过期那些走 {@link #namesExpired()} (只读展示, 不能选)。</p>
      */
+    /**
+     * **今天开放**的场次名 (轮换公式, 顺序: 角色 → 元素 → 星助手 → 招式 → 月场)。
+     *
+     * <p>⚠️⚠️ 2026-10-18 用户: 「事实上只有 5 张, 而且我做了一个网站是显示目前的场次的」
+     * —— 在此之前 {@link #names()} 直接把表里 40 条目录全列出来当选项。场次目录与
+     * "现在能打什么"是两件事, 后者由站点那张表里的 {@code rotation} 段按天推出
+     * (见 {@link PfRotation})。</p>
+     *
+     * <p>⚠️ 公式算不出来时返回**空表**, 由 {@link #names()} 退回整表 —— 绝不能因为公式
+     * 缺数据就让用户选不到任何场次。</p>
+     */
+    static java.util.List<String> namesToday() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try {
+            for (PfRotation.Open o : PfRotation.today(ROOT)) {
+                if (o.pickable() && !out.contains(o.name)) out.add(o.name);
+            }
+        } catch (Throwable t) {
+            SgmLog.i("pf", "轮换公式失败: " + t);
+        }
+        return out;
+    }
+
+    /**
+     * 可选场次 = **今天开放的**; 公式不可用才退回「所有未过期」。
+     *
+     * <p>⚠️ 2026-10-18 用户: 「只需要当前的场次可选, 之前的场次只在历史记录里可以回看」。
+     * 历史 (已过期) 走 {@link #namesExpired()}; 完整目录 (含今天没开的) 走 {@link #namesAll()}。</p>
+     */
     static java.util.List<String> names() {
+        java.util.List<String> today = namesToday();
+        return today.isEmpty() ? namesFiltered(false) : today;
+    }
+
+    /** 完整目录 (含今天没开放的) —— 只给"手动核对/兜底选择"用, 不是默认列表。 */
+    static java.util.List<String> namesAll() {
         return namesFiltered(false);
     }
 
@@ -274,7 +320,9 @@ final class PfArenaTable {
             if ("element".equals(tag) || "monthly_element".equals(tag)) {
                 return element == null ? null : "element:" + element;
             }
-            if ("character".equals(tag)) {
+            if ("character".equals(tag) || "monthly_character".equals(tag)) {
+                /* ⚠️ 角色场（含角色月场）限制的是**防守队伍**的角色，不是出战队 ——
+                 * 官方规则，2026-10-18 用户口径。 */
                 return charName == null ? null : "class:" + charName;
             }
             return null;

@@ -236,7 +236,11 @@ Double/Squigly → Valentine/Fukua → Eliza/Marie → Annie/Big Band
 | 2026-09-17 / 09-21 / 09-24 / 09-28 / 10-13 | Marie / Annie / Big Band / Cerebella / Filia，全部与公式一致 |
 | 2026-10-13 hub 扫描 | `A SHOT IN THE DARK`(#1) `COSTUME PARTY`(#2) `TWO TO TANGLE`(#3)；周场与公式一致，前两张是月场位 |
 
-⚠️ 仍待核实（已写进站点 `pending`）：`A SHOT IN THE DARK` 是否兼作 10 月元素月场、招式场隔周相位、Medici 场名轮换顺序。
+| 官方限制（2026-10-18 用户口径） | **元素场限制出战队元素；角色场限制防守队伍角色** —— 两条都是官方规则 |
+| 10 月月场 | 元素月场 `FALL OF THE DARK`（暗，官方 8.11 公告点名）+ 角色月场 `COSTUME PARTY`（防守角色名官方未给，留空） |
+
+⚠️ 仍待核实（已写进站点 `pending`）：`COSTUME PARTY` 的防守角色、`FALL OF THE DARK` 的起止日期、招式场隔周相位、Medici 场名轮换顺序。
+⚠️ 招式场**不进逐日排期**：官方只说「隔周、周六–周日」，相位没确认，排进去就等于断言当天开（2026-10-18 实测当天没有）。
 
 ## 6.13 远程访问
 
