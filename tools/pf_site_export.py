@@ -101,7 +101,8 @@ PROJ = {
     "unknown": {"energy": 4, "score_target": 40000000, "rule_kind": None},
     # 月场：能量按 4，分数无上限；两类月场各带自己的官方限制
     "monthly_element": {"energy": 4, "score_target": None, "rule_kind": "element"},
-    "monthly_character": {"energy": 4, "score_target": None, "rule_kind": "class"},
+    # ⚠️ 角色月场**无**出战限制 ⇒ rule_kind 不能是 class（2026-10-18 用户口径）
+    "monthly_character": {"energy": 4, "score_target": None, "rule_kind": None},
     "monthly_misc": {"energy": 4, "score_target": None, "rule_kind": None},
 }
 
@@ -277,13 +278,18 @@ def build_arenas(root: str) -> dict:
                              "restriction": (f"出战队需为{zh}元素" if zh else "出战队需为对应元素"),
                              "applies_to": "attack",
                              "note": "官方规则：元素场限制出战队元素"}
-        elif tag in ("character", "monthly_character"):
+        elif tag == "character":
             c = e.get("char")
             e["official"] = {**base,
                              "restriction": (f"防守队伍需为 {c}" if c
-                                             else "防守队伍需为对应角色（角色待确认）"),
+                                             else "防守队伍需为对应角色"),
                              "applies_to": "defense",
                              "note": "官方规则：角色场限制防守队伍的角色"}
+        elif tag.startswith("monthly"):
+            # ⚠️ 月场（含角色月场）**没有出战限制** —— 2026-10-18 用户口径。
+            #    别把「角色场限防守角色」外推到月场：那会让脚本去换防守队、白烧能量。
+            e["official"] = {**base, "restriction": "无", "applies_to": None,
+                             "note": "月场不设出战限制（用户口径 2026-10-18）"}
 
     # 3.5) 官方明文写过的限制（没有写的一律「无」；别把玩家约定冒充成官方限制）
     official_override = {
@@ -348,6 +354,8 @@ def build_arenas(root: str) -> dict:
 
 def build_schedule(monthlies: dict, weeks: int, today: dt.date) -> dict:
     start = today - dt.timedelta(days=today.weekday())
+    # 招式场相位锚点：本周六（用户 2026-10-18 实测当天没开）⇒ 隔周候选从下一周开始
+    move_off_sat = today - dt.timedelta(days=today.weekday()) + dt.timedelta(days=5)
     rows = []
     for i in range(weeks):
         mon = start + dt.timedelta(days=7 * i)
@@ -412,15 +420,25 @@ def build_schedule(monthlies: dict, weeks: int, today: dt.date) -> dict:
         # 星场：周五–周六
         if d.weekday() in (4, 5):
             slot["open"].append({"type": "assist", "name": "SEEING STARS"})
-        # 招式场：官方写「隔周、周六–周日」，但**哪一周开没确认** ⇒ 不进逐日表。
-        # 只要排进去就等于断言「今天开」，2026-10-18 用户实测今天没有 ⇒ 宁可空着。
+        # 招式场：官方写「隔周、周六–周日」。相位没有长期记录，但**今天（本周末）实测没开**
+        # ⇒ 用它当锚点推隔周（C 级）。只标「候选」，不标「开放」：
+        # 用户 2026-10-18 口径「算错了说明下周可能会出现」，所以要留在表里，但必须说清是推算。
+        if d.weekday() >= 5:
+            sat = d - dt.timedelta(days=d.weekday() - 5)
+            diff_weeks = (sat - move_off_sat).days // 7
+            if diff_weeks % 2 == 1:
+                slot["open"].append({"type": "move", "name": "SHOW ME YOUR MOVES",
+                                     "candidate": True,
+                                     "basis": "本周末(" + move_off_sat.isoformat() + ")未开，按隔周推算"})
         # 月场：有 from/until 且覆盖当天
         for m in monthlies.values():
             if m.get("from") and m.get("until") and m["from"] <= d.isoformat() < m["until"]:
                 slot["open"].append({"type": m["tag"], "name": m["name"], "element": m.get("element")})
         daily.append(slot)
 
-    return {"generated_for": today.isoformat(), "weeks": rows, "daily": daily}
+    return {"generated_for": today.isoformat(), "weeks": rows, "daily": daily,
+            "move_phase": {"known_off_weekend": move_off_sat.isoformat(),
+                           "note": "招式场隔周开；相位按「该周末未开」推算（C 级，非官方）"}}
 
 
 CHAR_BY_CHAR: dict[str, str] = {}
@@ -460,6 +478,9 @@ def main(argv=None) -> int:
             "element_order": ELEMENTS,
             "character_window": "周一–周三 / 周四–周六（周日空档，各 3 天）",
             "element_window": "周六–周日（2 天）",
+            "move_window": "周六–周日，隔周开（相位按本周末未开推算，C 级）",
+            "move_off_weekend": (today - dt.timedelta(days=today.weekday())
+                                 + dt.timedelta(days=5)).isoformat(),
             "checked_against": [
                 {"day": "2026-09-17", "char": "Marie"},
                 {"day": "2026-09-21", "char": "Annie"},
