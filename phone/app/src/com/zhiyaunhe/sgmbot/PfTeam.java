@@ -1055,8 +1055,17 @@ final class PfTeam {
      * ⚠️ 角色 (class) 规则只约束<b>防守队</b>, 出战队不受限 ⇒ 恒 true (PC 同口径)。
      * 找不到 FIGHT 按钮 (不在编队页) 也返回 true, 不触发筛选。
      */
+    /**
+     * FIGHT 按钮**是否点亮** —— 它是"队伍能不能开打"的唯一硬判据。
+     *
+     * <p>⚠️⚠️ 2026-10-21 实栽: 原来只有 {@code element} 规则才测, {@code class} 规则直接
+     * `return true`。于是 {@code class:Beowulf} 场次 (RUMBLE PACK) 上队伍里没有 Beowulf
+     * ⇒ FIGHT 变**灰** (高饱和占比实测 0.04; 可用状态 0.36 起, 阈值 0.15) ⇒ 但 bot 照样
+     * 点 ⇒ 游戏毫无反应 ⇒ 每 40 秒空转一轮 (23:17:13/23:17:55/23:18:36 连点 3 次,
+     * 日志表现为"第 N 场开始 → 等 25s 没有速度泡 → 回到编队页")。
+     * 现在**不分规则一律判**: 灰就是打不了, 点它没有意义。</p>
+     */
     boolean judgeRule(Vision.Frame w) {
-        if (!"element".equals(ruleType)) return true;
         double[] fight = match(w, Pf.T_FIGHT, Pf.ROI_TOPRIGHT, Pf.TH_FIGHT);
         if (fight == null) return true;
         int tw = tplW(Pf.T_FIGHT), th = tplH(Pf.T_FIGHT);
@@ -1071,8 +1080,9 @@ final class PfTeam {
             }
         }
         double ratio = n == 0 ? 0 : lit / (double) n;
-        flow.log(String.format("规则判定: FIGHT 按钮高饱和占比 %.0f%% -> %s",
-                ratio * 100, ratio >= Pf.TH_RULE_LIT ? "满足" : "不满足"));
+        flow.log(String.format("FIGHT 点亮判定: 高饱和占比 %.0f%% -> %s (规则 %s)",
+                ratio * 100, ratio >= Pf.TH_RULE_LIT ? "可打" : "灰/不可打",
+                ruleType == null ? "无" : ruleType + ":" + ruleValue));
         return ratio >= Pf.TH_RULE_LIT;
     }
 

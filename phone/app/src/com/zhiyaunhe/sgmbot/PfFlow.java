@@ -1147,18 +1147,39 @@ public final class PfFlow {
             if (bf == null) return;
             Vision.Frame wf = Vision.toWork(bf);
 
-            // 规则校验: 能量替换可能把合规角色换掉 ⇒ FIGHT 变灰就要重做规则替换。
-            if (team.hasRule() && ruleDoneFight == fightNo && !team.judgeRule(wf)) {
-                ruleRedo++;
-                if (ruleRedo > 2) {
-                    fatal = "能量替换反复破坏规则";
-                    log("能量替换反复破坏规则 (FIGHT 仍灰), 停止");
+            /* ⚠️⚠️ FIGHT 点亮校验 —— **不分规则、每次点之前都判**。
+             * 2026-10-21 实栽: 旧条件 `hasRule() && ruleDoneFight == fightNo` 只在"这场已经
+             * 做过规则替换"之后才复核, 首次进来根本不查; 而且 judgeRule 对 class 规则直接
+             * 返回 true。于是 class:Beowulf 场次里队伍没有 Beowulf ⇒ FIGHT 灰 ⇒ 点了毫无
+             * 反应 ⇒ 每 40s 空转一轮 (23:17:13 / 23:17:55 / 23:18:36)。
+             * 现在的口径: 灰就不点。元素场仍按老办法"重做规则替换"; 其它规则换不了人,
+             * 连续 5 次灰就停运行并告警 (别再空转白烧时间)。 */
+            if (!team.judgeRule(wf)) {
+                if ("element".equals(team.ruleType())) {
+                    ruleRedo++;
+                    if (ruleRedo > 2) {
+                        fatal = "能量替换反复破坏规则";
+                        log("能量替换反复破坏规则 (FIGHT 仍灰), 停止");
+                        return;
+                    }
+                    log("能量替换后 FIGHT 变灰, 重做规则替换");
+                    ruleDoneFight = -1;
+                    continue;
+                }
+                fightGrey++;
+                if (fightGrey >= 5) {
+                    fatal = "FIGHT 一直是灰的 (队伍不满足出战条件)";
+                    log("✗ FIGHT 连续 " + fightGrey + " 次是灰的 — 停止运行。"
+                            + " 规则 " + team.ruleType() + ":" + team.ruleValue()
+                            + " — 请把合规角色放进**出战队** (或用 App 换场次)");
                     return;
                 }
-                log("能量替换后 FIGHT 变灰, 重做规则替换");
-                ruleDoneFight = -1;
-                continue;
+                log("FIGHT 是灰的 (队伍不满足 " + team.ruleType() + ":" + team.ruleValue()
+                        + ") — 这次不点, 回主循环重试 (" + fightGrey + "/5)");
+                noteProgress();
+                return;
             }
+            fightGrey = 0;
             double[] fight = match(wf, Pf.T_FIGHT, Pf.ROI_TOPRIGHT, Pf.TH_FIGHT);
             if (fight == null) {
                 log("找不到 FIGHT 按钮, 回主循环");
@@ -1521,6 +1542,8 @@ public final class PfFlow {
      * 不依赖模板 —— 那个位置没按钮时点了也无害。</p>
      */
     private int hubPlayMiss;
+    /** FIGHT 连续灰的次数 (队伍不满足出战条件) —— 见 judgeRule 调用点注释。 */
+    private int fightGrey;
 
     /** 上一次点 FIGHT 的时刻 —— 用来认出"紧随其后"的 ENERGY REFILL 弹窗 (见 step ⓪)。 */
     private long lastFightTapMs;
