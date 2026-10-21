@@ -1248,6 +1248,30 @@ public final class PfFlow {
                 sleep_(2000);
                 continue;
             }
+            /* ⚠️⚠️ 2026-10-21 用户: 「这次开始, 为何没检测自动战斗?」
+             * 实测第 1 场: 23:06:33 开打 → 23:06:51「等了 18s 仍未认出速度泡 — 本场跳过」
+             * (进战斗要十几秒, 开场那一次轮询容易扑空) ⇒ 整场 1x, 打了 2 分半。
+             * 现在**战斗中补测**: 每 ~16s 看一眼, 只有速度泡确实在画面里、且还不是 3x
+             * 才动手 —— 结算/编队页上 speedBest 为 null, 不会白等 18s。 */
+            if (n % 4 == 0) {
+                int[] sp = team.speedBest(work);
+                if (sp != null && sp[2] < 3) {
+                    log("战斗中途补测速度: 当前 " + sp[2] + "x — 补升档");
+                    team.ensureBattleAuto();
+                }
+            }
+            /* ⚠️⚠️ 2026-10-21 用户: 「这次开始, 为何没检测自动战斗?」
+             * 实测第 1 场: 23:06:33 开打 → 23:06:51「等了 18s 仍未认出速度泡 — 本场跳过」
+             * (进战斗要十几秒, 开场那一次轮询容易扑空) ⇒ 整场 1x, 打了 2 分半。
+             * 现在**战斗中补测**: 每 ~16s 看一眼, 只有速度泡确实在画面里、且还不是 3x
+             * 才动手 —— 结算/编队页上 speedBest 为 null, 不会白等 18s。 */
+            if (n % 4 == 0) {
+                int[] sp = team.speedBest(work);
+                if (sp != null && sp[2] < 3) {
+                    log("战斗中途补测速度: 当前 " + sp[2] + "x — 补升档");
+                    team.ensureBattleAuto();
+                }
+            }
             int[] px = findPopupX(work);             // 弹窗优先于"结束"判据
             if (px != null) {
                 log("战斗等待中出现弹窗 (能量/连胜等), 点 X 关闭");
@@ -1702,6 +1726,12 @@ public final class PfFlow {
     }
 
     void log(String msg) { SgmLog.i("pf", msg); }
+
+    /**
+     * 带图日志 —— 只有**判据失败/异常现场**才用它 (正常流程别用, 会把 2GB 配额吃满)。
+     * 典型: 速度泡等不到、场次不符、菱形 miss。
+     */
+    void log(String msg, Bitmap bmp) { SgmLog.i("pf", msg, bmp); }
 
     void setStepText(String s) { setStep(s); }
 

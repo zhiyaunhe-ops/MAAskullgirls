@@ -343,7 +343,12 @@ public final class Pf {
      * ⚠️ 原来是"打完 FIGHT 固定等 1.8s 再看一眼" —— VS 动画/加载还没结束, HUD 没渲染,
      * 一眼扑空就再也不试 (旧代码还有一次性 latch), 于是整场 1x。
      */
-    public static final long SPD_WAIT_MS     = 18_000L;
+    /**
+     * ⚠️ 18s → 25s (2026-10-21): 实测第 1 场 23:06:33 点 FIGHT 后 18s 内画面里**还没有泡**
+     * (不是认不出 —— 1x 模板在真机帧上有 0.805~0.818, 阈值 0.62)。第 2 场只要 12s,
+     * 差在首次加载/开场动画。配合 {@code waitBattleEnd} 里的"中途补测", 双保险。
+     */
+    public static final long SPD_WAIT_MS     = 25_000L;
     public static final double TH_BRAIN_V    = 75.0;   // 脑子图标亮 V 均值 (亮~101 / 灭~49)
     public static final double TH_RULE_LIT   = 0.15;   // FIGHT 按钮高饱和占比 (橙~55% / 灰~0%)
     public static final double TH_FIRE_BOX   = 0.04;   // 对手卡右上火框红占比 (火 0.17-0.26 / 无 0.03)
