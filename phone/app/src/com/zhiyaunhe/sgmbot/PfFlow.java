@@ -447,7 +447,7 @@ public final class PfFlow {
                     /* ⚠️⚠️ 点 PLAY! 之前**必须核对场次** (2026-10-16 用户: 「掉到别的场次里了」)。
                      * 看门狗会重拉游戏 → 从大厅重进 hub → 轮播位置变了 ⇒ 盲点居中卡就进错场。
                      * ensureTarget 会拿指纹核对, 不对就滑轮播找回; 找不回就**不进场**。 */
-                    if (!arena.ensureTarget(bmp)) {
+                    if (!arena.ensureTarget(bmp, arenaName)) {
                         log("PF hub: 没确认到目标场次 — 这次不进场, 退回导航重试");
                         noteProgress();
                         return;
@@ -552,7 +552,7 @@ public final class PfFlow {
             unknownTries = 0;
             setStep("PF hub");
             /* 同 gotoHub 的 HUB 分支: **先核对场次再点 PLAY** (见 PfArena 类注释)。 */
-            if (!arena.ensureTarget(bmp)) {
+            if (!arena.ensureTarget(bmp, arenaName)) {
                 log("PF hub: 没确认到目标场次 — 这次不进场");
                 noteProgress();
                 return;

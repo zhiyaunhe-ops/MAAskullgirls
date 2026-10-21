@@ -91,10 +91,59 @@ final class PfArena {
         return true;
     }
 
+    /** 指纹对应的**场次名** —— 换场次后旧指纹必须作废, 否则会一直对着旧卡找。 */
+    static File nameFile() {
+        return new File(Paths.root(), "arena_target.txt");
+    }
+
+    static String targetName() {
+        try {
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            java.io.FileInputStream fi = new java.io.FileInputStream(nameFile());
+            byte[] buf = new byte[256];
+            int n;
+            while ((n = fi.read(buf)) > 0) bo.write(buf, 0, n);
+            fi.close();
+            return new String(bo.toByteArray(), "UTF-8").trim();
+        } catch (Throwable t) { return ""; }
+    }
+
+    private static void saveName(String name) {
+        try {
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(nameFile());
+            fo.write((name == null ? "" : name).getBytes("UTF-8"));
+            fo.close();
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * **自动学一次** —— 不需要人在 App 里点任何标定按钮。
+     *
+     * <p>前提与 {@code MODE_NAV_HERE} 是同一个: 用户点「开始」时**游戏就停在想打的那一场上**,
+     * 于是第一次进 hub 时居中的那张卡就是目标。存下它的卡面指纹 + 场次名, 之后每次核对。
+     * 换场次 (config 的 pf.arena 变了) 时名字对不上 ⇒ 自动作废重学 —— 见
+     * {@link #ensureTarget(android.graphics.Bitmap, String)}。</p>
+     */
+    static boolean learn(Bitmap bmp, String name) {
+        if (!remember(bmp)) return false;
+        saveName(name);
+        SgmLog.i("pf", "场次锁定: 已自动学习目标场次「" + name + "」的卡面指纹"
+                + " (以后每次进 hub 都拿它核对; 换场次会自动作废重学)", bmp);
+        return true;
+    }
+
     /** 忘掉目标 (换场次用)。 */
     void forget() {
         try { file().delete(); } catch (Throwable ignored) { }
-        SgmLog.i("pf", "场次锁定: 已清除目标指纹");
+        try { nameFile().delete(); } catch (Throwable ignored) { }
+        SgmLog.i("pf", "场次锁定: 已清除目标指纹 (含场次名)");
+    }
+
+    /** 换场次: 同 forget —— 供「选场次」写入路径调用 (见 DebugHttp 的 /cfg/arena)。 */
+    static void forgetStatic() {
+        try { targetFile().delete(); } catch (Throwable ignored) { }
+        try { nameFile().delete(); } catch (Throwable ignored) { }
+        SgmLog.i("pf", "场次锁定: 换场次 — 旧指纹已作废");
     }
 
     /**
@@ -108,9 +157,35 @@ final class PfArena {
      * 主页 PF 配置只从场次表选场次 (写 config 的 pf.arena 等), 不再截图标定。
      * 所以**没有指纹文件时直接放行** (按卡位盲点居中卡), 不再自动 learn 存盘。
      * 只有当用户自己往 {@code arena_target.png} 放了文件 (或老机器上有残留) 时才核对。 */
-    boolean ensureTarget(Bitmap bmp) {
+    /**
+     * @param wantName 配置里选定的目标场次名 (null/空 = 不指定 ⇒ 不锁定)
+     */
+    boolean ensureTarget(Bitmap bmp, String wantName) {
         if (disabled) return true;                 // 已关掉锁定 ⇒ 直接放行 (见 MAX_FAILS 注释)
-        if (!hasTarget()) return true;             // 没有指纹 = 不锁定 (见上面注释)
+        if (wantName == null || wantName.isEmpty()) return true;   // 没指定场次 ⇒ 不锁定
+        /* ⚠️⚠️ 2026-10-21 用户: 「不要标定, 你开始的时候, 先走到选场次 scene, 这样校验」。
+         * 于是**不再要求人在 App 里点「校准」**: 第一次进 hub 时自动把当前居中卡存成目标
+         * (前提与 nav_here 相同: 开始那刻游戏就停在想打的那场); 场次名一起存, 换场次后
+         * 名字对不上就作废重学。 */
+        if (!hasTarget()) {
+            /* ⚠️ 首次学的前提: 用户点「开始」时游戏就停在**想打的那张卡**上。
+             * 学错一次 = 之后永远打错场, 所以必须"人在场"的那一次才学。 */
+            if (learn(bmp, wantName)) { failCount = 0; return true; }
+            flow.log("⚠ 场次锁定: 学习指纹失败 — 本次不锁定");
+            disabled = true;
+            return true;
+        }
+        if (!wantName.equals(targetName())) {
+            /* ⚠️⚠️ 换场次:**绝不能拿当前居中卡重学** —— 游戏此刻多半还停在旧场次的卡上,
+             * 学进去就是"新名字 + 旧卡面", 之后永远打错 (2026-10-21 23:25 用户澄清:
+             * 进的是元素月场 FALL OF THE DARK, 必须有暗属性, 所以 FIGHT 灰)。
+             * 正确做法: 作废旧指纹, 停运行, 请用户把游戏停在新目标卡上再启动。 */
+            forgetStatic();
+            flow.stop("目标场次已换成「" + wantName + "」— 请把游戏停在它的卡上再启动 (指纹自动重学)");
+            flow.log("✗ 目标场次换成「" + wantName + "」(旧「" + targetName() + "」) — 指纹已作废,"
+                    + " 请把游戏停在新目标场次那张卡上再启动");
+            return false;
+        }
         Vision.Frame w = Vision.toWork(bmp);
         double s = score(w);
         if (s >= TH) {
@@ -142,11 +217,14 @@ final class PfArena {
          * ⇒ 上层"退回导航重试" ⇒ 再进 hub ⇒ 再滑 4 次 ⇒ 又 false …**无限循环**,
          * 实测连刷 169 次、一场没打。失败满 MAX_FAILS 次就**本次运行关掉锁定**并放行,
          * 宁可这次打错场次, 也不能把挂机卡死。 */
+        /* ⚠️⚠️ 2026-10-21 用户口径: 「找不回来就不进场」。
+         * 旧实现在这里**关闭锁定放行** —— 那正是"打进默认第一个场次"的来源。
+         * 现在改成: 失败累计到上限就**停本次运行**并给出可执行提示, 既不打错场, 也不空转。 */
         if (++failCount >= MAX_FAILS) {
-            disabled = true;
-            flow.log("⚠ 场次锁定连续失败 " + failCount + " 次 — **本次运行关闭锁定**放行"
-                    + " (先保证能打上; 下次运行会重新学习指纹)");
-            return true;
+            flow.stop("找不到目标场次「" + wantName + "」(轮播上找不到它的卡)");
+            flow.log("✗ 场次锁定连续失败 " + failCount + " 次 — 停止运行。"
+                    + " 请把游戏停在目标场次那张卡上再开始 (指纹会自动重学)");
+            return false;
         }
         return false;
     }
