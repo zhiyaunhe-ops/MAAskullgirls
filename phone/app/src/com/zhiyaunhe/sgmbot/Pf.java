@@ -201,6 +201,28 @@ public final class Pf {
     public static final int[] ROI_HOME = {50, 0, 110, 62};
     /** PF hub 居中卡 PLAY! */
     public static final int[] ROI_HUB_PLAY   = R(500, 400, 780, 530);
+    /**
+     * CLAIMED 领取弹层底部的 CONTINUE (work, 实测)。
+     *
+     * <p>⚠️⚠️ 2026-10-21 用户: 「会跳出这个场次, 然后直接走默认的第一个场次再进入」。
+     * 真凶之一就是这个弹层: 它半透明, 后面 hub 的 PLAY!/REWARDS!/CLAIM! 残影**落在
+     * {@link #ROI_HUB_PLAY} 里**, 于是 {@code PfScene} 判 HUB、{@code step} 点 PLAY ——
+     * 点击全被弹层吃掉 (实测 08:47:04~08:50:11 连点 16 次), 看门狗脱困**重拉游戏**,
+     * 回 hub 时轮播回到第一张 ⇒ 下一场进的是"默认第一个场次"。
+     * 这按钮不是 hub 的 PLAY (640,370), 在弹层底部中央偏下。</p>
+     */
+    public static final int[] CLE_CONTINUE   = {600, 500};
+    /**
+     * CLAIMED 领取弹层底部的 CONTINUE (work, 实测)。
+     *
+     * <p>⚠️⚠️ 2026-10-21 用户: 「会跳出这个场次, 然后直接走默认的第一个场次再进入」。
+     * 真凶之一就是这个弹层: 它半透明, 后面 hub 的 PLAY!/REWARDS!/CLAIM! 残影**落在
+     * {@link #ROI_HUB_PLAY} 里**, 于是 {@code PfScene} 判 HUB、{@code step} 点 PLAY ——
+     * 点击全被弹层吃掉 (实测 08:47:04~08:50:11 连点 16 次), 看门狗脱困**重拉游戏**,
+     * 回 hub 时轮播回到第一张 ⇒ 下一场进的是"默认第一个场次"。
+     * 这按钮不是 hub 的 PLAY (640,370), 在弹层底部中央偏下。</p>
+     */
+
     /** 大厅促销弹窗右上 X。 */
     public static final int[] ROI_SCENE_X    = R(880, 30, 1240, 180);
     /** 模态弹窗方形 X (上限 1060 挡 OPTIONS X)。 */

@@ -452,7 +452,22 @@ public final class PfFlow {
                         noteProgress();
                         return;
                     }
-                    log("PF hub 就绪 — 点 PLAY! 进场");
+                    /* ⚠️⚠️ CLAIMED 领取弹层 (半透明) 会让 scene 误判 HUB —— 弹层后面
+                     * hub 的 PLAY!/REWARDS!/CLAIM! 残影落在 ROI_HUB_PLAY 内, hub_play
+                     * 模板照样过阈值。实测 08:47:04~08:50:11 连点 16 次 work(640,370)
+                     * 全被弹层吃掉 ⇒ 看门狗重拉游戏 ⇒ 回 hub 轮播回第一张 ⇒ 下一场进
+                     * "默认第一个场次"(用户 2026-10-21 报的跳场次)。
+                     * 兜底: 连点 2 次无效就点弹层底部中央的 CONTINUE, 不依赖模板。 */
+                    if (hubPlayMiss >= 2) {
+                        hubPlayMiss = 0;
+                        log("hub 连点 PLAY 无效 → 点底部中央 CONTINUE (CLAIMED/奖励弹层?)");
+                        tap(bmp, Pf.CLE_CONTINUE);
+                        sleep_(1800);
+                        return;
+                    }
+                    hubPlayMiss++;
+                    log("PF hub 就绪 — 点 PLAY! 进场 (第 " + hubPlayMiss + " 次)"
+                            + (arena.hasTarget() ? "" : " ⚠ 场次未校准(无指纹), 打的是当前居中卡"));
                     {
                         double[] hub2 = match(work, Pf.T_HUB_PLAY, Pf.ROI_HUB_PLAY, Pf.TH_HUB_PLAY);
                         if (hub2 != null) tapCenter(bmp, work, hub2, Pf.T_HUB_PLAY);
@@ -542,7 +557,15 @@ public final class PfFlow {
                 noteProgress();
                 return;
             }
-            log("PF hub 就绪 — 点 PLAY! 进场");
+            if (hubPlayMiss >= 2) {
+                hubPlayMiss = 0;
+                log("hub 连点 PLAY 无效 → 点底部中央 CONTINUE (CLAIMED/奖励弹层?)");
+                tap(bmp, Pf.CLE_CONTINUE);
+                sleep_(1800);
+                return;          // step 是方法体, 这里没有循环 (别写 continue)
+            }
+            hubPlayMiss++;
+            log("PF hub 就绪 — 点 PLAY! 进场 (第 " + hubPlayMiss + " 次)");
             tapCenter(bmp, work, hub, Pf.T_HUB_PLAY);
             sleep_(3000);
             return;
@@ -1462,6 +1485,18 @@ public final class PfFlow {
      * 让主循环重新定位 —— 前提是 scene 已判为 TEAM_PREVIEW, 此时返回键不会退游戏。</p>
      */
     private int teamDiamondMiss;
+    /**
+     * hub 上连点 PLAY 没把人带走的次数。
+     *
+     * <p>⚠️⚠️ 2026-10-21 用户: 「会跳出这个场次, 然后直接走默认的第一个场次再进入」。
+     * 真凶之一 = CLAIMED 领取弹层 (半透明): 弹层后面 hub 的 PLAY!/REWARDS!/CLAIM! 残影
+     * 落在 {@link Pf#ROI_HUB_PLAY} 内 ⇒ {@code PfScene} 判 HUB ⇒ 点 PLAY 全被弹层吃掉
+     * (实测 08:47:04~08:50:11 连点 16 次 work(640,370)) ⇒ 看门狗脱困**重拉游戏** ⇒
+     * 回 hub 时轮播回到第一张 ⇒ 下一场进的是"默认第一个场次"。
+     * 兜底: 连点 2 次无效就点弹层底部中央的 CONTINUE ({@link Pf#CLE_CONTINUE}),
+     * 不依赖模板 —— 那个位置没按钮时点了也无害。</p>
+     */
+    private int hubPlayMiss;
 
     /** 上一次点 FIGHT 的时刻 —— 用来认出"紧随其后"的 ENERGY REFILL 弹窗 (见 step ⓪)。 */
     private long lastFightTapMs;
