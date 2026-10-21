@@ -1168,10 +1168,12 @@ public final class PfFlow {
                 }
                 fightGrey++;
                 if (fightGrey >= 5) {
-                    fatal = "FIGHT 一直是灰的 (队伍不满足出战条件)";
-                    log("✗ FIGHT 连续 " + fightGrey + " 次是灰的 — 停止运行。"
-                            + " 规则 " + team.ruleType() + ":" + team.ruleValue()
-                            + " — 请把合规角色放进**出战队** (或用 App 换场次)");
+                    fatal = "FIGHT 一直是灰的 (队伍不满足该场次/规则的出战条件)";
+                    log("✗ FIGHT 连续 " + fightGrey + " 次是灰的 — 停止运行。规则 "
+                            + team.ruleType() + ":" + team.ruleValue()
+                            + "。⚠️ 两种可能: ① 队伍不满足 (把合规角色放进出战队);"
+                            + " ② **进错了场次** (场锁指纹学错) — 删 /sdcard/sgm_settle/arena_target*.png"
+                            + " 与 .txt 后, 把游戏停在正确场次那张卡上重新开始");
                     return;
                 }
                 log("FIGHT 是灰的 (队伍不满足 " + team.ruleType() + ":" + team.ruleValue()

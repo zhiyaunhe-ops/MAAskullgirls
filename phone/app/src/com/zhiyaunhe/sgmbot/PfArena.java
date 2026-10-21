@@ -33,6 +33,22 @@ final class PfArena {
     /** 居中卡的指纹区 (work 坐标)。取自 hub 实测: 选中卡带粉框, 上方是封面+标题。 */
     static final int[] CARD = {516, 88, 306, 252};
 
+    /**
+     * 指纹真正取样的区域 (work) —— **只取卡面美术中段**。
+     *
+     * <p>⚠️⚠️ 2026-10-21: 旧指纹直接用 {@link #CARD} 整块, 里面包含三样**必然变化**的东西:
+     * SCORE 数字 (每场都在涨, 259,491,120 → 259,520,128 只隔一场)、2x 倍率徽章、
+     * 底部倒计时 (每秒变)。⇒ 指纹随时间**漂移**, 匹配分越来越低, 最后误判"不是目标场"。
+     * 新区只取中间的美术 (人物+背景), 排除上沿 SCORE 行、右侧徽章、底部标题/倒计时。</p>
+     */
+    static final int[] FP = {536, 150, 260, 140};
+
+    /** 指纹份数 —— 每确认进场一次轮转写入一份, 容忍卡面缓慢变化 (活动横幅/等级提升等)。 */
+    private static final int SLOTS = 3;
+
+    /** 疑似阈值: [TH_LOOSE, TH) 之间不算确认, 也不急着否定 —— 先复核一帧再说。 */
+    private static final double TH_LOOSE = 0.55;
+
     /** 指纹搜索区 = CARD 四周各留 24px 余量 (容忍一两像素的抖动)。 */
     private static final int PAD = 24;
 
@@ -58,13 +74,16 @@ final class PfArena {
         this.sh = sh;
     }
 
-    private File file() {
-        return targetFile();
-    }
+    private File file() { return file(0); }
 
-    /** 指纹文件 (静态版 —— PF 设置页/其它无实例的地方也要用)。 */
-    static File targetFile() {
-        return new File(Paths.root(), "arena_target.png");
+    /** 第 {@code slot} 份指纹文件 (slot 0 = 最新)。 */
+    private File file(int slot) { return targetFile(slot); }
+
+    /** 指纹文件 (静态版)。slot 0 = 最新写入; 旧调用 (PF 设置页等) 指向 slot 0。 */
+    static File targetFile() { return targetFile(0); }
+
+    static File targetFile(int slot) {
+        return new File(Paths.root(), slot == 0 ? "arena_target.png" : "arena_target_" + slot + ".png");
     }
 
     /**
@@ -75,20 +94,24 @@ final class PfArena {
      * 这样装机后不用手动删文件。
      */
     boolean hasTarget() {
-        File f = file();
-        if (!f.isFile() || f.length() <= 1000) return false;
-        try {
-            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
-            o.inJustDecodeBounds = true;
-            android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath(), o);
-            if (o.outWidth != CARD[2] || o.outHeight != CARD[3]) {
-                SgmLog.i("pf", "场次锁定: 旧格式指纹 " + o.outWidth + "x" + o.outHeight
-                        + " 与 work 基准 " + CARD[2] + "x" + CARD[3] + " 不符 — 丢弃重学");
-                f.delete();
-                return false;
-            }
-        } catch (Throwable ignored) { }
-        return true;
+        boolean any = false;
+        for (int i = 0; i < SLOTS; i++) {
+            File f = file(i);
+            if (!f.isFile() || f.length() <= 500) continue;
+            try {
+                android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+                if (o.outWidth != FP[2] || o.outHeight != FP[3]) {
+                    SgmLog.i("pf", "场次锁定: 旧格式指纹 (slot" + i + ", " + o.outWidth + "x"
+                            + o.outHeight + " ≠ FP " + FP[2] + "x" + FP[3] + ") — 丢弃");
+                    f.delete();
+                    continue;
+                }
+                any = true;
+            } catch (Throwable ignored) { }
+        }
+        return any;
     }
 
     /** 指纹对应的**场次名** —— 换场次后旧指纹必须作废, 否则会一直对着旧卡找。 */
@@ -191,7 +214,24 @@ final class PfArena {
         if (s >= TH) {
             failCount = 0;                         // 找到了就清零
             flow.log("场次锁定: 居中卡就是目标场 (" + fmt(s) + ")");
+            refresh(bmp);                          // 轮转更新指纹库 (模糊匹配的保鲜机制)
             return true;
+        }
+        if (s >= TH_LOOSE) {
+            /* ⚠️ 疑似区间 [TH_LOOSE, TH): 多半是过渡帧 (淡入/滑动未停) 或卡面微变。
+             * 补一帧复核 (取两帧最高), 高过 TH 就当确认, 别急着滑轮播。 */
+            PfFlow.sleep_(900);
+            Bitmap b2 = sh.capture();
+            if (b2 != null) {
+                double s2 = Math.max(s, score(Vision.toWork(b2)));
+                if (s2 >= TH) {
+                    failCount = 0;
+                    flow.log("场次锁定: 居中卡疑似目标场, 复核后确认 (" + fmt(s2) + ")");
+                    refresh(Vision.toWork(b2) == null ? bmp : b2);
+                    return true;
+                }
+                s = s2;
+            }
         }
         flow.log("场次锁定: 居中卡不是目标场 (" + fmt(s) + ") — 滑轮播找回");
         for (int i = 0; i < MAX_SLIDES; i++) {
@@ -240,7 +280,26 @@ final class PfArena {
 
     /** 当前居中卡与指纹的相似度 (0~1)。 */
     double score(Vision.Frame w) {
-        Vision.Frame t = fingerprint();
+        double best = 0;
+        for (int i = 0; i < SLOTS; i++) {
+            Vision.Frame t = fingerprint(i);
+            if (t == null) continue;
+            int[] roi = {Math.max(0, FP[0] - PAD), Math.max(0, FP[1] - PAD),
+                    FP[2] + PAD * 2, FP[3] + PAD * 2};
+            /* ⚠️ 传 0.0 会命中 findScored 的"早退" ⇒ 拿到 ROI 左上角附近第一个非负补丁的分,
+             * 与真实相似度无关 ⇒ 场次判据随机失效 (2026-10-17 与倍率同根因)。 */
+            double[] r = Vision.findScored(w, t, roi, Vision.SCAN_ALL, -1, 0, 1);
+            /* ⚠️⚠️ 取 **r[2]** 不是 r[0]!  findScored 返回 **{x, y, best}** —— 第一版写成
+             * r[0] 取到了 x 坐标, 日志打出「居中卡就是目标场 (494.00)」这种不可能分值。 */
+            if (r != null && r[2] > best) best = r[2];
+        }
+        return best;
+    }
+
+    /** 兼容旧调用 (外部无)。 */
+    @SuppressWarnings("unused")
+    private double scoreOld(Vision.Frame w) {
+        Vision.Frame t = fingerprint(0);
         if (t == null) return 0;
         int[] roi = {Math.max(0, CARD[0] - PAD), Math.max(0, CARD[1] - PAD),
                 CARD[2] + PAD * 2, CARD[3] + PAD * 2};
@@ -256,9 +315,9 @@ final class PfArena {
     }
 
     /** 读指纹 PNG → Frame。⚠️ **不能走 {@link Vision#toWork}** —— 见 learn() 的注释。 */
-    private Vision.Frame fingerprint() {
+    private Vision.Frame fingerprint(int slot) {
         try {
-            Bitmap b = android.graphics.BitmapFactory.decodeFile(file().getAbsolutePath());
+            Bitmap b = android.graphics.BitmapFactory.decodeFile(file(slot).getAbsolutePath());
             if (b == null) return null;
             int w = b.getWidth(), h = b.getHeight();
             int[] px = new int[w * h];
@@ -288,25 +347,52 @@ final class PfArena {
      * 「PF 设置」页也能手动记一次 (用户换场次时不必先去跑一轮让 bot 自己学)。
      * 口径与实例 {@code learn()} 完全一致 (见上面的移植踩坑注释)。
      */
-    static boolean remember(Bitmap bmp) {
+    static boolean remember(Bitmap bmp) { return remember(bmp, 0); }
+
+    /** 把 {@code bmp} 的指纹区裁下来存到 slot。⚠️ 取样区 = {@link #FP} (稳定美术段)。 */
+    static boolean remember(Bitmap bmp, int slot) {
         try {
             Vision.Frame wf = Vision.toWork(bmp);        // 实机 → work(1280x576)
-            int x0 = CARD[0], y0 = CARD[1], cw = CARD[2], ch = CARD[3];
+            int x0 = FP[0], y0 = FP[1], cw = FP[2], ch = FP[3];
             if (x0 + cw > wf.w || y0 + ch > wf.h) return false;
             int[] px = new int[cw * ch];
             for (int y = 0; y < ch; y++) {
                 System.arraycopy(wf.px, (y0 + y) * wf.w + x0, px, y * cw, cw);
             }
             Bitmap crop = Bitmap.createBitmap(px, cw, ch, Bitmap.Config.ARGB_8888);
-            FileOutputStream fo = new FileOutputStream(targetFile());
+            FileOutputStream fo = new FileOutputStream(targetFile(slot));
             crop.compress(Bitmap.CompressFormat.PNG, 100, fo);
             fo.close();
-            SgmLog.i("pf", "场次锁定: 指纹已存 " + cw + "x" + ch + " (work 基准) → "
-                    + targetFile().getAbsolutePath());
+            SgmLog.i("pf", "场次锁定: 指纹已存 slot" + slot + " (" + cw + "x" + ch + ") → "
+                    + targetFile(slot).getAbsolutePath());
             return true;
         } catch (Throwable t) {
             SgmLog.i("pf", "场次锁定: 存指纹失败 " + t);
             return false;
+        }
+    }
+
+    /**
+     * 确认进场后**轮转更新指纹库** (slot2←slot1, slot1←slot0, slot0←当前)。
+     *
+     * <p>这是"模糊匹配"的另一半: 卡面会缓慢变化 (活动横幅/赛季更替/美术更新), 只存一份
+     * 迟早漂到阈值以下。三份覆盖不同时间点, 匹配时取最高分, 库就永远新鲜。</p>
+     */
+    private void refresh(Bitmap bmp) {
+        try {
+            for (int i = SLOTS - 1; i > 0; i--) {
+                File src = file(i - 1);
+                if (!src.isFile()) continue;
+                java.io.FileInputStream fi = new java.io.FileInputStream(src);
+                java.io.FileOutputStream fo = new java.io.FileOutputStream(file(i));
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = fi.read(buf)) > 0) fo.write(buf, 0, n);
+                fi.close(); fo.close();
+            }
+            remember(bmp, 0);
+        } catch (Throwable t) {
+            SgmLog.i("pf", "场次锁定: 指纹轮转失败 " + t);
         }
     }
 
